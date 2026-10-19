@@ -35,6 +35,14 @@ void SmallToggle::handleInput(const Input &input)
 
 void SmallToggle::draw(DrawList &list, const Theme &theme) const
 {
+    // The state, the pointer's hover and press, enabled and the label
+    Fingerprint key;
+    key.add(on_);
+    key.add(click_.hovered);
+    key.add(click_.held());
+    key.add(enabled_);
+    key.add(label_);
+    cache_.draw(list, theme, rect_, key.value(), [&] {
     if (on_ || click_.held())
         list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, 0.55f));
     else
@@ -42,6 +50,7 @@ void SmallToggle::draw(DrawList &list, const Theme &theme) const
     const Color color = !enabled_ ? theme.mutedTextColor()
                                   : theme.textColor(on_ ? TextTone::Accent : TextTone::Secondary);
     list.add(theme.text(label_, rect_, theme.fontSize(TextStyle::Caption), TextAlign::Center, color));
+    });
 }
 
 // ScrubField

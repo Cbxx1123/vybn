@@ -1,6 +1,7 @@
 // Scenes, each described in RenderSelfTest.h: shapes, shapes-dark, text, clips, image, lines, plots,
 // controls, arrangement, waveforms, pianoroll, steps, scroll (a 2000-row ScrollView, to show culling at work)
-// and synth. The synth and waveforms scenes are also timed over 50 settled frames (INFO lines after the scenes).
+// and synth. The heavy scenes (synth, waveforms, scroll, controls, arrangement, pianoroll, steps) are also timed
+// over 50 settled frames (INFO lines after the scenes).
 #include "RenderSelfTest.h"
 
 #include <algorithm>
@@ -205,6 +206,9 @@ struct Timing {
     double submitMs = 0.0;
     uint32_t prims = 0;
     size_t uploadBytes = 0;
+    double cacheHits = 0.0;
+    double cacheMisses = 0.0;
+    double layoutSkipped = 0.0; // the share of frames whose layout was skipped, 0 to 1
 };
 
 // Builds a tree into a context on a hidden window of the given size, settles it, and draws it
@@ -241,6 +245,7 @@ Picture renderPicture(uint32_t width, uint32_t height, const ui::Theme &theme,
 
         if (timedFrames > 0 && timing) {
             double buildSum = 0.0, submitSum = 0.0;
+            double hitsSum = 0.0, missesSum = 0.0, skippedFrames = 0.0;
             size_t bytesSum = 0;
             for (int i = 0; i < timedFrames; ++i) {
                 context.update();
@@ -252,12 +257,18 @@ Picture renderPicture(uint32_t width, uint32_t height, const ui::Theme &theme,
                 buildSum += s.buildMs;
                 submitSum += s.submitMs;
                 bytesSum += s.uploadBytes;
+                hitsSum += s.cacheHits;
+                missesSum += s.cacheMisses;
+                skippedFrames += s.layoutSkipped ? 1.0 : 0.0;
                 timing->prims = s.surfaces + s.glyphs + s.images;
             }
             timing->frames = timedFrames;
             timing->buildMs = buildSum / timedFrames;
             timing->submitMs = submitSum / timedFrames;
             timing->uploadBytes = bytesSum / static_cast<size_t>(timedFrames);
+            timing->cacheHits = hitsSum / timedFrames;
+            timing->cacheMisses = missesSum / timedFrames;
+            timing->layoutSkipped = skippedFrames / timedFrames;
         }
 
         renderer.beginOffscreen(fbW, fbH);
@@ -766,23 +777,29 @@ void buildControls(ui::Context &context)
 
 // The Context over an arrangement, a piano roll, a step sequencer or a synth, each filling the window
 
-Picture sceneControls()
+Picture renderControls(int timedFrames, Timing *timing)
 {
-    return renderPicture(900, 600, daw::studioTheme(true), buildControls);
+    return renderPicture(900, 600, daw::studioTheme(true), buildControls, timedFrames, timing);
 }
 
-// The arrangement over the demo project; with `after`, one more frame is run after the picture
-Picture renderArrangement(ui::FrameStats *after)
+Picture sceneControls()
+{
+    return renderControls(0, nullptr);
+}
+
+// The arrangement over the demo project; with timedFrames, the settled view is timed (see renderPicture),
+// and with `after`, one more frame is run after the picture
+Picture renderArrangement(int timedFrames, Timing *timing, ui::FrameStats *after = nullptr)
 {
     daw::ProjectStore store(daw::demoProject()); // outlives the context
     return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
         stretch(context.root().add<daw::ArrangementView>(store, quietTransport()));
-    }, 0, nullptr, after);
+    }, timedFrames, timing, after);
 }
 
 Picture sceneArrangement()
 {
-    return renderArrangement(nullptr);
+    return renderArrangement(0, nullptr);
 }
 
 // One track's sound for the waveforms scene: 30 seconds of stereo noise, a decaying burst every half
@@ -852,23 +869,25 @@ Picture sceneWaveforms()
     return renderWaveforms(0, nullptr);
 }
 
-// The piano roll on the demo project; with `after`, one more frame is run after the picture
-Picture renderPianoRoll(ui::FrameStats *after)
+// The piano roll on the demo project; with timedFrames, the settled view is timed (see renderPicture),
+// and with `after`, one more frame is run after the picture
+Picture renderPianoRoll(int timedFrames, Timing *timing, ui::FrameStats *after = nullptr)
 {
     daw::ProjectStore store(daw::demoProject());
     selectFirstInstrumentClip(store);
     return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
         stretch(context.root().add<daw::PianoRollView>(store, quietPianoRoll()));
-    }, 0, nullptr, after);
+    }, timedFrames, timing, after);
 }
 
 Picture scenePianoRoll()
 {
-    return renderPianoRoll(nullptr);
+    return renderPianoRoll(0, nullptr);
 }
 
-// The step sequencer on a drum clip; with `after`, one more frame is run after the picture
-Picture renderSteps(ui::FrameStats *after)
+// The step sequencer on a drum clip; with timedFrames, the settled view is timed (see renderPicture),
+// and with `after`, one more frame is run after the picture
+Picture renderSteps(int timedFrames, Timing *timing, ui::FrameStats *after = nullptr)
 {
     // A drum clip: a kick on the beats 0, 2, 4 and 6, a snare on 1, 3, 5 and 7, hats every half beat
     daw::Project project;
@@ -902,16 +921,17 @@ Picture renderSteps(ui::FrameStats *after)
         daw::StepSequencerView &view = context.root().add<daw::StepSequencerView>(store, quietSteps());
         stretch(view);
         view.selectRow(36);
-    }, 0, nullptr, after);
+    }, timedFrames, timing, after);
 }
 
 Picture sceneSteps()
 {
-    return renderSteps(nullptr);
+    return renderSteps(0, nullptr);
 }
 
-// A long list in a scroll view: 2000 rows, of which only the ones on screen should draw
-Picture sceneScroll()
+// A long list in a scroll view: 2000 rows, of which only the ones on screen should draw.
+// With timedFrames, the settled list is timed (see renderPicture)
+Picture renderScroll(int timedFrames, Timing *timing)
 {
     return renderPicture(600, 400, daw::studioTheme(true), [](ui::Context &context) {
         ui::ScrollView &scroll = context.root().add<ui::ScrollView>();
@@ -920,7 +940,12 @@ Picture sceneScroll()
             scroll.content()
                 .add<ui::ListItem>("Row " + std::to_string(row), [] {})
                 .setSubtitle("Subtitle of row " + std::to_string(row));
-    });
+    }, timedFrames, timing);
+}
+
+Picture sceneScroll()
+{
+    return renderScroll(0, nullptr);
 }
 
 // The synthesizer's panel; with timedFrames, the settled panel is timed (see renderPicture)
@@ -1746,10 +1771,10 @@ struct CacheScene {
 };
 
 const CacheScene kCacheScenes[] = {
-    {"arrangement", [](ui::FrameStats *after) { return renderArrangement(after); }},
+    {"arrangement", [](ui::FrameStats *after) { return renderArrangement(0, nullptr, after); }},
     {"waveforms", [](ui::FrameStats *after) { return renderWaveforms(0, nullptr, after); }},
-    {"pianoroll", renderPianoRoll},
-    {"steps", renderSteps},
+    {"pianoroll", [](ui::FrameStats *after) { return renderPianoRoll(0, nullptr, after); }},
+    {"steps", [](ui::FrameStats *after) { return renderSteps(0, nullptr, after); }},
     {"synth", [](ui::FrameStats *after) { return renderSynth(0, nullptr, after); }},
 };
 
@@ -1807,8 +1832,10 @@ int timeScene(const char *name, const std::string &only, const std::function<voi
     try {
         Timing timing;
         render(kTimedFrames, &timing);
-        std::printf("INFO render %s x%d: build %.2f ms, submit %.2f ms, %u prims, %zu KB\n", name, timing.frames,
-                    timing.buildMs, timing.submitMs, timing.prims, timing.uploadBytes / 1024);
+        std::printf("INFO render %s x%d: build %.2f ms, submit %.2f ms, %u prims, %zu KB, %.1f hits, %.1f misses, "
+                    "layout skipped %.0f%%\n",
+                    name, timing.frames, timing.buildMs, timing.submitMs, timing.prims, timing.uploadBytes / 1024,
+                    timing.cacheHits, timing.cacheMisses, timing.layoutSkipped * 100.0);
         return 0;
     } catch (const std::exception &e) {
         std::printf("FAIL  %s timing failed: %s\n", name, e.what());
@@ -1941,9 +1968,14 @@ int runRenderSelfTest(int argc, char **argv)
     for (const auto &entry : rendered)
         printInfo(entry.first, entry.second);
 
-    // The heaviest scenes, timed on their settled frames
+    // The scenes timed on their settled frames
     failures += timeScene("synth", only, [](int frames, Timing *timing) { renderSynth(frames, timing); });
     failures += timeScene("waveforms", only, [](int frames, Timing *timing) { renderWaveforms(frames, timing); });
+    failures += timeScene("scroll", only, [](int frames, Timing *timing) { renderScroll(frames, timing); });
+    failures += timeScene("controls", only, [](int frames, Timing *timing) { renderControls(frames, timing); });
+    failures += timeScene("arrangement", only, [](int frames, Timing *timing) { renderArrangement(frames, timing); });
+    failures += timeScene("pianoroll", only, [](int frames, Timing *timing) { renderPianoRoll(frames, timing); });
+    failures += timeScene("steps", only, [](int frames, Timing *timing) { renderSteps(frames, timing); });
     return failures;
 }
 

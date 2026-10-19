@@ -160,8 +160,30 @@ void Container::handleInput(const Input &input)
 
 void Container::draw(DrawList &list, const Theme &theme) const
 {
-    for (const auto &child : children_)
+    // The area prims would be kept in: the clip in effect within the bounds. A child entirely
+    // outside it (a scrolled-out row, say) would only have its prims culled, so skip its draw
+    // and the layout work that comes with it. Children draw a little outside their rect (shadows,
+    // focus rings), hence the 32 px margin. An empty rect is always drawn: it may not be laid out.
+    float clip[4];
+    float bounds[4];
+    list.clip(clip);
+    list.bounds(bounds);
+    const float keepX0 = std::max(clip[0], bounds[0]);
+    const float keepY0 = std::max(clip[1], bounds[1]);
+    const float keepX1 = std::min(clip[2], bounds[2]);
+    const float keepY1 = std::min(clip[3], bounds[3]);
+    constexpr float margin = 32.0f;
+
+    for (const auto &child : children_) {
+        const Rect &r = child->rect();
+        if (r.w > 0.0f && r.h > 0.0f) {
+            const bool missed = r.x + r.w + margin <= keepX0 || r.x - margin >= keepX1 ||
+                                r.y + r.h + margin <= keepY0 || r.y - margin >= keepY1;
+            if (missed)
+                continue;
+        }
         child->draw(list, theme);
+    }
 }
 
 // Grid

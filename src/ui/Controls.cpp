@@ -464,6 +464,17 @@ void Knob::handleInput(const Input &input)
 
 void Knob::draw(DrawList &list, const Theme &theme) const
 {
+    // The value, the state, the size and the text the formatter gives (its function can't be
+    // hashed, so its output is what goes in)
+    Fingerprint key;
+    key.add(value_);
+    key.add(diameter_);
+    key.add(hovered_);
+    key.add(dragging_);
+    key.add(enabled_);
+    key.add(static_cast<bool>(format_));
+    key.add(format_ ? format_(value_) : std::string());
+    cache_.draw(list, theme, rect_, key.value(), [&] {
     const Rect r = square(rect_.center(), std::min(rect_.w, rect_.h));
     const Vec2 c = r.center();
     const float d = r.w;
@@ -497,6 +508,7 @@ void Knob::draw(DrawList &list, const Theme &theme) const
         list.add(theme.text(format_(value_), square(c, body * 0.6f), px, TextAlign::Center,
                             enabled_ ? theme.textColor() : theme.mutedTextColor()));
     }
+    });
 }
 
 // ProgressBar

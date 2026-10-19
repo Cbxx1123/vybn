@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "Component.h"
+#include "DrawCache.h"
 #include "Layout.h"
 
 namespace ui {
@@ -154,6 +155,7 @@ private:
     TextTone tone_ = TextTone::Primary;
     TextAlign align_ = TextAlign::Start;
     float wrapWidth_ = 0.0f;
+    ui::DrawCache cache_{"Label"}; // draw, while nothing it reads has changed
 };
 
 // A card that holds other components. Raised by default; Inset makes a well.

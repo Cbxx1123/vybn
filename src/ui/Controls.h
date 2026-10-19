@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "Component.h"
+#include "DrawCache.h"
 
 namespace ui {
 
@@ -146,6 +147,7 @@ private:
     bool dragging_ = false;
     float dragStartY_ = 0.0f;
     float dragStartValue_ = 0.0f;
+    ui::DrawCache cache_{"Knob"}; // draw, while nothing it reads has changed
 };
 
 // An inset track with an accent fill; not interactive

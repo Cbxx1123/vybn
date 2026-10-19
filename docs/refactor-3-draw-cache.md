@@ -167,3 +167,28 @@ Targets: build ms during playback down by at least 40% in `--demo transport` and
 Caching for composed components (the mixer's strips, track headers, device cards: their children
 draw themselves and have no key), off-screen layers (pixels kept on the GPU), skipping `update`
 entirely for quiet windows.
+
+## Results (19 October 2026)
+
+`VIBIN_FRAME_STATS=1`, main window, per frame:
+
+| | Before refactor 3 | After R3.1 | After R3.3 |
+|---|---|---|---|
+| transport (playing): update / layout / build | 0.24 / 0.32 / 0.71 ms | 0.08 / 0.17 / 0.64 ms | 0.08 / 0.15 / 0.41 ms |
+| pianoroll: build | 0.74 ms | 0.72 ms | 0.36 ms |
+| layout skipped in update | never | most frames | 100% of frames with the mouse still |
+| render self-test, 50 settled frames: synth / scroll (2,000 rows) | 1.35 / 14.5 ms | 1.24 / 14.5 ms | 0.53 / 3.43 ms |
+
+Targets met: build during playback down 42% (transport) and 51% (piano roll); update lays out on
+no frame while the mouse is still; 21 demos run with `VIBIN_VERIFY_CACHE=1` print nothing. Against
+the R0 baseline, a playing frame's CPU (update + build + submit) went from 1.79 ms to 0.50 ms.
+
+Decided in the Performance stage, from a profile of draw time per component class while playing
+(a temporary instrumented build): most of what was left after the views' caches was many small
+controls redrawn every frame (about 30 live labels, 39 M/S/R toggles, the knobs' rings of dots), so
+`Label`, `Knob` and `SmallToggle` got draw caches of their own (keyed by their text, value, hover and
+press state), which took the playing build from 0.64 ms to 0.41 ms. `Container::draw` skips children
+whose rect (grown by 32 px) misses the clip and bounds, which took the 2,000-row scroll view from
+14.5 ms to 3.4 ms (what remains is laying all the rows out each frame, out of scope here).
+Known gap: the verifier runs only see what demos exercise themselves; hover states are keyed but
+were not exercised by moving the mouse.

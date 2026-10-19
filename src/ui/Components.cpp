@@ -603,17 +603,31 @@ Vec2 Label::measure(const Theme &theme) const
 
 void Label::draw(DrawList &list, const Theme &theme) const
 {
-    const float px = fontSize(theme);
-    const float lineHeight = theme.font().lineHeight(px);
-    const Color color = enabled_ ? theme.textColor(tone_) : theme.mutedTextColor();
-    const std::vector<std::string> &all = lines(theme);
+    // What the lines derive from: the text, the size or style, the tone, alignment, enabled and
+    // the wrap and max widths (the lines and their metrics follow from them and the theme)
+    Fingerprint key;
+    key.add(text_);
+    key.add(size_);
+    key.add(style_.has_value());
+    key.add(style_.has_value() ? static_cast<int>(*style_) : -1);
+    key.add(tone_);
+    key.add(align_);
+    key.add(enabled_);
+    key.add(wrapWidth_);
+    key.add(maxWidth_);
+    cache_.draw(list, theme, rect_, key.value(), [&] {
+        const float px = fontSize(theme);
+        const float lineHeight = theme.font().lineHeight(px);
+        const Color color = enabled_ ? theme.textColor(tone_) : theme.mutedTextColor();
+        const std::vector<std::string> &all = lines(theme);
 
-    // Centre the block of lines vertically in the rect
-    float y = rect_.y + (rect_.h - lineHeight * all.size()) * 0.5f;
-    for (const std::string &line : all) {
-        list.add(theme.text(line, {rect_.x, y, rect_.w, lineHeight}, px, align_, color));
-        y += lineHeight;
-    }
+        // Centre the block of lines vertically in the rect
+        float y = rect_.y + (rect_.h - lineHeight * all.size()) * 0.5f;
+        for (const std::string &line : all) {
+            list.add(theme.text(line, {rect_.x, y, rect_.w, lineHeight}, px, align_, color));
+            y += lineHeight;
+        }
+    });
 }
 
 // Panel

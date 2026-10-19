@@ -756,6 +756,37 @@ void DawApp::buildMetrics(Container &body)
                format(",  %.0f KB", static_cast<double>(bytes) / 1024.0) +
                format(";  build %.2f ms", s.buildMs) + format(", submit %.2f ms", submitMs);
     });
+    // The draw caches in the last frame, and how often the layout was skipped over the last second
+    figure([this, shown = -1.0, frames = uint32_t(0), skipped = uint32_t(0), started = false,
+            since = std::chrono::steady_clock::time_point()]() mutable {
+        const ui::FrameStats &s = ui_.frameStats();
+        const auto now = std::chrono::steady_clock::now();
+        if (!started) {
+            started = true;
+            since = now;
+        }
+        ++frames;
+        if (s.layoutSkipped)
+            ++skipped;
+        if (std::chrono::duration<double>(now - since).count() >= 1.0) {
+            shown = 100.0 * skipped / frames;
+            frames = 0;
+            skipped = 0;
+            since = now;
+        }
+        const double share = shown >= 0.0 ? shown : 100.0 * skipped / frames;
+        // Thousands separators, as in "1,450"
+        std::string digits = std::to_string(s.cachedPrims), prims;
+        for (size_t i = 0; i < digits.size(); ++i) {
+            if (i > 0 && (digits.size() - i) % 3 == 0)
+                prims += ',';
+            prims += digits[i];
+        }
+        return "UI caches:  " + format("%.0f hit", static_cast<double>(s.cacheHits)) +
+               format(", %.0f missed", static_cast<double>(s.cacheMisses)) +
+               " (" + prims + " prims reused);" +
+               format(" layout skipped on %.0f%%", share) + " of frames";
+    });
 
     // A line per daemon (one line for all would widen the dialog)
     heading("Main loop, busy per frame");

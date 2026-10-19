@@ -7,6 +7,7 @@
 #include <functional>
 #include <string>
 
+#include "ui/DrawCache.h"
 #include "ui/UI.h"
 
 namespace daw {
@@ -33,6 +34,7 @@ private:
     std::function<void(bool)> set_;
     bool on_ = false;
     ui::ClickState click_;
+    ui::DrawCache cache_{"SmallToggle"}; // draw, while nothing it reads has changed
 };
 
 // A vertical mixing fader: an inset slot with an accent fill up to a raised cap, and dB marks

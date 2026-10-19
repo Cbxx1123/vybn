@@ -179,6 +179,7 @@ void UISystem::popOut(FloatingWindow &floating)
 constexpr uint32_t kSpareWidth = 160;
 constexpr uint32_t kSpareHeight = 120;
 
+
 void UISystem::prepareSpare()
 {
     if (env_.frame() < spareAfter_)
@@ -257,6 +258,11 @@ void UISystem::reportStats(double now)
     statsSum_.plots += frame.plots;
     statsSum_.plotValues += frame.plotValues;
     statsSum_.batches += frame.batches;
+    statsSum_.cacheHits += frame.cacheHits;
+    statsSum_.cacheMisses += frame.cacheMisses;
+    statsSum_.cachedPrims += frame.cachedPrims;
+    if (frame.layoutSkipped)
+        ++statsLayoutSkipped_;
     statsSum_.draws += frame.draws;
     statsSum_.pipelineBinds += frame.pipelineBinds;
     statsSum_.uploadBytes += frame.uploadBytes;
@@ -277,6 +283,7 @@ void UISystem::reportStats(double now)
     std::fprintf(stderr,
                  "FRAME %.1f/s presented %.1f/s | update %.2f ms (layout %.2f) build %.2f ms submit %.2f ms | "
                  "surfaces %u texts %u glyphs %u images %u lines %u plots %u (%zu values) batches %u | "
+                 "caches %u hit %u missed (%u prims reused), layout skipped %.0f%% | "
                  "draws %u binds %u upload %zu KB\n",
                  frames / elapsed, presented / elapsed, average(statsSum_.updateMs, frames),
                  average(statsSum_.layoutMs, frames), average(statsSum_.buildMs, frames),
@@ -285,12 +292,17 @@ void UISystem::reportStats(double now)
                  counted(average(statsSum_.glyphs, frames)), counted(average(statsSum_.images, frames)),
                  counted(average(statsSum_.lines, frames)), counted(average(statsSum_.plots, frames)),
                  static_cast<size_t>(average(static_cast<double>(statsSum_.plotValues), frames) + 0.5),
-                 counted(average(statsSum_.batches, frames)), counted(average(statsSum_.draws, presented)),
+                 counted(average(statsSum_.batches, frames)),
+                 counted(average(statsSum_.cacheHits, frames)), counted(average(statsSum_.cacheMisses, frames)),
+                 counted(average(statsSum_.cachedPrims, frames)),
+                 100.0 * average(static_cast<double>(statsLayoutSkipped_), frames),
+                 counted(average(statsSum_.draws, presented)),
                  counted(average(statsSum_.pipelineBinds, presented)),
                  static_cast<size_t>(average(static_cast<double>(statsSum_.uploadBytes), presented) / 1024.0 + 0.5));
     std::fflush(stderr);
 
     statsSum_ = FrameStats{};
+    statsLayoutSkipped_ = 0;
     statsFrames_ = 0;
     statsPresented_ = 0;
     statsStart_ = now;
