@@ -7,20 +7,25 @@
 //     location 0 vec4 inRect    x, y, w, h
 //     location 1 vec4 inClip    x0, y0, x1, y1 (whole pixels)
 //     location 2 vec4 inShape   Surface: radius, distance, blur, elevation + rim * 0.45; Glyph/Image: u0, v0, u1, v1;
-//                               Line: a.x, a.y, b.x, b.y (the ends, framebuffer pixels)
-//     location 3 vec4 inStyle   Surface: light direction x, y, curvature, form; Line: half the width, 0, 0, 0
+//                               Line: a.x, a.y, b.x, b.y (the ends, framebuffer pixels);
+//                               Plot: first (index of its first value in the plot data), count (pairs for Range), low, high
+//     location 3 vec4 inStyle   Surface: light direction x, y, curvature, form; Line: half the width, 0, 0, 0;
+//                               Plot: mode (0 Line, 1 Fill, 2 Range), half the width (Line) or barFraction (Range), baseline (Fill), 0
 //     location 4 uvec4 inColors (base, light, dark, kind), each colour packed red in the low byte to
 //                               alpha in the high byte (unpackUnorm4x8, sRGB):
-//                               base  Surface: colour and opacity; Glyph: colour and alpha; Image: opacity in alpha
+//                               base  Surface: colour and opacity; Glyph: colour and alpha; Image: opacity in alpha;
+//                                     Line and Plot: colour with the opacity in alpha
 //                               light Surface: light shadow rgb, intensity in alpha
 //                               dark  Surface: dark shadow rgb, intensity in alpha
 //                               kind  0 Surface, 1 Glyph, 2 Image, 3 Line, 4 Plot
 // - outputs to prim.frag (the agent may add more, all flat except vLocal and vUv):
 //     location 0 vec2 vLocal      Surface: pixel position relative to the rect's centre;
 //                                 Line: the clamped pixel position, absolute (framebuffer pixels);
+//                                 Plot: the clamped pixel position relative to the plot's top-left;
 //                                 Glyph/Image: 0
-//     location 1 vec2 vUv         Glyph/Image: atlas or image coordinates; Line: 0
-//     location 2 flat vec2 vHalfSize
+//     location 1 vec2 vUv         Glyph/Image: atlas or image coordinates; Line and Plot: 0
+//     location 2 flat vec2 vHalfSize  Surface, Glyph, Image, Line: half the rect's size;
+//                                 Plot: the plot's FULL size (rect.zw, not half)
 //     location 3 flat vec4 vShape
 //     location 4 flat vec4 vBase
 //     location 5 flat vec4 vLight
@@ -63,6 +68,11 @@ void main() {
         // 1px covers the anti-aliased edge.
         float margin = inShape.w < 0.5 ? inShape.y * 1.4143 + inShape.z + 1.0 : 1.0;
         pos = inRect.xy - margin + corner * (inRect.zw + 2.0 * margin);
+    } else if (kind == 4u) {
+        // Plots: a Line's quad grows by its half width plus 1 px (its line reaches past the rect),
+        // the other modes by 1 px for the anti-aliased edge
+        float margin = inStyle.x < 0.5 ? inStyle.y + 1.0 : 1.0;
+        pos = inRect.xy - margin + corner * (inRect.zw + 2.0 * margin);
     } else {
         // Glyphs, images and lines: the quad is the rect itself (a line's rect is its capsule's bounds)
         pos = mix(inRect.xy, inRect.xy + inRect.zw, corner);
@@ -79,12 +89,17 @@ void main() {
         // Lines: the clamped position itself, absolute, for the capsule distance in the fragment shader
         vLocal = pos;
         vUv = vec2(0.0);
+    } else if (kind == 4u) {
+        // Plots: the clamped position relative to the plot's top-left, for the fragment shader's values
+        vLocal = pos - inRect.xy;
+        vUv = vec2(0.0);
     } else {
         vLocal = vec2(0.0);
         vUv = mix(inShape.xy, inShape.zw, (pos - inRect.xy) / max(inRect.zw, vec2(1e-6)));
     }
 
-    vHalfSize = inRect.zw * 0.5;
+    // A plot's half size is its full size: its fragment shader works in the plot's own pixels
+    vHalfSize = kind == 4u ? inRect.zw : inRect.zw * 0.5;
     vShape = inShape;
     vBase = unpackUnorm4x8(inColors.x);
     vLight = unpackUnorm4x8(inColors.y);

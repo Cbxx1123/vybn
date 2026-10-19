@@ -5,12 +5,13 @@
 
 #include <vulkan/vulkan.h>
 
+#include "Buffer.h"
 #include "Texture.h"
 
 namespace engine {
 
 struct DescriptorBinding {
-    VkDescriptorType type;     // e.g. VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+    VkDescriptorType type;     // VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER or VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
     VkShaderStageFlags stages; // binding number is its index in the layout
 };
 
@@ -43,6 +44,9 @@ public:
     void writeTexture(uint32_t binding, const Texture &texture);
     // Points `binding` at a live texture (GENERAL layout)
     void writeTexture(uint32_t binding, const LiveTexture &texture);
+    // Points `binding` (a storage buffer) at the whole of `buffer` (made with
+    // VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
+    void writeBuffer(uint32_t binding, const Buffer &buffer);
 
     VkDescriptorSet handle() const { return set_; }
 
@@ -51,11 +55,12 @@ private:
     VkDescriptorSet set_ = VK_NULL_HANDLE;
 };
 
-// Room for `maxSets` sets holding up to `maxTextures` combined image samplers between them.
+// Room for `maxSets` sets holding up to `maxTextures` combined image samplers and `maxBuffers`
+// storage buffers between them.
 // Must be destroyed before its Renderer, and outlives the sets allocated from it.
 class DescriptorPool {
 public:
-    DescriptorPool(VkDevice device, uint32_t maxSets, uint32_t maxTextures);
+    DescriptorPool(VkDevice device, uint32_t maxSets, uint32_t maxTextures, uint32_t maxBuffers = 0);
     ~DescriptorPool();
 
     DescriptorPool(const DescriptorPool &) = delete;

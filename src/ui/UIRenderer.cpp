@@ -9,6 +9,7 @@ namespace ui {
 namespace {
 
 constexpr VkDeviceSize kInitialPrimCapacity = 1024 * sizeof(Prim);
+constexpr VkDeviceSize kInitialPlotCapacity = 16384 * sizeof(float);
 
 // The picture set 1 shows when no image is drawn: one transparent pixel
 const uint8_t kBlankPixel[4] = {0, 0, 0, 0};
@@ -31,13 +32,13 @@ engine::VertexLayout primLayout()
     return layout;
 }
 
-// Set 0 is the atlas and set 1 the image; both are one combined image sampler, so one layout does
-engine::PipelineOptions pipelineOptions(const engine::DescriptorSetLayout &samplerLayout)
+// Set 0 is the atlas and the plot data, set 1 the image
+engine::PipelineOptions pipelineOptions(const engine::DescriptorSetLayout &set0, const engine::DescriptorSetLayout &image)
 {
     engine::PipelineOptions options;
     options.alphaBlending = true;
     options.pushConstantSize = 2 * sizeof(float); // screen size
-    options.descriptorSetLayouts = {&samplerLayout, &samplerLayout};
+    options.descriptorSetLayouts = {&set0, &image};
     return options;
 }
 
@@ -52,6 +53,20 @@ void upload(engine::Renderer &renderer, engine::Buffer &buffer, const std::vecto
     if (bytes > buffer.capacity())
         buffer = renderer.createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, bytes * 2);
     buffer.write(items.data(), bytes, static_cast<uint32_t>(items.size()));
+}
+
+// The same for a frame's plot data, a storage buffer that its set 0 points at (binding 1). A
+// bigger buffer is pointed at by this frame's set at once. There is always room for one float,
+// since an empty storage range is invalid.
+void uploadPlots(engine::Renderer &renderer, engine::Buffer &buffer, engine::DescriptorSet &set, const std::vector<float> &values)
+{
+    const VkDeviceSize bytes = std::max<size_t>(values.size(), 1) * sizeof(float);
+    if (bytes > buffer.capacity()) {
+        buffer = renderer.createBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, bytes * 2);
+        set.writeBuffer(1, buffer);
+    }
+    if (!values.empty())
+        buffer.write(values.data(), values.size() * sizeof(float), static_cast<uint32_t>(values.size()));
 }
 
 using Clock = std::chrono::steady_clock;
@@ -71,11 +86,14 @@ struct UIRenderer::Shared {
     VkFormat format;
     const Font *font;
 
-    // Set 0 of the prim pipeline is the atlas, and set 1 the image; both sets use the same layout
+    // The atlas, shared by every window's set 0 (which points at it per window)
     engine::Texture atlas;
-    engine::DescriptorSetLayout atlasLayout;
+    // Set 0 of the prim pipeline: the atlas at binding 0, the plot data (a storage buffer) at 1
+    engine::DescriptorSetLayout set0Layout;
+    // Set 1: the image, one combined image sampler
+    engine::DescriptorSetLayout imageLayout;
+    // Holds the blank image's set
     engine::DescriptorPool descriptorPool;
-    engine::DescriptorSet atlasSet;
 
     // Set 1 when no image is drawn, so it is always bound to something
     engine::Texture blank;
@@ -90,16 +108,16 @@ struct UIRenderer::Shared {
           format(renderer.format()),
           font(&f),
           atlas(renderer.createTexture(f.atlasWidth(), f.atlasHeight(), VK_FORMAT_R8_UNORM, f.atlas().data(), f.atlas().size())),
-          atlasLayout(renderer.createDescriptorSetLayout({{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT}})),
-          descriptorPool(renderer.createDescriptorPool(2, 2)),
-          atlasSet(descriptorPool.allocate(atlasLayout)),
+          set0Layout(renderer.createDescriptorSetLayout({{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT},
+                                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT}})),
+          imageLayout(renderer.createDescriptorSetLayout({{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT}})),
+          descriptorPool(renderer.createDescriptorPool(1, 1)),
           blank(renderer.createTexture(1, 1, VK_FORMAT_B8G8R8A8_UNORM, kBlankPixel, sizeof(kBlankPixel))),
-          blankSet(descriptorPool.allocate(atlasLayout)),
+          blankSet(descriptorPool.allocate(imageLayout)),
           primVertex(renderer.createShader("prim.vert.spv", engine::ShaderStage::Vertex)),
           primFragment(renderer.createShader("prim.frag.spv", engine::ShaderStage::Fragment)),
-          primPipeline(renderer.createPipeline(primVertex, primFragment, primLayout(), pipelineOptions(atlasLayout)))
+          primPipeline(renderer.createPipeline(primVertex, primFragment, primLayout(), pipelineOptions(set0Layout, imageLayout)))
     {
-        atlasSet.writeTexture(0, atlas);
         blankSet.writeTexture(0, blank);
     }
 };
@@ -128,6 +146,18 @@ UIRenderer::UIRenderer(engine::Renderer &renderer, const Font &font)
     primBuffers_.reserve(engine::Renderer::kMaxFramesInFlight);
     for (uint32_t i = 0; i < engine::Renderer::kMaxFramesInFlight; ++i)
         primBuffers_.push_back(renderer.createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, kInitialPrimCapacity));
+
+    // One set 0 per frame in flight: the atlas, and that frame's plot data buffer
+    const uint32_t frames = engine::Renderer::kMaxFramesInFlight;
+    set0Pool_ = std::make_unique<engine::DescriptorPool>(renderer.device(), frames, frames, frames);
+    set0Sets_.reserve(frames);
+    plotBuffers_.reserve(frames);
+    for (uint32_t i = 0; i < frames; ++i) {
+        set0Sets_.push_back(set0Pool_->allocate(shared_->set0Layout));
+        set0Sets_.back().writeTexture(0, shared_->atlas);
+        plotBuffers_.push_back(renderer.createBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, kInitialPlotCapacity));
+        set0Sets_.back().writeBuffer(1, plotBuffers_.back());
+    }
 }
 
 void UIRenderer::render(const DrawList &list)
@@ -158,16 +188,20 @@ void UIRenderer::render(const DrawList &list)
     upload(renderer_, primBuffer, prims);
     stats_.uploadBytes = prims.size() * sizeof(Prim);
 
-    // Second pass: the pipeline once, with the atlas at set 0 and the blank picture at set 1. Each
-    // maximal run of non-image prims is one draw; each image is a draw of its own with its picture
-    // at set 1. The clips are in the prims, so there are no scissors.
+    const std::vector<float> &plots = list.plotData();
+    uploadPlots(renderer_, plotBuffers_[frame], set0Sets_[frame], plots);
+    stats_.uploadBytes += plots.size() * sizeof(float);
+
+    // Second pass: the pipeline once, with this frame's set 0 (the atlas and the plot data) and the
+    // blank picture at set 1. Each maximal run of non-image prims is one draw; each image is a draw
+    // of its own with its picture at set 1. The clips are in the prims, so there are no scissors.
     const VkExtent2D extent = renderer_.extent();
     const float screen[2] = {static_cast<float>(extent.width), static_cast<float>(extent.height)};
     const engine::Pipeline &pipeline = shared_->primPipeline;
     renderer_.bind(pipeline);
     ++stats_.pipelineBinds;
     renderer_.pushConstants(pipeline, screen, sizeof(screen));
-    renderer_.bindDescriptorSet(pipeline, shared_->atlasSet, 0);
+    renderer_.bindDescriptorSet(pipeline, set0Sets_[frame], 0);
     renderer_.bindDescriptorSet(pipeline, shared_->blankSet, 1);
 
     const uint32_t count = static_cast<uint32_t>(prims.size());
@@ -215,7 +249,7 @@ const engine::DescriptorSet *UIRenderer::liveImage(const ImageData &image, uint3
         live.pool = std::make_unique<engine::DescriptorPool>(renderer_.device(), engine::Renderer::kMaxFramesInFlight,
                                                              engine::Renderer::kMaxFramesInFlight);
         for (uint32_t i = 0; i < engine::Renderer::kMaxFramesInFlight; ++i) {
-            live.sets.push_back(live.pool->allocate(shared_->atlasLayout));
+            live.sets.push_back(live.pool->allocate(shared_->imageLayout));
             live.sets.back().writeTexture(0, live.textures[i]);
         }
         live.versions.assign(engine::Renderer::kMaxFramesInFlight, ~0ull);

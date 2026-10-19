@@ -38,6 +38,12 @@ public:
     // A line through `count` points, one Line prim per segment, each with `style`'s width, colour
     // and opacity (style.a and style.b are ignored); fewer than two points add nothing
     void addPolyline(const Vec2 *points, size_t count, const Line &style);
+    // A plot, one prim; its values are copied into plotData(). Nothing is added for fewer than 2
+    // values (1 for Range) or a null `values`.
+    void add(const Plot &plot);
+    // Every plot's values in the order added (each Range's as low, high pairs), which the
+    // renderer uploads into the shaders' storage buffer
+    const std::vector<float> &plotData() const { return plotData_; }
 
     // Clips everything added until the matching popClip to `rect`, intersected with any clip
     // already in effect. Shadows are clipped too.
@@ -65,6 +71,7 @@ public:
         uint32_t glyphs = 0;
         uint32_t images = 0;
         uint32_t lines = 0; // Line prims added
+        uint32_t plots = 0; // Plot prims added
     };
     const Counts &counts() const { return counts_; }
 
@@ -83,6 +90,7 @@ private:
     const Font *font_ = nullptr;
     std::vector<Prim> prims_;
     std::vector<ImageRef> images_;
+    std::vector<float> plotData_;
     std::vector<Clip> clipped_;
     Counts counts_;
     float noClip_[4] = {-kNoClip, -kNoClip, kNoClip, kNoClip};
@@ -149,7 +157,7 @@ private:
     uint64_t hash_;
 };
 
-// What a frame draws: the number of prims, every prim's bytes in order (Prim has no padding that
+// What a frame draws: the number of prims, every prim's bytes in order, the plot data (Prim has no padding that
 // isn't zeroed: pad is always 0), then each image's id and version (its pixels stay the same until
 // its owner bumps the version). Two frames with the same fingerprint draw the same picture, so the
 // second need not be presented. `start` mixes in anything else the frame depends on (the clear

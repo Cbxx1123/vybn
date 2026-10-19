@@ -78,6 +78,31 @@ struct Line {
     float opacity = 1.0f;
 };
 
+// How a Plot draws its values
+enum class PlotMode {
+    Line,  // the values evenly spaced across the rect (the first at its left edge, the last at its
+           // right), joined by a line `width` pixels thick
+    Fill,  // the area between that curve and `baseline`
+    Range, // `count` columns of a low and a high value (a waveform's min and max), each
+           // rect.w / count wide, the bar `barFraction` of it, centred
+};
+
+// A curve, filled curve or waveform drawn from values in one primitive. The values are copied when
+// it is added to a DrawList, so `values` only needs to live through that call.
+struct Plot {
+    Rect rect;
+    PlotMode mode = PlotMode::Line;
+    const float *values = nullptr; // `count` values; Range: `count` pairs (low, high), 2 x count floats
+    uint32_t count = 0;
+    float low = -1.0f;      // the value at the rect's bottom
+    float high = 1.0f;      // the value at the rect's top
+    float baseline = 0.0f;  // Fill: filled between the curve and this value
+    float width = 2.0f;     // Line: the stroke's width in pixels
+    float barFraction = 1.0f; // Range: the share of each column its bar fills
+    Color color;
+    float opacity = 1.0f;
+};
+
 // Styling layer. The only place visual values live, and it is strictly neumorphic:
 // - every surface shares the background colour; depth comes from shadows alone
 // - shadow and text colours are derived from the base colour, never set directly
@@ -152,6 +177,10 @@ public:
     // Strokes in a text colour (`tone`) or the accent, for curves, guides and graphs
     Line inkLine(Vec2 a, Vec2 b, float width, TextTone tone = TextTone::Primary, float opacity = 1.0f) const;
     Line accentLine(Vec2 a, Vec2 b, float width, float opacity = 1.0f) const;
+    // A plot in a text colour or the accent (colour and opacity set as ink and accent do); the
+    // caller sets values, count, low, high and the mode's fields
+    Plot inkPlot(const Rect &rect, PlotMode mode, TextTone tone = TextTone::Secondary, float opacity = 1.0f) const;
+    Plot accentPlot(const Rect &rect, PlotMode mode, float opacity = 1.0f) const;
 
     // Typography. Text is the base hue pushed toward the shadow side (darker on light themes,
     // lighter on dark ones): low contrast, as neumorphism expects, but readable.

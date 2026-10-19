@@ -15,10 +15,11 @@ namespace ui {
 // Draws a DrawList's prims in order with one pipeline (shaders/prim.vert and prim.frag) for every
 // kind: surfaces, glyphs and images. Each maximal run of surfaces and glyphs is one instanced draw,
 // and each image is a draw of its own. Set 0 of the pipeline is the font atlas, set 1 the image
-// being drawn (a blank one when none is). Each prim is clipped in the shader, so there are no
-// scissors. Its shaders, pipeline and the atlas's texture are shared by every UIRenderer on the
-// same device and font, so another window costs only its buffers. Must be destroyed before the
-// engine::Renderer; `font` must outlive it.
+// being drawn (a blank one when none is). Set 0 is per window and per frame in flight: the atlas
+// at binding 0 and the plot data (a storage buffer) at binding 1. Each prim is clipped in the
+// shader, so there are no scissors. Its shaders, pipeline and the atlas's texture are shared by
+// every UIRenderer on the same device and font, so another window costs only its buffers. Must be
+// destroyed before the engine::Renderer; `font` must outlive it.
 class UIRenderer {
 public:
     UIRenderer(engine::Renderer &renderer, const Font &font);
@@ -40,6 +41,13 @@ private:
 
     // One per frame in flight: the frame's prims, every kind
     std::vector<engine::Buffer> primBuffers_;
+
+    // Set 0 per frame in flight: the atlas at binding 0 and that frame's plot data at binding 1. The
+    // pool holds one of each per frame in flight; a frame's set is rewritten when its buffer grows.
+    std::unique_ptr<engine::DescriptorPool> set0Pool_;
+    std::vector<engine::DescriptorSet> set0Sets_;
+    // One plot data buffer per frame in flight (storage buffers), grown on demand
+    std::vector<engine::Buffer> plotBuffers_;
 
     // The image sets of the frame being drawn, one per image in prim order; cleared and reused each
     // frame so render allocates nothing once it has grown

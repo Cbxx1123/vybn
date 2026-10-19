@@ -382,6 +382,9 @@ uint64_t Context::buildFrame()
     stats_.texts = counts.texts;
     stats_.glyphs = counts.glyphs;
     stats_.images = counts.images;
+    stats_.lines = counts.lines;
+    stats_.plots = counts.plots;
+    stats_.plotValues = drawList_.plotData().size();
     stats_.batches = 0; // batches are gone: the list is drawn as runs of prims
 
     // The clear colour is part of the picture too (update sets it from the theme)

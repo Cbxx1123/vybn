@@ -24,6 +24,9 @@ struct FrameStats {
     uint32_t texts = 0;
     uint32_t glyphs = 0; // text is laid out as it is added, one prim per glyph
     uint32_t images = 0;
+    uint32_t lines = 0;
+    uint32_t plots = 0;
+    size_t plotValues = 0; // floats of plot data
     uint32_t batches = 0; // always 0 since the unified pipeline (no batches); kept for old readers
 
     // What the last submit recorded

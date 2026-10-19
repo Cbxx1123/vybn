@@ -1,5 +1,5 @@
-// Scenes, each described in RenderSelfTest.h: shapes, shapes-dark, text, clips, image, lines, controls,
-// arrangement, pianoroll, steps, scroll (a 2000-row ScrollView, to show culling at work) and synth.
+// Scenes, each described in RenderSelfTest.h: shapes, shapes-dark, text, clips, image, lines, plots,
+// controls, arrangement, pianoroll, steps, scroll (a 2000-row ScrollView, to show culling at work) and synth.
 // The synth scene is also timed over 50 settled frames (an INFO line after the scenes).
 #include "RenderSelfTest.h"
 
@@ -574,6 +574,116 @@ Picture sceneLines()
     return renderPicture(640, 480, daw::studioTheme(true), [](ui::Context &context) { paintOverlay(context, paintLines); });
 }
 
+// Seeded noise in 0 to 1, the same every run (a linear congruential generator)
+float seededNoise(uint32_t &state)
+{
+    state = state * 1664525u + 1013904223u;
+    return static_cast<float>(state >> 8) / 16777216.0f;
+}
+
+Picture scenePlots()
+{
+    const float pi = 3.14159265f;
+
+    // A sine of two cycles, 128 values
+    std::vector<float> sine(128);
+    for (size_t i = 0; i < sine.size(); ++i)
+        sine[i] = std::sin(static_cast<float>(i) / 127.0f * 2.0f * 2.0f * pi);
+
+    // A decaying envelope, 64 values from 1 down to near 0
+    std::vector<float> envelope(64);
+    for (size_t i = 0; i < envelope.size(); ++i)
+        envelope[i] = std::exp(-4.0f * static_cast<float>(i) / 63.0f);
+
+    // A waveform: 300 columns of seeded noise shaped by a swelling envelope, as low and high pairs
+    std::vector<float> waveform(600);
+    uint32_t seed = 2026;
+    for (size_t column = 0; column < 300; ++column) {
+        const float shape = std::sin(pi * static_cast<float>(column) / 299.0f);
+        const float amplitude = shape * (0.15f + 0.85f * seededNoise(seed));
+        waveform[2 * column] = -amplitude * (0.6f + 0.4f * seededNoise(seed));     // low
+        waveform[2 * column + 1] = amplitude * (0.6f + 0.4f * seededNoise(seed)); // high
+    }
+
+    // A fast sine plus a slow one, 4096 values
+    std::vector<float> dense(4096);
+    for (size_t i = 0; i < dense.size(); ++i) {
+        const float t = static_cast<float>(i) / 4095.0f;
+        dense[i] = 0.6f * std::sin(2.0f * pi * 40.0f * t) + 0.4f * std::sin(2.0f * pi * 3.0f * t);
+    }
+
+    // A sine of one and a half cycles, 48 values, cut by a clip
+    std::vector<float> cut(48);
+    for (size_t i = 0; i < cut.size(); ++i)
+        cut[i] = 0.8f * std::sin(2.0f * pi * 3.0f * static_cast<float>(i) / 47.0f);
+
+    // Two values: a straight line from low left to high right
+    const float straight[2] = {0.2f, 0.8f};
+
+    return renderPicture(640, 480, daw::studioTheme(true), [&](ui::Context &context) {
+        paintOverlay(context, [&](ui::DrawList &list, const ui::Theme &theme, const ui::Rect &) {
+            // The sine: a Line in the accent, over a Fill of the same values to the middle
+            ui::Plot fill = theme.accentPlot(box(20, 30, 600, 120), ui::PlotMode::Fill, 0.15f);
+            fill.values = sine.data();
+            fill.count = static_cast<uint32_t>(sine.size());
+            fill.low = -1.0f;
+            fill.high = 1.0f;
+            fill.baseline = 0.0f;
+            list.add(fill);
+            ui::Plot sineLine = theme.accentPlot(box(20, 30, 600, 120), ui::PlotMode::Line);
+            sineLine.values = sine.data();
+            sineLine.count = static_cast<uint32_t>(sine.size());
+            sineLine.width = 2.0f;
+            list.add(sineLine);
+
+            // The envelope: a Fill down to the bottom, faint, under an ink Line
+            ui::Plot envFill = theme.inkPlot(box(20, 170, 290, 90), ui::PlotMode::Fill, ui::TextTone::Secondary, 0.2f);
+            envFill.values = envelope.data();
+            envFill.count = static_cast<uint32_t>(envelope.size());
+            envFill.low = 0.0f;
+            envFill.high = 1.0f;
+            envFill.baseline = 0.0f; // the bottom
+            list.add(envFill);
+            ui::Plot envLine = theme.inkPlot(box(20, 170, 290, 90), ui::PlotMode::Line, ui::TextTone::Primary);
+            envLine.values = envelope.data();
+            envLine.count = static_cast<uint32_t>(envelope.size());
+            envLine.low = 0.0f;
+            envLine.high = 1.0f;
+            list.add(envLine);
+
+            // The waveform: a Range of 300 columns, bars three quarters of their width
+            ui::Plot wave = theme.inkPlot(box(20, 290, 600, 100), ui::PlotMode::Range, ui::TextTone::Secondary);
+            wave.values = waveform.data();
+            wave.count = 300;
+            wave.barFraction = 0.75f;
+            list.add(wave);
+
+            // 4096 values in 300 px
+            ui::Plot denseLine = theme.accentPlot(box(330, 170, 300, 90), ui::PlotMode::Line);
+            denseLine.values = dense.data();
+            denseLine.count = static_cast<uint32_t>(dense.size());
+            denseLine.width = 1.5f;
+            list.add(denseLine);
+
+            // A Line cut short by its clip
+            list.pushClip(box(20, 400, 200, 60));
+            ui::Plot clipped = theme.accentPlot(box(20, 400, 400, 60), ui::PlotMode::Line);
+            clipped.values = cut.data();
+            clipped.count = static_cast<uint32_t>(cut.size());
+            list.add(clipped);
+            list.popClip();
+
+            // Two values: a straight line
+            ui::Plot straightLine = theme.inkPlot(box(440, 400, 180, 60), ui::PlotMode::Line, ui::TextTone::Primary);
+            straightLine.values = straight;
+            straightLine.count = 2;
+            straightLine.low = 0.0f;
+            straightLine.high = 1.0f;
+            list.add(straightLine);
+        });
+    });
+}
+
 // ---- scenes: component trees ----
 
 void buildControls(ui::Context &context)
@@ -800,7 +910,7 @@ std::string describeColor(uint32_t packed)
     return describe(values, 4);
 }
 
-// One letter a prim: S surface, G glyph, I image, L line, in drawing order
+// One letter a prim: S surface, G glyph, I image, L line, P plot, in drawing order
 std::string kindsOf(const ui::DrawList &list)
 {
     std::string s;
@@ -810,6 +920,7 @@ std::string kindsOf(const ui::DrawList &list)
         case ui::PrimKind::Glyph: s += 'G'; break;
         case ui::PrimKind::Image: s += 'I'; break;
         case ui::PrimKind::Line: s += 'L'; break;
+        case ui::PrimKind::Plot: s += 'P'; break;
         default: s += '?'; break;
         }
     }
@@ -1150,6 +1261,149 @@ void primChecks(Checker &c)
         c.check(nearRgb(p.base, accent.r, accent.g, accent.b) && nearValue(ui::unpackColor(p.base).a, 1.0f),
                 "accentLine is the theme's accent", describeColor(p.base));
     }
+
+    // Plots: the prim packs the first value, count, low and high in shape; mode, half the width (Line) or
+    // the bar fraction (Range) and the baseline in style; the colour with the opacity as alpha
+    {
+        const float values[4] = {0.0f, 1.0f, -1.0f, 0.5f};
+        ui::Plot plot;
+        plot.rect = box(10, 20, 100, 40);
+        plot.mode = ui::PlotMode::Line;
+        plot.values = values;
+        plot.count = 4;
+        plot.low = -2.0f;
+        plot.high = 3.0f;
+        plot.width = 4.0f;
+        plot.color = ui::Color{0.2f, 0.4f, 0.6f, 1.0f};
+        plot.opacity = 0.5f;
+        const float plotClip[4] = {5, 5, 200, 200};
+        const ui::Prim p = ui::plotPrim(plot, 7, plotClip);
+
+        c.check(p.kind == static_cast<uint32_t>(ui::PrimKind::Plot) && near(p.rect[0], 10) && near(p.rect[1], 20) &&
+                    near(p.rect[2], 100) && near(p.rect[3], 40),
+                "A plot prim has its kind and rect", describe(p.rect, 4));
+        c.check(near(p.shape[0], 7) && near(p.shape[1], 4) && near(p.shape[2], -2) && near(p.shape[3], 3),
+                "A plot's shape holds its first value, count, low and high", describe(p.shape, 4));
+        c.check(near(p.style[0], 0) && near(p.style[1], 2), "A Line plot's style holds mode 0 and half its width",
+                describe(p.style, 4));
+        c.check(isClip(p.clip, 5, 5, 200, 200), "A plot prim carries the clip it was given", describe(p.clip, 4));
+        c.check(nearRgb(p.base, 0.2f, 0.4f, 0.6f) && nearValue(ui::unpackColor(p.base).a, 0.5f),
+                "A plot's colour is in base, with its opacity as alpha", describeColor(p.base));
+
+        plot.mode = ui::PlotMode::Fill;
+        plot.baseline = 0.25f;
+        const ui::Prim fill = ui::plotPrim(plot, 0, plotClip);
+        c.check(near(fill.style[0], 1) && near(fill.style[2], 0.25f), "A Fill plot's style holds mode 1 and its baseline",
+                describe(fill.style, 4));
+
+        plot.mode = ui::PlotMode::Range;
+        plot.count = 3; // pairs
+        plot.barFraction = 0.75f;
+        const ui::Prim range = ui::plotPrim(plot, 0, plotClip);
+        c.check(near(range.style[0], 2) && near(range.style[1], 0.75f) && near(range.shape[1], 3),
+                "A Range plot's style holds mode 2 and its bar fraction, its count in pairs", describe(range.style, 4));
+    }
+    {
+        // add(Plot) copies the values into the plot data and counts one plot
+        const float values[4] = {0.25f, 0.5f, 0.75f, 1.0f};
+        ui::Plot plot;
+        plot.rect = box(10, 10, 100, 40);
+        plot.values = values;
+        plot.count = 4;
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        list.add(plot);
+        bool copied = list.plotData().size() == 4;
+        for (size_t i = 0; copied && i < 4; ++i)
+            copied = near(list.plotData()[i], values[i]);
+        c.check(kindsOf(list) == "P" && list.counts().plots == 1 && copied,
+                "A Line plot adds one prim, counts one plot and copies its values", kindsOf(list));
+
+        ui::DrawList ranged;
+        ranged.setFont(&theme.font());
+        plot.mode = ui::PlotMode::Range;
+        plot.count = 3; // three pairs: six floats
+        ranged.add(plot);
+        c.check(ranged.plotData().size() == 6 && kindsOf(ranged) == "P",
+                "A Range plot copies 2 x count values", std::to_string(ranged.plotData().size()));
+    }
+    {
+        // Nothing for a null values pointer, nor for a one-value Line
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        ui::Plot plot;
+        plot.rect = box(10, 10, 100, 40);
+        plot.count = 4;
+        list.add(plot); // values null
+        const float one[1] = {0.5f};
+        plot.values = one;
+        plot.count = 1;
+        plot.mode = ui::PlotMode::Line;
+        list.add(plot);
+        c.check(list.empty() && list.plotData().empty() && list.counts().plots == 0,
+                "A plot with null values, or one Line value, adds nothing");
+    }
+    {
+        // A plot outside its clip adds no prim and no data
+        const float values[3] = {0.1f, 0.2f, 0.3f};
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        ui::Plot plot;
+        plot.rect = box(200, 200, 100, 40);
+        plot.values = values;
+        plot.count = 3;
+        list.pushClip(box(0, 0, 50, 50));
+        list.add(plot);
+        list.popClip();
+        c.check(list.empty() && list.plotData().empty() && list.counts().plots == 0,
+                "A plot outside its clip adds no prim and no data");
+    }
+    {
+        // Two plots in a row: the second's first value follows the first's values
+        const float first[4] = {0.0f, 0.1f, 0.2f, 0.3f};
+        const float second[3] = {0.9f, 0.8f, 0.7f};
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        ui::Plot plot;
+        plot.rect = box(10, 10, 100, 40);
+        plot.values = first;
+        plot.count = 4;
+        list.add(plot);
+        plot.values = second;
+        plot.count = 3;
+        list.add(plot);
+        c.check(kindsOf(list) == "PP" && list.prims().size() == 2 && near(list.prims()[1].shape[0], 4) &&
+                    list.plotData().size() == 7 && list.counts().plots == 2,
+                "The second plot starts at the first's count in the plot data",
+                list.prims().size() == 2 ? describe(list.prims()[1].shape, 4) : kindsOf(list));
+    }
+    {
+        // The fingerprint sees one changed plot value; clear empties the plot data
+        const float a[4] = {0.0f, 0.5f, 1.0f, 0.5f};
+        const float b[4] = {0.0f, 0.5f, 0.9f, 0.5f};
+        auto make = [&](const float *values) {
+            ui::DrawList list;
+            list.setFont(&theme.font());
+            ui::Plot plot;
+            plot.rect = box(10, 10, 100, 40);
+            plot.values = values;
+            plot.count = 4;
+            list.add(plot);
+            return ui::fingerprint(list);
+        };
+        c.check(make(a) == make(a) && make(a) != make(b), "The fingerprint changes when one plot value changes");
+
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        ui::Plot plot;
+        plot.rect = box(10, 10, 100, 40);
+        plot.values = a;
+        plot.count = 4;
+        list.add(plot);
+        list.clear();
+        c.check(list.plotData().empty() && list.empty() && list.counts().plots == 0,
+                "clear empties the plot data and the plot count");
+    }
     std::printf("\n");
 }
 
@@ -1167,6 +1421,7 @@ const SceneEntry kScenes[] = {
     {"clips", sceneClips},
     {"image", sceneImage},
     {"lines", sceneLines},
+    {"plots", scenePlots},
     {"controls", sceneControls},
     {"arrangement", sceneArrangement},
     {"pianoroll", scenePianoRoll},
@@ -1238,9 +1493,9 @@ int checkScene(const std::string &name, Picture (*render)(), bool update, std::v
 
 void printInfo(const std::string &name, const ui::FrameStats &s)
 {
-    std::printf("INFO render %s: build %.2f ms, %u surfaces, %u texts, %u glyphs, %u prims, %u draws, %zu KB, submit %.2f ms\n",
-                name.c_str(), s.buildMs, s.surfaces, s.texts, s.glyphs, s.surfaces + s.glyphs + s.images, s.draws,
-                s.uploadBytes / 1024, s.submitMs);
+    std::printf("INFO render %s: build %.2f ms, %u surfaces, %u texts, %u glyphs, %u prims, %u draws, %zu KB, submit %.2f ms, %zu plot values\n",
+                name.c_str(), s.buildMs, s.surfaces, s.texts, s.glyphs, s.surfaces + s.glyphs + s.images + s.lines + s.plots,
+                s.draws, s.uploadBytes / 1024, s.submitMs, s.plotValues);
 }
 
 } // namespace

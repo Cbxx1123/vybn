@@ -65,6 +65,39 @@ void glyphPrims(const Font &font, const Text &text, const float clip[4], std::ve
     }
 }
 
+Prim plotPrim(const Plot &plot, uint32_t first, const float clip[4])
+{
+    Prim p{}; // zeroed, pad included
+    p.rect[0] = plot.rect.x;
+    p.rect[1] = plot.rect.y;
+    p.rect[2] = plot.rect.w;
+    p.rect[3] = plot.rect.h;
+    std::memcpy(p.clip, clip, sizeof p.clip);
+    p.shape[0] = static_cast<float>(first);
+    p.shape[1] = static_cast<float>(plot.count);
+    p.shape[2] = plot.low;
+    p.shape[3] = plot.high;
+    switch (plot.mode) {
+    case PlotMode::Line:
+        p.style[0] = 0.0f;
+        p.style[1] = std::max(0.5f, plot.width * 0.5f);
+        break;
+    case PlotMode::Fill:
+        p.style[0] = 1.0f;
+        p.style[1] = 0.0f;
+        break;
+    case PlotMode::Range:
+        p.style[0] = 2.0f;
+        p.style[1] = plot.barFraction;
+        break;
+    }
+    p.style[2] = plot.baseline;
+    p.style[3] = 0.0f;
+    p.base = packColor(plot.color.r, plot.color.g, plot.color.b, plot.opacity);
+    p.kind = static_cast<uint32_t>(PrimKind::Plot);
+    return p;
+}
+
 Prim imagePrim(const ImageDraw &image, const float clip[4])
 {
     Prim p{};

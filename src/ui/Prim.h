@@ -17,8 +17,7 @@ struct ImageDraw {
     float opacity = 1.0f;
 };
 
-// What a Prim draws. The values are the shader's encoding (shaders/prim.frag); Plot is for plots
-// (refactor 2's Extension) and not drawn yet.
+// What a Prim draws. The values are the shader's encoding (shaders/prim.frag).
 enum class PrimKind : uint32_t { Surface = 0, Glyph = 1, Image = 2, Line = 3, Plot = 4 };
 
 // The clip of a prim drawn with no clip: the whole plane
@@ -48,10 +47,12 @@ struct Prim {
     float clip[4];  // 1: x0, y0, x1, y1 in whole pixels; nothing outside is drawn
     float shape[4]; // 2: Surface: radius, shadow distance, blur, elevation (0 raised, 1 flat,
                     //    2 inset) + rim * 0.45. Glyph, Image: u0, v0, u1, v1. Line: a.x, a.y,
-                    //    b.x, b.y (framebuffer pixels)
+                    //    b.x, b.y (framebuffer pixels). Plot: the index of its first value in
+                    //    the plot data, its count (pairs for Range), low, high
     float style[4]; // 3: Surface: light direction x, y (unit, y down), curvature, form (0 rounded
                     //    rect, 1 triangle right, 2 triangle left, 3 cross, 4 triangle down, 5 up).
-                    //    Line: half the width, 0, 0, 0
+                    //    Line: half the width, 0, 0, 0. Plot: mode (0 Line, 1 Fill, 2 Range),
+                    //    half the width (Line) or barFraction (Range), baseline (Fill), 0
     // 4: packed colours (packColor), sRGB:
     uint32_t base;  //    a surface's colour and opacity, a glyph's colour and alpha, an image's
                     //    opacity in alpha (rgb white)
@@ -75,6 +76,10 @@ void glyphPrims(const Font &font, const Text &text, const float clip[4], std::ve
 // anti-aliased edge), shape = the ends, style[0] = half the width (at least 0.5), base = its colour
 // with the opacity as alpha
 Prim linePrim(const Line &line, const float clip[4]);
+// A plot whose values start at `first` in the plot data: rect = the plot's rect (prim.vert grows a
+// Line plot's quad by half its width + 1, as a raised surface's by its shadow), shape and style as
+// above, base = its colour with the opacity as alpha. Index and count are floats, exact below 2^24.
+Prim plotPrim(const Plot &plot, uint32_t first, const float clip[4]);
 // An image's quad: its rect, uv 0 to 1, base white with the opacity as its alpha
 Prim imagePrim(const ImageDraw &image, const float clip[4]);
 

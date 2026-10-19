@@ -247,9 +247,9 @@ DescriptorSetLayout Renderer::createDescriptorSetLayout(const std::vector<Descri
     return DescriptorSetLayout(device_, bindings);
 }
 
-DescriptorPool Renderer::createDescriptorPool(uint32_t maxSets, uint32_t maxTextures) const
+DescriptorPool Renderer::createDescriptorPool(uint32_t maxSets, uint32_t maxTextures, uint32_t maxBuffers) const
 {
-    return DescriptorPool(device_, maxSets, maxTextures);
+    return DescriptorPool(device_, maxSets, maxTextures, maxBuffers);
 }
 
 void Renderer::setClearColor(float r, float g, float b, float a)

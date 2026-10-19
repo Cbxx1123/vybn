@@ -418,6 +418,26 @@ Line Theme::accentLine(Vec2 a, Vec2 b, float width, float opacity) const
     return line;
 }
 
+Plot Theme::inkPlot(const Rect &rect, PlotMode mode, TextTone tone, float opacity) const
+{
+    Plot plot;
+    plot.rect = rect;
+    plot.mode = mode;
+    plot.color = textColor(tone);
+    plot.opacity = std::clamp(opacity, 0.0f, 1.0f);
+    return plot;
+}
+
+Plot Theme::accentPlot(const Rect &rect, PlotMode mode, float opacity) const
+{
+    Plot plot;
+    plot.rect = rect;
+    plot.mode = mode;
+    plot.color = accent_;
+    plot.opacity = std::clamp(opacity, 0.0f, 1.0f);
+    return plot;
+}
+
 Surface Theme::scrim(const Rect &rect, float opacity) const
 {
     Surface s;

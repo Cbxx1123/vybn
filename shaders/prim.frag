@@ -2,12 +2,18 @@
 
 // Every prim (src/ui/Prim.h), by kind. See prim.vert for the inputs.
 // CONTRACT: set 0 binding 0 is the font atlas (sampler2D, single channel coverage), used by glyphs.
+// Set 0 binding 1 is the plot data (a readonly float buffer, the values of every plot in the frame, in order);
+// a plot (kind 4) reads its values from vShape.x (first) for vShape.y (count; pairs for Range).
 // Set 1 binding 0 is the picture an image prim shows (sampler2D, sRGB pixels); UIRenderer binds
 // a blank one when no image is drawn.
 // Lines (kind 3) use no texture: vLocal is the absolute pixel position, vShape.xy and vShape.zw are
 // the segment's ends, vStyle.x is the half width, and coverage is the capsule's distance (as surfaces' edge).
+// Plots (kind 4) use no texture either: vLocal is relative to the plot's top-left, vHalfSize is its full
+// size, vShape is first, count, low, high, and vStyle is mode (0 Line, 1 Fill, 2 Range), half width (Line)
+// or barFraction (Range), and baseline (Fill). Values map to y as rect.y + h * (high - v) / (high - low).
 
 layout(set = 0, binding = 0) uniform sampler2D atlas; // glyphs: coverage
+layout(set = 0, binding = 1) readonly buffer PlotData { float values[]; } plotData; // plots: their values
 layout(set = 1, binding = 0) uniform sampler2D image; // images: the picture
 
 layout(location = 0) in vec2 vLocal;
@@ -84,6 +90,20 @@ vec4 over(vec4 top, vec4 bottom) {
     return vec4(c, a);
 }
 
+// The y of value v in a plot h pixels high (low at the bottom, high at the top); a zero range counts as 1
+float valueY(float v, float h) {
+    float range = vShape.w - vShape.z;
+    if (abs(range) < 1e-9)
+        range = 1.0;
+    return h * (vShape.w - v) / range;
+}
+
+// The y of the plot's value k (clamped to its own values) in a plot h pixels high
+float plotY(uint first, uint count, float k, float h) {
+    float i = clamp(k, 0.0, float(count - 1u));
+    return valueY(plotData.values[first + uint(i)], h);
+}
+
 void main() {
     float radius = vShape.x;
 
@@ -112,6 +132,106 @@ void main() {
         float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
         float d = length(pa - ba * h) - vStyle.x;
         float coverage = 1.0 - smoothstep(-0.5, 0.5, d);
+        outColor = vec4(pow(vBase.rgb, vec3(2.2)), coverage * vBase.a);
+        return;
+    }
+
+    if (vKind == 4u) {
+        // Plot: vLocal from the plot's top-left, vHalfSize its full size. Its values are
+        // first..first+count (pairs for Range), each read clamped to them.
+        vec2 p = vLocal;
+        vec2 size = max(vHalfSize, vec2(1.0));
+        uint first = uint(vShape.x);
+        uint count = uint(vShape.y);
+        float mode = floor(vStyle.x + 0.5);
+        float coverage = 0.0;
+
+        if (count == 0u) {
+            outColor = vec4(0.0);
+            return;
+        }
+
+        if (mode > 1.5) {
+            // Range: count columns, each a bar from its low to its high, centred in its column
+            float colW = size.x / float(count);
+            float c = clamp(floor(p.x / colW), 0.0, float(count - 1u));
+            uint pair = min(uint(c), count - 1u);
+            float lowV = plotData.values[first + 2u * pair];
+            float highV = plotData.values[first + 2u * pair + 1u];
+            float yA = valueY(highV, size.y);
+            float yB = valueY(lowV, size.y);
+            float y0 = min(yA, yB);
+            float y1 = max(yA, yB);
+            if (y1 - y0 < 1.0) {
+                // At least 1 px tall, grown about its middle
+                float mid = 0.5 * (y0 + y1);
+                y0 = mid - 0.5;
+                y1 = mid + 0.5;
+            }
+            float w = max(colW * vStyle.y, 1.0);
+            float cx = (c + 0.5) * colW;
+            float x0 = cx - 0.5 * w;
+            float x1 = cx + 0.5 * w;
+            coverage = clamp(min(p.x - x0, x1 - p.x) + 0.5, 0.0, 1.0)
+                     * clamp(min(p.y - y0, y1 - p.y) + 0.5, 0.0, 1.0);
+        } else if (count >= 2u) {
+            float steps = float(count - 1u);
+            float spacing = size.x / steps; // x of value k is k * spacing
+
+            if (mode < 0.5) {
+                // Line: the distance from the pixel to the curve, a bar where values share a pixel
+                float dd;
+                if (steps / size.x > 1.0) {
+                    // More than one value per pixel: the bar between the lowest and highest values whose
+                    // x falls in this pixel's column, sampled at most 64 of them, plus the two neighbours
+                    float kLo = max(ceil((p.x - 0.5) / spacing), 0.0);
+                    float kHi = min(floor((p.x + 0.5) / spacing), steps);
+                    float n = max(kHi - kLo + 1.0, 0.0);
+                    float stride = max(ceil(n / 64.0), 1.0);
+                    float minY = 1e9;
+                    float maxY = -1e9;
+                    for (int j = 0; j < 64; j++) {
+                        float k = kLo + float(j) * stride;
+                        if (k > kHi)
+                            break;
+                        float y = plotY(first, count, k, size.y);
+                        minY = min(minY, y);
+                        maxY = max(maxY, y);
+                    }
+                    float yl = plotY(first, count, kLo - 1.0, size.y);
+                    float yr = plotY(first, count, kHi + 1.0, size.y);
+                    minY = min(min(minY, yl), yr);
+                    maxY = max(max(maxY, yl), yr);
+                    dd = max(max(minY - p.y, p.y - maxY), 0.0);
+                } else {
+                    // The nearest of the segments around this pixel (segment s runs from value s to s + 1)
+                    float kc = floor(p.x / spacing);
+                    dd = 1e9;
+                    for (int d = -1; d <= 1; d++) {
+                        float s = clamp(kc + float(d), 0.0, steps - 1.0);
+                        vec2 a = vec2(s * spacing, plotY(first, count, s, size.y));
+                        vec2 b = vec2((s + 1.0) * spacing, plotY(first, count, s + 1.0, size.y));
+                        vec2 ba = b - a;
+                        vec2 pa = p - a;
+                        float t = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+                        dd = min(dd, length(pa - ba * t));
+                    }
+                }
+                coverage = 1.0 - smoothstep(-0.5, 0.5, dd - vStyle.y);
+            } else {
+                // Fill: the area between the curve and the baseline, its edges anti-aliased
+                if (p.x >= 0.0 && p.x <= size.x) {
+                    float fx = clamp(p.x / spacing, 0.0, steps);
+                    float k0 = floor(fx);
+                    float curveY = mix(plotY(first, count, k0, size.y), plotY(first, count, k0 + 1.0, size.y), fx - k0);
+                    float baseY = valueY(vStyle.z, size.y);
+                    float top = min(curveY, baseY);
+                    float bottom = max(curveY, baseY);
+                    coverage = clamp(min(p.y - top, bottom - p.y) + 0.5, 0.0, 1.0);
+                }
+            }
+        }
+
         outColor = vec4(pow(vBase.rgb, vec3(2.2)), coverage * vBase.a);
         return;
     }

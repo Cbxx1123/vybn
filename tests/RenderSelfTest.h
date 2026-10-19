@@ -23,6 +23,9 @@ namespace tests {
 //                          at half opacity and clipped
 //   lines         640x480  rows of lines at widths 1 to 6 and angles 0 to 90, a row at opacity 0.3,
 //                          a sine and a zigzag polyline, a line cut by a clip and a dot, studio dark
+//   plots         640x480  a sine as a Line over a Fill to its middle, a decaying envelope as a Fill to the
+//                          bottom under a Line, a waveform as a Range, a 4096-value Line, a Line cut by a
+//                          clip and a two-value Line, studio dark
 //   controls      900x600  a Context tree of the UI layer's controls (Button variants and sizes,
 //                          Toggle on and off, Slider, Checkbox, RadioGroup, SegmentedControl,
 //                          Stepper, Knob, ProgressBar, TextField, Chip, Badge, LevelMeter at a
@@ -39,8 +42,8 @@ namespace tests {
 // and animations have settled, before the frame is drawn off screen.
 //
 // After the comparisons it prints an INFO line per scene with what the frame cost and drew (from
-// ui::FrameStats: build ms, surfaces, texts, glyphs, prims, draws, bytes uploaded, submit ms),
-// so refactors can compare. Returns the number of failures (0 is a pass).
+// ui::FrameStats: build ms, surfaces, texts, glyphs, prims (lines and plots among them), draws,
+// bytes uploaded, submit ms, plot values), so refactors can compare. Returns the number of failures (0 is a pass).
 int runRenderSelfTest(int argc, char **argv);
 
 }

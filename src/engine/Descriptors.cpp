@@ -65,20 +65,47 @@ void DescriptorSet::writeTexture(uint32_t binding, const LiveTexture &texture)
     vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
 }
 
+void DescriptorSet::writeBuffer(uint32_t binding, const Buffer &buffer)
+{
+    VkDescriptorBufferInfo info{};
+    info.buffer = buffer.handle();
+    info.offset = 0;
+    info.range = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = set_;
+    write.dstBinding = binding;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.pBufferInfo = &info;
+    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+}
+
 // DescriptorPool
 
-DescriptorPool::DescriptorPool(VkDevice device, uint32_t maxSets, uint32_t maxTextures)
+DescriptorPool::DescriptorPool(VkDevice device, uint32_t maxSets, uint32_t maxTextures, uint32_t maxBuffers)
     : device_(device)
 {
-    VkDescriptorPoolSize size{};
-    size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    size.descriptorCount = maxTextures;
+    // Vulkan refuses a pool size with a count of 0, so only the kinds in use get an entry
+    VkDescriptorPoolSize sizes[2]{};
+    uint32_t sizeCount = 0;
+    if (maxTextures > 0) {
+        sizes[sizeCount].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        sizes[sizeCount].descriptorCount = maxTextures;
+        ++sizeCount;
+    }
+    if (maxBuffers > 0) {
+        sizes[sizeCount].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        sizes[sizeCount].descriptorCount = maxBuffers;
+        ++sizeCount;
+    }
 
     VkDescriptorPoolCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     info.maxSets = maxSets;
-    info.poolSizeCount = 1;
-    info.pPoolSizes = &size;
+    info.poolSizeCount = sizeCount;
+    info.pPoolSizes = sizes;
     check(vkCreateDescriptorPool(device_, &info, nullptr, &pool_), "vkCreateDescriptorPool");
 }
 

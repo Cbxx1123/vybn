@@ -62,7 +62,7 @@ public:
     // (blocking, like createTexture). Throws if the device can't sample linear images of `format`.
     LiveTexture createLiveTexture(uint32_t width, uint32_t height, VkFormat format) const;
     DescriptorSetLayout createDescriptorSetLayout(const std::vector<DescriptorBinding> &bindings) const;
-    DescriptorPool createDescriptorPool(uint32_t maxSets, uint32_t maxTextures) const;
+    DescriptorPool createDescriptorPool(uint32_t maxSets, uint32_t maxTextures, uint32_t maxBuffers = 0) const;
 
     void setClearColor(float r, float g, float b, float a = 1.0f);
 

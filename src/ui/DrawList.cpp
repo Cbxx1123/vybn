@@ -15,6 +15,8 @@ void drawnArea(const Prim &prim, float out[4])
     float margin = 0.0f;
     if (prim.kind == static_cast<uint32_t>(PrimKind::Surface))
         margin = prim.shape[3] < 0.5f ? prim.shape[1] * 1.4143f + prim.shape[2] + 1.0f : 1.0f;
+    else if (prim.kind == static_cast<uint32_t>(PrimKind::Plot))
+        margin = prim.style[0] == 0.0f ? prim.style[1] + 1.0f : 1.0f; // a Line plot's half width
     out[0] = prim.rect[0] - margin;
     out[1] = prim.rect[1] - margin;
     out[2] = prim.rect[0] + prim.rect[2] + margin;
@@ -107,6 +109,23 @@ void DrawList::addPolyline(const Vec2 *points, size_t count, const Line &style)
     }
 }
 
+void DrawList::add(const Plot &plot)
+{
+    if (!plot.values)
+        return;
+    const bool range = plot.mode == PlotMode::Range;
+    if (plot.count < (range ? 1u : 2u))
+        return;
+    const uint32_t first = static_cast<uint32_t>(plotData_.size());
+    const Prim prim = plotPrim(plot, first, currentClip());
+    if (!visible(prim))
+        return;
+    const size_t floats = static_cast<size_t>(plot.count) * (range ? 2 : 1);
+    plotData_.insert(plotData_.end(), plot.values, plot.values + floats);
+    prims_.push_back(prim);
+    ++counts_.plots;
+}
+
 void DrawList::pushClip(const Rect &rect)
 {
     Rect clip = rect;
@@ -134,6 +153,7 @@ void DrawList::clear()
 {
     prims_.clear();
     images_.clear();
+    plotData_.clear();
     clipped_.clear();
     counts_ = Counts{};
 }
@@ -153,6 +173,26 @@ uint64_t mixPrim(uint64_t h, const Prim &prim)
     return h;
 }
 
+// The plot data: its size, then its floats two at a time as 64-bit words, an odd last float on its own
+uint64_t mixPlots(uint64_t h, const std::vector<float> &values)
+{
+    constexpr uint64_t kPrime = 1099511628211ULL;
+    h = (h ^ static_cast<uint64_t>(values.size())) * kPrime;
+    const size_t n = values.size();
+    size_t i = 0;
+    for (; i + 1 < n; i += 2) {
+        uint64_t word = 0;
+        std::memcpy(&word, &values[i], sizeof word);
+        h = (h ^ word) * kPrime;
+    }
+    if (i < n) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &values[i], sizeof bits);
+        h = (h ^ bits) * kPrime;
+    }
+    return h;
+}
+
 }
 
 uint64_t fingerprint(const DrawList &list, uint64_t start)
@@ -162,6 +202,7 @@ uint64_t fingerprint(const DrawList &list, uint64_t start)
     uint64_t h = count.value();
     for (const Prim &prim : list.prims())
         h = mixPrim(h, prim);
+    h = mixPlots(h, list.plotData());
 
     Fingerprint f(h);
     for (const DrawList::ImageRef &ref : list.images()) {
