@@ -8,6 +8,7 @@
 #include "Components.h"
 #include "Controls.h"
 #include "DrawList.h"
+#include "FrameStats.h"
 #include "Layout.h"
 #include "Navigation.h"
 #include "Theme.h"
@@ -94,6 +95,14 @@ public:
     uint64_t buildFrame();
     // Records the DrawList from the last buildFrame into the current frame (between beginFrame and endFrame)
     void submit();
+    // What the last update, buildFrame and submit cost and drew. buildFrame sets submit's fields
+    // (submitMs, glyphs, draws, pipelineBinds, uploadBytes) and `presented` back to 0 and false;
+    // submit fills them, so they are 0 for a frame skipped as unchanged.
+    const FrameStats &stats() const { return stats_; }
+    // Called by whoever presents (UISystem) after deciding: true when the last buildFrame was
+    // submitted, false when it was skipped as unchanged
+    void setPresented(bool presented) { stats_.presented = presented; }
+
     // Presents the window's next frame even when its picture hasn't changed
     void requestRedraw() { redrawRequested_ = true; }
     // Whether requestRedraw was called since the last time this was asked (and clears it)
@@ -128,6 +137,7 @@ private:
     UIRenderer uiRenderer_;
     DrawList drawList_;
     bool redrawRequested_ = false;
+    FrameStats stats_;
     bool leftDown_ = false;
     bool rightDown_ = false;
     bool middleDown_ = false;

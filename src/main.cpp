@@ -18,6 +18,8 @@
 //                           filters, unison, voice modes, LFOs, the mod matrix and render time)
 //   main --export-selftest  checks the export's mastering tools offline (loudness, true peak,
 //                           the true-peak limiter, dither, fades) and exits
+//   main --render-selftest  renders the UI's and the DAW's scenes off screen and compares them with
+//                           their golden pictures (--update-goldens writes them, --scene NAME renders one)
 //   main --import FILE...   copies an instrument (an .sfz with its samples, or note-named audio
 //                           files) into the sample library and exits
 //     --dark       start in dark mode
@@ -61,6 +63,7 @@
 #include "SynthSelfTest.h"
 #include "ExportSelfTest.h"
 #include "ProjectSelfTest.h"
+#include "RenderSelfTest.h"
 #include "audio/AudioSystem.h"
 #include "audio/Memory.h"
 #include "daw/Autosave.h"
@@ -151,6 +154,8 @@ int main(int argc, char **argv)
             return tests::runSynthSelfTest();
         if (arg == "--export-selftest")
             return tests::runExportSelfTest();
+        if (arg == "--render-selftest")
+            return tests::runRenderSelfTest(argc, argv);
         if (arg == "--import") {
             daw::Settings settings = daw::Settings::load();
             env::Environment environment;

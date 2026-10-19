@@ -1,6 +1,7 @@
 #include "UIRenderer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 
@@ -93,6 +94,14 @@ void upload(engine::Renderer &renderer, engine::Buffer &buffer, const std::vecto
     buffer.write(items.data(), bytes, static_cast<uint32_t>(items.size()));
 }
 
+using Clock = std::chrono::steady_clock;
+
+// Milliseconds since `start`
+double msSince(Clock::time_point start)
+{
+    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
+
 }
 
 struct UIRenderer::Shared {
@@ -169,12 +178,16 @@ UIRenderer::UIRenderer(engine::Renderer &renderer, const Font &font)
 
 void UIRenderer::render(const DrawList &list)
 {
+    const Clock::time_point start = Clock::now();
+    stats_ = FrameStats{};
     ++frames_;
     // Images not drawn for a few frames go (no frame in flight still reads them)
     for (auto it = images_.begin(); it != images_.end();)
         it = it->second.lastFrame + engine::Renderer::kMaxFramesInFlight + 2 < frames_ ? images_.erase(it) : std::next(it);
-    if (list.empty())
+    if (list.empty()) {
+        stats_.submitMs = msSince(start);
         return;
+    }
 
     // Flatten every batch into its instance array, remembering where each batch's instances start
     struct Range {
@@ -228,12 +241,16 @@ void UIRenderer::render(const DrawList &list)
         }
     }
 
+    stats_.glyphs = static_cast<uint32_t>(glyphs.size());
+
     engine::Buffer &surfaceBuffer = surfaceBuffers_[renderer_.frameIndex()];
     engine::Buffer &glyphBuffer = glyphBuffers_[renderer_.frameIndex()];
     upload(renderer_, surfaceBuffer, instances);
     upload(renderer_, glyphBuffer, glyphs);
     engine::Buffer &imageBuffer = imageBuffers_[renderer_.frameIndex()];
     upload(renderer_, imageBuffer, imageQuads);
+    stats_.uploadBytes = instances.size() * sizeof(Instance) + glyphs.size() * sizeof(GlyphInstance) +
+                         imageQuads.size() * sizeof(GlyphInstance);
 
     const VkExtent2D extent = renderer_.extent();
     const float screen[2] = {static_cast<float>(extent.width), static_cast<float>(extent.height)};
@@ -262,11 +279,13 @@ void UIRenderer::render(const DrawList &list)
                 const engine::Pipeline &pipeline = shared_->imagePipeline;
                 if (bound != &pipeline) {
                     renderer_.bind(pipeline);
+                    ++stats_.pipelineBinds;
                     renderer_.pushConstants(pipeline, screen, sizeof(screen));
                     bound = &pipeline;
                 }
                 renderer_.bindDescriptorSet(pipeline, *imageSets[range.first + i]);
                 renderer_.drawInstanced(imageBuffer, 6, range.first + i, 1);
+                ++stats_.draws;
             }
             bound = nullptr; // the next text batch binds the atlas again
             continue;
@@ -275,15 +294,18 @@ void UIRenderer::render(const DrawList &list)
         const engine::Pipeline &pipeline = text ? shared_->textPipeline : shared_->surfacePipeline;
         if (bound != &pipeline) {
             renderer_.bind(pipeline);
+            ++stats_.pipelineBinds;
             renderer_.pushConstants(pipeline, screen, sizeof(screen));
             if (text)
                 renderer_.bindDescriptorSet(pipeline, shared_->atlasSet);
             bound = &pipeline;
         }
         renderer_.drawInstanced(text ? glyphBuffer : surfaceBuffer, 6, range.first, range.count);
+        ++stats_.draws;
     }
     if (clipped)
         renderer_.clearScissor();
+    stats_.submitMs = msSince(start);
 }
 
 const engine::DescriptorSet *UIRenderer::liveImage(const ImageData &image, uint32_t frame)

@@ -86,3 +86,19 @@ on, so before anything changes we need:
 - The look must not change unless a stage says so. A golden that changes needs the orchestrator to
   look at the new image and say why before it is updated.
 - The real-time rule is untouched: none of this runs on the audio thread.
+
+## Baseline (R0, 19 October 2026, before any refactor)
+
+`VIBIN_FRAME_STATS=1`, main window, per frame, Debug build on this machine. Idle demos tick at about
+10-25 a second and present only on change; `transport` plays, so it presents every frame.
+
+| Demo | update ms (layout) | build ms | submit ms | surfaces | texts / glyphs | batches = draws | binds | upload |
+|---|---|---|---|---|---|---|---|---|
+| transport (playing) | 0.29 (0.42 both layouts) | 1.00 | 0.50 | 667 | 117 / 594 | 181 | 167 | 90 KB |
+| synth (Devices tab) | 0.58 (0.52) | 1.11 | 0.44 | 721 | 118 / 666 | 158 | 147 | 99 KB |
+| pianoroll | 0.36 (0.48) | 1.19 | 0.52 | 818 | 146 / 725 | 233 | 211 | 111 KB |
+| steps | 0.33 (0.47) | 1.17 | 0.43 | 656 | 119 / 654 | 143 | 129 | 92 KB |
+
+`--render-selftest` scenes (one frame each, off screen): the synth panel is the heaviest, 4,578
+surfaces, 216 draws, 466 KB, build 3.87 ms, submit 1.89 ms; the piano roll 463 surfaces and 124
+draws; the arrangement 220 surfaces and 82 draws.

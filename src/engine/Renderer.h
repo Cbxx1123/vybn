@@ -83,6 +83,16 @@ public:
     void clearScissor();
     void endFrame();
 
+    // Off-screen frames, for tests (the render self-test's golden images): beginOffscreen starts
+    // recording into an image of its own, `width` x `height` in the swapchain's format, cleared to
+    // the clear colour; bind and draw work as between beginFrame and endFrame, and extent() is
+    // the image's size until endOffscreen. endOffscreen finishes, waits for the GPU and returns
+    // the pixels, 4 bytes each (blue, green, red, alpha, as stored: sRGB-encoded), rows packed,
+    // top row first. Works whether or not the window has a swapchain (a hidden window made with
+    // deferSwapchain), and doesn't touch it. Not between beginFrame and endFrame.
+    void beginOffscreen(uint32_t width, uint32_t height);
+    std::vector<uint8_t> endOffscreen();
+
     void waitIdle();
 
     // Lets go of the swapchain (its images and framebuffers) while the window isn't drawn, as
@@ -99,7 +109,9 @@ public:
 
     // Index of the frame being recorded, in [0, kMaxFramesInFlight). Use it to pick per-frame buffers.
     uint32_t frameIndex() const { return frame_; }
-    VkExtent2D extent() const { return extent_; }
+    // The size being drawn: the swapchain's, or the off-screen image's between beginOffscreen and
+    // endOffscreen
+    VkExtent2D extent() const { return offscreen_ ? offscreenExtent_ : extent_; }
     // The device (shared by every window) and this window's swapchain format: resources made
     // through one Renderer work with another that has the same pair
     VkDevice device() const { return device_; }
@@ -152,6 +164,26 @@ private:
     VkClearValue clearColor_{};
     double waitMs_ = 0.0;
     uint64_t swapchainGeneration_ = 0;
+
+    // The command buffer being recorded: this frame's, or the off-screen one
+    VkCommandBuffer recording() const;
+
+    // Off-screen frames (beginOffscreen): a render pass like renderPass_ (compatible, so every
+    // pipeline works with it) ending in TRANSFER_SRC, the image and its memory, view and
+    // framebuffer (kept for the next frame of the same size), a host-visible buffer to read it
+    // back into, and a command buffer and fence of their own
+    void destroyOffscreenTarget();
+    VkRenderPass offscreenPass_ = VK_NULL_HANDLE;
+    VkImage offscreenImage_ = VK_NULL_HANDLE;
+    VkDeviceMemory offscreenMemory_ = VK_NULL_HANDLE;
+    VkImageView offscreenView_ = VK_NULL_HANDLE;
+    VkFramebuffer offscreenFramebuffer_ = VK_NULL_HANDLE;
+    VkBuffer readbackBuffer_ = VK_NULL_HANDLE;
+    VkDeviceMemory readbackMemory_ = VK_NULL_HANDLE;
+    VkCommandBuffer offscreenCommands_ = VK_NULL_HANDLE;
+    VkFence offscreenFence_ = VK_NULL_HANDLE;
+    VkExtent2D offscreenExtent_{};
+    bool offscreen_ = false; // between beginOffscreen and endOffscreen: draws go to offscreenCommands_
 };
 
 }

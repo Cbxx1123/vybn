@@ -1,5 +1,8 @@
 #include "UISystem.h"
 
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <utility>
 
 namespace ui {
@@ -231,6 +234,62 @@ void UISystem::countFrame(double now, bool presented)
     }
 }
 
+void UISystem::reportStats(double now)
+{
+    if (statsEnabled_ < 0) {
+        const char *value = std::getenv("VIBIN_FRAME_STATS");
+        statsEnabled_ = value && std::strcmp(value, "0") != 0 ? 1 : 0;
+    }
+    if (statsEnabled_ == 0)
+        return;
+
+    // Add the main window's last frame to the running sums
+    const FrameStats &frame = frameStats();
+    statsSum_.updateMs += frame.updateMs;
+    statsSum_.layoutMs += frame.layoutMs;
+    statsSum_.buildMs += frame.buildMs;
+    statsSum_.submitMs += frame.submitMs;
+    statsSum_.surfaces += frame.surfaces;
+    statsSum_.texts += frame.texts;
+    statsSum_.glyphs += frame.glyphs;
+    statsSum_.images += frame.images;
+    statsSum_.batches += frame.batches;
+    statsSum_.draws += frame.draws;
+    statsSum_.pipelineBinds += frame.pipelineBinds;
+    statsSum_.uploadBytes += frame.uploadBytes;
+    ++statsFrames_;
+    if (frame.presented)
+        ++statsPresented_;
+    if (statsStart_ < 0.0)
+        statsStart_ = now;
+    const double elapsed = now - statsStart_;
+    if (elapsed < 1.0)
+        return;
+
+    // Build-side counts average over all frames; submit's over the presented ones
+    const double frames = static_cast<double>(statsFrames_);
+    const double presented = static_cast<double>(statsPresented_);
+    auto average = [](double sum, double count) { return count > 0.0 ? sum / count : 0.0; };
+    auto counted = [](double value) { return static_cast<unsigned int>(value + 0.5); };
+    std::fprintf(stderr,
+                 "FRAME %.1f/s presented %.1f/s | update %.2f ms (layout %.2f) build %.2f ms submit %.2f ms | "
+                 "surfaces %u texts %u glyphs %u images %u batches %u | draws %u binds %u upload %zu KB\n",
+                 frames / elapsed, presented / elapsed, average(statsSum_.updateMs, frames),
+                 average(statsSum_.layoutMs, frames), average(statsSum_.buildMs, frames),
+                 average(statsSum_.submitMs, presented),
+                 counted(average(statsSum_.surfaces, frames)), counted(average(statsSum_.texts, frames)),
+                 counted(average(statsSum_.glyphs, presented)), counted(average(statsSum_.images, frames)),
+                 counted(average(statsSum_.batches, frames)), counted(average(statsSum_.draws, presented)),
+                 counted(average(statsSum_.pipelineBinds, presented)),
+                 static_cast<size_t>(average(static_cast<double>(statsSum_.uploadBytes), presented) / 1024.0 + 0.5));
+    std::fflush(stderr);
+
+    statsSum_ = FrameStats{};
+    statsFrames_ = 0;
+    statsPresented_ = 0;
+    statsStart_ = now;
+}
+
 void UISystem::pace(bool presented, bool input, bool posted)
 {
     using Clock = std::chrono::steady_clock;
@@ -328,8 +387,11 @@ void UISystem::tick(env::Environment &)
         } else {
             ++w->skippedCount;
         }
-        if (i == 0)
+        w->context->setPresented(changed);
+        if (i == 0) {
             countFrame(window.time(), changed);
+            reportStats(window.time());
+        }
     }
 
     std::vector<std::function<void()>> actions;

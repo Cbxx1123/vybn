@@ -105,6 +105,15 @@ Renderer::~Renderer()
 {
     vkDeviceWaitIdle(device_);
 
+    // Off-screen frame objects first: they use the command pool and the render pass
+    destroyOffscreenTarget();
+    if (offscreenPass_ != VK_NULL_HANDLE)
+        vkDestroyRenderPass(device_, offscreenPass_, nullptr);
+    if (offscreenFence_ != VK_NULL_HANDLE)
+        vkDestroyFence(device_, offscreenFence_, nullptr);
+    if (offscreenCommands_ != VK_NULL_HANDLE)
+        vkFreeCommandBuffers(device_, commandPool_, 1, &offscreenCommands_);
+
     for (uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
         vkDestroySemaphore(device_, imageAvailable_[i], nullptr);
         vkDestroyFence(device_, inFlight_[i], nullptr);
@@ -309,14 +318,19 @@ void Renderer::beginFrame()
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 }
 
+VkCommandBuffer Renderer::recording() const
+{
+    return offscreen_ ? offscreenCommands_ : commandBuffers_[frame_];
+}
+
 void Renderer::bind(const Pipeline &pipeline)
 {
-    vkCmdBindPipeline(commandBuffers_[frame_], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle());
+    vkCmdBindPipeline(recording(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle());
 }
 
 void Renderer::draw(const Buffer &vertexBuffer)
 {
-    VkCommandBuffer cmd = commandBuffers_[frame_];
+    VkCommandBuffer cmd = recording();
     VkBuffer buffers[] = {vertexBuffer.handle()};
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(cmd, 0, 1, buffers, offsets);
@@ -332,7 +346,7 @@ void Renderer::drawInstanced(const Buffer &instances, uint32_t vertexCount, uint
 {
     if (instanceCount == 0)
         return;
-    VkCommandBuffer cmd = commandBuffers_[frame_];
+    VkCommandBuffer cmd = recording();
     VkBuffer buffers[] = {instances.handle()};
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(cmd, 0, 1, buffers, offsets);
@@ -342,33 +356,35 @@ void Renderer::drawInstanced(const Buffer &instances, uint32_t vertexCount, uint
 void Renderer::bindDescriptorSet(const Pipeline &pipeline, const DescriptorSet &set)
 {
     VkDescriptorSet handle = set.handle();
-    vkCmdBindDescriptorSets(commandBuffers_[frame_], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout(),
+    vkCmdBindDescriptorSets(recording(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout(),
                             0, 1, &handle, 0, nullptr);
 }
 
 void Renderer::pushConstants(const Pipeline &pipeline, const void *data, uint32_t size)
 {
-    vkCmdPushConstants(commandBuffers_[frame_], pipeline.layout(),
+    vkCmdPushConstants(recording(), pipeline.layout(),
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, size, data);
 }
 
 void Renderer::setScissor(int32_t x, int32_t y, uint32_t width, uint32_t height)
 {
-    // Vulkan requires a non-negative offset; clamp the rectangle to the framebuffer
-    const int64_t x0 = std::clamp<int64_t>(x, 0, extent_.width);
-    const int64_t y0 = std::clamp<int64_t>(y, 0, extent_.height);
-    const int64_t x1 = std::clamp<int64_t>(static_cast<int64_t>(x) + width, x0, extent_.width);
-    const int64_t y1 = std::clamp<int64_t>(static_cast<int64_t>(y) + height, y0, extent_.height);
+    // Vulkan requires a non-negative offset; clamp the rectangle to the framebuffer being drawn
+    const VkExtent2D size = extent();
+    const int64_t x0 = std::clamp<int64_t>(x, 0, size.width);
+    const int64_t y0 = std::clamp<int64_t>(y, 0, size.height);
+    const int64_t x1 = std::clamp<int64_t>(static_cast<int64_t>(x) + width, x0, size.width);
+    const int64_t y1 = std::clamp<int64_t>(static_cast<int64_t>(y) + height, y0, size.height);
 
     VkRect2D scissor{};
     scissor.offset = {static_cast<int32_t>(x0), static_cast<int32_t>(y0)};
     scissor.extent = {static_cast<uint32_t>(x1 - x0), static_cast<uint32_t>(y1 - y0)};
-    vkCmdSetScissor(commandBuffers_[frame_], 0, 1, &scissor);
+    vkCmdSetScissor(recording(), 0, 1, &scissor);
 }
 
 void Renderer::clearScissor()
 {
-    setScissor(0, 0, extent_.width, extent_.height);
+    const VkExtent2D size = extent();
+    setScissor(0, 0, size.width, size.height);
 }
 
 void Renderer::endFrame()
@@ -405,6 +421,245 @@ void Renderer::endFrame()
         check(result, "vkQueuePresentKHR");
 
     frame_ = (frame_ + 1) % kMaxFramesInFlight;
+}
+
+void Renderer::beginOffscreen(uint32_t width, uint32_t height)
+{
+    if (offscreen_)
+        throw std::runtime_error("beginOffscreen called while an off-screen frame is already recording");
+    if (width == 0 || height == 0)
+        throw std::runtime_error("An off-screen frame needs a width and height of at least 1");
+
+    // The render pass is made once. It doesn't depend on the swapchain: createRenderPass runs in
+    // the constructor even when the swapchain is deferred, so swapchainFormat_ is always set.
+    if (offscreenPass_ == VK_NULL_HANDLE) {
+        VkAttachmentDescription color{};
+        color.format = swapchainFormat_;
+        color.samples = VK_SAMPLE_COUNT_1_BIT;
+        color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        color.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+
+        VkAttachmentReference colorRef{};
+        colorRef.attachment = 0;
+        colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &colorRef;
+
+        // Same as renderPass_, plus: the colour writes are visible to the copy that follows
+        VkSubpassDependency dependencies[2]{};
+        dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[0].dstSubpass = 0;
+        dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[1].srcSubpass = 0;
+        dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+        VkRenderPassCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        info.attachmentCount = 1;
+        info.pAttachments = &color;
+        info.subpassCount = 1;
+        info.pSubpasses = &subpass;
+        info.dependencyCount = 2;
+        info.pDependencies = dependencies;
+        check(vkCreateRenderPass(device_, &info, nullptr, &offscreenPass_), "vkCreateRenderPass");
+    }
+
+    // The image, its view and framebuffer and the readback buffer are kept while the size holds
+    if (offscreenImage_ == VK_NULL_HANDLE || offscreenExtent_.width != width || offscreenExtent_.height != height) {
+        destroyOffscreenTarget();
+
+        VkImageCreateInfo image{};
+        image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image.imageType = VK_IMAGE_TYPE_2D;
+        image.format = swapchainFormat_;
+        image.extent = {width, height, 1};
+        image.mipLevels = 1;
+        image.arrayLayers = 1;
+        image.samples = VK_SAMPLE_COUNT_1_BIT;
+        image.tiling = VK_IMAGE_TILING_OPTIMAL;
+        image.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        check(vkCreateImage(device_, &image, nullptr, &offscreenImage_), "vkCreateImage");
+
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(device_, offscreenImage_, &requirements);
+        VkMemoryAllocateInfo alloc{};
+        alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc.allocationSize = requirements.size;
+        alloc.memoryTypeIndex = findMemoryType(physicalDevice_, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        check(vkAllocateMemory(device_, &alloc, nullptr, &offscreenMemory_), "vkAllocateMemory");
+        check(vkBindImageMemory(device_, offscreenImage_, offscreenMemory_, 0), "vkBindImageMemory");
+
+        VkImageViewCreateInfo view{};
+        view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view.image = offscreenImage_;
+        view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view.format = swapchainFormat_;
+        view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        view.subresourceRange.levelCount = 1;
+        view.subresourceRange.layerCount = 1;
+        check(vkCreateImageView(device_, &view, nullptr, &offscreenView_), "vkCreateImageView");
+
+        VkFramebufferCreateInfo framebuffer{};
+        framebuffer.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebuffer.renderPass = offscreenPass_;
+        framebuffer.attachmentCount = 1;
+        framebuffer.pAttachments = &offscreenView_;
+        framebuffer.width = width;
+        framebuffer.height = height;
+        framebuffer.layers = 1;
+        check(vkCreateFramebuffer(device_, &framebuffer, nullptr, &offscreenFramebuffer_), "vkCreateFramebuffer");
+
+        VkBufferCreateInfo buffer{};
+        buffer.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buffer.size = static_cast<VkDeviceSize>(width) * height * 4;
+        buffer.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        buffer.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        check(vkCreateBuffer(device_, &buffer, nullptr, &readbackBuffer_), "vkCreateBuffer");
+
+        VkMemoryRequirements bufferRequirements{};
+        vkGetBufferMemoryRequirements(device_, readbackBuffer_, &bufferRequirements);
+        VkMemoryAllocateInfo bufferAlloc{};
+        bufferAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        bufferAlloc.allocationSize = bufferRequirements.size;
+        bufferAlloc.memoryTypeIndex = findMemoryType(physicalDevice_, bufferRequirements.memoryTypeBits,
+                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        check(vkAllocateMemory(device_, &bufferAlloc, nullptr, &readbackMemory_), "vkAllocateMemory");
+        check(vkBindBufferMemory(device_, readbackBuffer_, readbackMemory_, 0), "vkBindBufferMemory");
+    }
+    offscreenExtent_ = {width, height};
+
+    if (offscreenCommands_ == VK_NULL_HANDLE) {
+        VkCommandBufferAllocateInfo alloc{};
+        alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        alloc.commandPool = commandPool_;
+        alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        alloc.commandBufferCount = 1;
+        check(vkAllocateCommandBuffers(device_, &alloc, &offscreenCommands_), "vkAllocateCommandBuffers");
+    }
+    if (offscreenFence_ == VK_NULL_HANDLE) {
+        VkFenceCreateInfo fence{};
+        fence.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        check(vkCreateFence(device_, &fence, nullptr, &offscreenFence_), "vkCreateFence");
+    }
+
+    // Don't touch this slot's per-frame buffers while an on-screen frame still uses them
+    check(vkWaitForFences(device_, 1, &inFlight_[frame_], VK_TRUE, UINT64_MAX), "vkWaitForFences");
+
+    check(vkResetCommandBuffer(offscreenCommands_, 0), "vkResetCommandBuffer");
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    check(vkBeginCommandBuffer(offscreenCommands_, &begin), "vkBeginCommandBuffer");
+
+    VkRenderPassBeginInfo pass{};
+    pass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    pass.renderPass = offscreenPass_;
+    pass.framebuffer = offscreenFramebuffer_;
+    pass.renderArea.extent = offscreenExtent_;
+    pass.clearValueCount = 1;
+    pass.pClearValues = &clearColor_;
+    vkCmdBeginRenderPass(offscreenCommands_, &pass, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport{};
+    viewport.width = static_cast<float>(width);
+    viewport.height = static_cast<float>(height);
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(offscreenCommands_, 0, 1, &viewport);
+
+    VkRect2D scissor{};
+    scissor.extent = offscreenExtent_;
+    vkCmdSetScissor(offscreenCommands_, 0, 1, &scissor);
+
+    offscreen_ = true;
+}
+
+std::vector<uint8_t> Renderer::endOffscreen()
+{
+    if (!offscreen_)
+        throw std::runtime_error("endOffscreen called without beginOffscreen");
+    offscreen_ = false;
+
+    const VkExtent2D size = offscreenExtent_;
+    VkCommandBuffer cmd = offscreenCommands_;
+    vkCmdEndRenderPass(cmd);
+
+    // The image is now TRANSFER_SRC_OPTIMAL: copy all of it into the readback buffer, packed
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {size.width, size.height, 1};
+    vkCmdCopyImageToBuffer(cmd, offscreenImage_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer_, 1, &region);
+
+    // Make the copy visible to the host read below
+    VkBufferMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = readbackBuffer_;
+    barrier.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
+                         0, nullptr, 1, &barrier, 0, nullptr);
+    check(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
+
+    VkSubmitInfo submit{};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd;
+    check(vkQueueSubmit(graphicsQueue_, 1, &submit, offscreenFence_), "vkQueueSubmit");
+    check(vkWaitForFences(device_, 1, &offscreenFence_, VK_TRUE, UINT64_MAX), "vkWaitForFences");
+    check(vkResetFences(device_, 1, &offscreenFence_), "vkResetFences");
+
+    const size_t bytes = static_cast<size_t>(size.width) * size.height * 4;
+    std::vector<uint8_t> pixels(bytes);
+    void *mapped = nullptr;
+    check(vkMapMemory(device_, readbackMemory_, 0, bytes, 0, &mapped), "vkMapMemory");
+    std::memcpy(pixels.data(), mapped, bytes);
+    vkUnmapMemory(device_, readbackMemory_);
+    return pixels;
+}
+
+void Renderer::destroyOffscreenTarget()
+{
+    if (offscreenFramebuffer_ != VK_NULL_HANDLE)
+        vkDestroyFramebuffer(device_, offscreenFramebuffer_, nullptr);
+    offscreenFramebuffer_ = VK_NULL_HANDLE;
+
+    if (offscreenView_ != VK_NULL_HANDLE)
+        vkDestroyImageView(device_, offscreenView_, nullptr);
+    offscreenView_ = VK_NULL_HANDLE;
+
+    if (offscreenImage_ != VK_NULL_HANDLE)
+        vkDestroyImage(device_, offscreenImage_, nullptr);
+    offscreenImage_ = VK_NULL_HANDLE;
+
+    if (offscreenMemory_ != VK_NULL_HANDLE)
+        vkFreeMemory(device_, offscreenMemory_, nullptr);
+    offscreenMemory_ = VK_NULL_HANDLE;
+
+    if (readbackBuffer_ != VK_NULL_HANDLE)
+        vkDestroyBuffer(device_, readbackBuffer_, nullptr);
+    readbackBuffer_ = VK_NULL_HANDLE;
+
+    if (readbackMemory_ != VK_NULL_HANDLE)
+        vkFreeMemory(device_, readbackMemory_, nullptr);
+    readbackMemory_ = VK_NULL_HANDLE;
 }
 
 void Renderer::waitIdle()

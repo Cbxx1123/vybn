@@ -217,6 +217,7 @@ add_executable(main
     tests/NoteSelfTest.cpp
     tests/StepSelfTest.cpp
     tests/BridgeSelfTest.cpp
+    tests/RenderSelfTest.cpp
     tests/EngineSelfTest.cpp
     tests/PluginSelfTest.cpp
     tests/SynthSelfTest.cpp
@@ -249,6 +250,7 @@ endif()
 target_compile_definitions(main PRIVATE
     ENGINE_SHADER_DIR="${SHADER_DIR}"
     ENGINE_ASSET_DIR="${CMAKE_SOURCE_DIR}/assets"
+    VIBIN_TEST_DIR="${CMAKE_SOURCE_DIR}/tests"
     ENGINE_TEST_PLUGIN="${CMAKE_SOURCE_DIR}/output/plugins/vibin-test-plugins.clap"
 )
 

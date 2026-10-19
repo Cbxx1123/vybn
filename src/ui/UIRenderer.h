@@ -7,6 +7,7 @@
 
 #include "DrawList.h"
 #include "Font.h"
+#include "FrameStats.h"
 #include "engine/Renderer.h"
 
 namespace ui {
@@ -22,6 +23,10 @@ public:
 
     // Call between Renderer::beginFrame and Renderer::endFrame
     void render(const DrawList &list);
+
+    // What the last render recorded: its time (submitMs), glyphs laid out, draw calls, pipeline
+    // binds and bytes of instance data written; the other fields are left at 0
+    const FrameStats &stats() const { return stats_; }
 
 private:
     engine::Renderer &renderer_;
@@ -54,6 +59,7 @@ private:
     std::unordered_map<uint64_t, LiveImage> images_;
     std::vector<engine::Buffer> imageBuffers_;
     uint64_t frames_ = 0;
+    FrameStats stats_;
     bool imagesFailed_ = false; // the device can't show them: images are skipped
 };
 

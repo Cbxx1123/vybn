@@ -84,6 +84,8 @@ public:
         double skipped = 0.0;
     };
     FrameRate frameRate() const { return frameRate_; }
+    // The main window's last frame: its costs and counts (see FrameStats)
+    const FrameStats &frameStats() const { return windows_.front()->context->stats(); }
 
     // Keeps the loop at its fastest idle pace (60 a second) while the app has work going on that
     // changes without input (transport playing or recording, an export, a download...). DawApp
@@ -126,6 +128,12 @@ private:
     void prepareSpare();
     // Counts one tick of the main window, presented or skipped, into the frame rate
     void countFrame(double now, bool presented);
+    // With VIBIN_FRAME_STATS set (any value but 0), adds the main window's frame to a running
+    // total and once a second prints its averages to stderr, one line:
+    // "FRAME 60.0/s presented 59.0/s | update 0.41 ms (layout 0.30) build 1.20 ms submit 0.35 ms |
+    //  surfaces 1834 texts 210 glyphs 2301 images 0 batches 211 | draws 211 binds 150 upload 220 KB"
+    // (counts are per frame, averaged over the frames that had them: submit's over presented frames)
+    void reportStats(double now);
     // Decides how long the loop may sleep after this tick (see tick), and tells the WindowSystem
     void pace(bool presented, bool input, bool posted);
 
@@ -144,6 +152,12 @@ private:
     uint64_t secondDrawn_ = 0;
     uint64_t secondSkipped_ = 0;
     double secondStart_ = -1.0; // window time the current count began, or -1 before the first tick
+    // VIBIN_FRAME_STATS: whether it is on (read once), and the sums since the last line
+    int statsEnabled_ = -1;
+    double statsStart_ = -1.0;
+    FrameStats statsSum_;
+    uint64_t statsFrames_ = 0;
+    uint64_t statsPresented_ = 0;
     // Loop pacing: the last time something happened (a presented frame, input, a posted action),
     // the sleep chosen last, and whether the app is busy
     std::chrono::steady_clock::time_point lastActivity_ = std::chrono::steady_clock::now();

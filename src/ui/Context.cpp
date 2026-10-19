@@ -1,6 +1,7 @@
 #include "Context.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <variant>
 
@@ -24,6 +25,14 @@ protected:
 float toLinear(float c)
 {
     return std::pow(c, 2.2f);
+}
+
+using Clock = std::chrono::steady_clock;
+
+// Milliseconds since `start`
+double msSince(Clock::time_point start)
+{
+    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
 }
 
 }
@@ -234,6 +243,10 @@ Vec2 Context::fromScreen(Vec2 p) const
 
 void Context::update()
 {
+    const Clock::time_point start = Clock::now();
+    stats_.updateMs = 0.0;
+    stats_.layoutMs = 0.0;
+
     struct Activate {
         Context *previous;
         explicit Activate(Context *c) : previous(activeContext) { activeContext = c; }
@@ -241,7 +254,9 @@ void Context::update()
     } activate(this);
 
     removeClosedOverlays();
+    const Clock::time_point layoutStart = Clock::now();
     layout();
+    stats_.layoutMs += msSince(layoutStart);
 
     signals_.beginFrame();
 
@@ -335,12 +350,24 @@ void Context::update()
     // Set after input, since a callback may have changed the theme; the clear colour is linear.
     const Color base = theme_.baseColor();
     renderer_.setClearColor(toLinear(base.r), toLinear(base.g), toLinear(base.b));
+    stats_.updateMs = msSince(start);
 }
 
 uint64_t Context::buildFrame()
 {
+    const Clock::time_point start = Clock::now();
+    // What submit records is unknown until it runs: the frame counts as not presented
+    stats_.submitMs = 0.0;
+    stats_.glyphs = 0;
+    stats_.draws = 0;
+    stats_.pipelineBinds = 0;
+    stats_.uploadBytes = 0;
+    stats_.presented = false;
+
     // Lay out again in case a callback changed the theme, the tree or the overlays
+    const Clock::time_point layoutStart = Clock::now();
     layout();
+    stats_.layoutMs += msSince(layoutStart);
     drawList_.clear();
     root_->draw(drawList_, theme_);
     for (const Overlay &o : overlays_) {
@@ -348,15 +375,29 @@ uint64_t Context::buildFrame()
             drawList_.add(theme_.scrim(bounds(), 0.6f));
         o.component->draw(drawList_, theme_);
     }
+    stats_.surfaces = static_cast<uint32_t>(drawList_.surfaces.size());
+    stats_.texts = static_cast<uint32_t>(drawList_.texts.size());
+    stats_.images = static_cast<uint32_t>(drawList_.images.size());
+    stats_.batches = static_cast<uint32_t>(drawList_.batches.size());
+
     // The clear colour is part of the picture too (update sets it from the theme)
     Fingerprint clear;
     clear.add(theme_.baseColor());
-    return fingerprint(drawList_, clear.value());
+    const uint64_t print = fingerprint(drawList_, clear.value());
+    stats_.buildMs = msSince(start);
+    return print;
 }
 
 void Context::submit()
 {
     uiRenderer_.render(drawList_);
+    // What the renderer recorded (its time, glyphs, draws, binds and upload)
+    const FrameStats &recorded = uiRenderer_.stats();
+    stats_.submitMs = recorded.submitMs;
+    stats_.glyphs = recorded.glyphs;
+    stats_.draws = recorded.draws;
+    stats_.pipelineBinds = recorded.pipelineBinds;
+    stats_.uploadBytes = recorded.uploadBytes;
 }
 
 void Context::render()
