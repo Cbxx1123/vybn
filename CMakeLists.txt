@@ -216,6 +216,7 @@ add_executable(main
     tests/BrowserSelfTest.cpp
     tests/NoteSelfTest.cpp
     tests/StepSelfTest.cpp
+    tests/BridgeSelfTest.cpp
     tests/EngineSelfTest.cpp
     tests/PluginSelfTest.cpp
     tests/SynthSelfTest.cpp

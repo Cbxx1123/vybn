@@ -189,6 +189,8 @@ std::string writeProject(const Project &project, const std::string &folder)
     for (const Track &t : project.tracks) {
         const bool instrument = t.kind == TrackKind::Instrument;
         out << "\n[[tracks]]\n";
+        if (t.id != kNoId)
+            out << "id = " << t.id << "\n";
         out << "name = " << quote(t.name) << "\n";
         out << "kind = " << (instrument ? "\"instrument\"" : "\"audio\"") << "\n";
         out << "gain = " << number(t.gain) << "\n";
@@ -208,6 +210,8 @@ std::string writeProject(const Project &project, const std::string &folder)
             writeDevice(out, "[[tracks.effects]]", d);
         for (const Clip &c : t.clips) {
             out << "\n[[tracks.clips]]\n";
+            if (c.id != kNoId)
+                out << "id = " << c.id << "\n";
             out << "name = " << quote(c.name) << "\n";
             out << "start = " << number(c.start) << "\n";
             out << "length = " << number(c.length) << "\n";
@@ -370,6 +374,19 @@ private:
 std::string at(const char *what, size_t index)
 {
     return std::string(what) + " " + std::to_string(index + 1) + ": ";
+}
+
+// A track's or clip's id: optional (missing keeps kNoId); anything but a whole number from 0 to
+// 4294967295 is refused
+bool readId(FieldReader &r, const toml::Value &table, const std::string &where, ObjectId &out)
+{
+    const toml::Value *v = table.at("id");
+    if (!v)
+        return true;
+    if (v->type() != toml::Type::Integer || v->integer() < 0 || v->integer() > 4294967295LL)
+        return r.fail(where + "id must be a whole number from 0 to 4294967295");
+    out = static_cast<ObjectId>(v->integer());
+    return true;
 }
 
 // Reads what writeDevice wrote into `device`. `instrument` says which kinds may stand there (an
@@ -602,6 +619,8 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
         const std::string where = at("track", ti);
         Track t;
         std::string kind = "audio";
+        if (!readId(r, tv, where, t.id))
+            return false;
         r.text(tv, "name", where, t.name);
         r.text(tv, "kind", where, kind);
         if (!r.ok())
@@ -639,6 +658,8 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
             const toml::Value &cv = (*clips)[ci];
             const std::string clipWhere = where + at("clip", ci);
             Clip c;
+            if (!readId(r, cv, clipWhere, c.id))
+                return false;
             r.text(cv, "name", clipWhere, c.name);
             r.real(cv, "start", clipWhere, c.start);
             r.real(cv, "length", clipWhere, c.length);
@@ -739,6 +760,9 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
         if (!r.ok())
             return false;
     }
+    // Files without ids (or with duplicates) come back with unique ones
+    ObjectId next = 1;
+    p.normalizeIds(next);
     project = std::move(p);
     return true;
 }

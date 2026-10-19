@@ -104,35 +104,85 @@ AudioBridge::AudioBridge(audio::AudioSystem &audio, audio::MidiHub &midi, plugin
 {
 }
 
+AudioBridge::TrackAudio AudioBridge::makeTrack(const Track &t)
+{
+    // Instrument tracks play their notes (and MIDI keyboards) through a sampler; audio tracks
+    // play their clips and monitor the input
+    std::unique_ptr<audio::AudioProcessor> source;
+    TrackAudio fresh;
+    audio::ChainInstrument *chainInstrument = nullptr;
+    if (t.kind == TrackKind::Instrument) {
+        // Whatever instrument the track's chain has
+        auto instrument = std::make_unique<audio::ChainInstrument>();
+        chainInstrument = instrument.get();
+        auto notes = std::make_unique<audio::NotePlayer>(std::move(instrument));
+        notes->setMidiSource(&midi_);
+        fresh.player = notes.get();
+        source = std::move(notes);
+    } else {
+        auto audioClips = std::make_unique<audio::AudioClipPlayer>();
+        fresh.clips = audioClips.get();
+        source = std::move(audioClips);
+    }
+    fresh.processor = &audio_.add<audio::TrackProcessor>(t.name, solo_, std::move(source));
+    fresh.processor->chain.setPlugins(plugins_);
+    if (chainInstrument)
+        chainInstrument->setChain(&fresh.processor->chain);
+    fresh.id = t.id;
+    fresh.kind = t.kind;
+    ++made_;
+    return fresh;
+}
+
+void AudioBridge::removeAudio(TrackAudio &state)
+{
+    // The processor leaves the graph (the audio thread lets it go, and tick deletes it); nothing
+    // else in the state refers to it once it is gone
+    if (state.processor)
+        audio_.remove(*state.processor);
+    state.processor = nullptr;
+    state.player = nullptr;
+    state.clips = nullptr;
+    state.sampler = nullptr;
+    state.pendingSet = nullptr;
+    ++removed_;
+}
+
+void AudioBridge::reconcile(const Project &project)
+{
+    // Each project track takes the entry with its id and kind (its processor, players, chain and
+    // loaded instrument, wherever it was), or a new one; the entries nothing took are removed
+    std::vector<TrackAudio> next;
+    next.reserve(project.tracks.size());
+    std::vector<bool> taken(tracks_.size(), false);
+    for (const Track &t : project.tracks) {
+        size_t match = tracks_.size();
+        for (size_t j = 0; j < tracks_.size(); ++j) {
+            if (!taken[j] && tracks_[j].id == t.id && tracks_[j].kind == t.kind) {
+                match = j;
+                break;
+            }
+        }
+        if (match < tracks_.size()) {
+            taken[match] = true;
+            next.push_back(std::move(tracks_[match]));
+        } else {
+            next.push_back(makeTrack(t));
+        }
+    }
+    for (size_t j = 0; j < tracks_.size(); ++j) {
+        if (!taken[j])
+            removeAudio(tracks_[j]);
+    }
+    tracks_ = std::move(next);
+}
+
 void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
 {
+    // Every track and clip gets its id first, so the tracks can be matched to the audio side by id
+    store.normalizeIds();
     const Project &project = store.project();
-    while (tracks_.size() < project.tracks.size()) {
-        const Track &t = project.tracks[tracks_.size()];
-        // Instrument tracks play their notes (and MIDI keyboards) through a sampler; audio tracks
-        // play their clips and monitor the input
-        std::unique_ptr<audio::AudioProcessor> source;
-        TrackAudio fresh;
-        audio::ChainInstrument *chainInstrument = nullptr;
-        if (t.kind == TrackKind::Instrument) {
-            // Whatever instrument the track's chain has
-            auto instrument = std::make_unique<audio::ChainInstrument>();
-            chainInstrument = instrument.get();
-            auto notes = std::make_unique<audio::NotePlayer>(std::move(instrument));
-            notes->setMidiSource(&midi_);
-            fresh.player = notes.get();
-            source = std::move(notes);
-        } else {
-            auto audioClips = std::make_unique<audio::AudioClipPlayer>();
-            fresh.clips = audioClips.get();
-            source = std::move(audioClips);
-        }
-        fresh.processor = &audio_.add<audio::TrackProcessor>(t.name, solo_, std::move(source));
-        fresh.processor->chain.setPlugins(plugins_);
-        if (chainInstrument)
-            chainInstrument->setChain(&fresh.processor->chain);
-        tracks_.push_back(fresh);
-    }
+    reconcile(project);
     levels_.resize(tracks_.size());
     // The master effects
     audio::DeviceChain &master = audio_.masterEffects();
@@ -210,13 +260,23 @@ void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
             state.pendingSet = nullptr;
             if (!wanted.empty()) {
                 const std::string name = wanted;
-                library_.load(name, [this, i, name](std::shared_ptr<const audio::SampleSet> set, const std::string &error) {
-                    if (i >= tracks_.size() || tracks_[i].requested != name)
-                        return; // the track has moved on, or the project was replaced
+                // Found again by id when it arrives: the track may have moved in the list since
+                const ObjectId id = state.id;
+                const TrackKind kind = state.kind;
+                library_.load(name, [this, id, kind, name](std::shared_ptr<const audio::SampleSet> set, const std::string &error) {
+                    TrackAudio *track = nullptr;
+                    for (TrackAudio &s : tracks_) {
+                        if (s.id == id && s.kind == kind && s.requested == name) {
+                            track = &s;
+                            break;
+                        }
+                    }
+                    if (!track)
+                        return; // the track has gone, moved on, or the project was replaced
                     if (set)
-                        tracks_[i].pendingSet = std::move(set);
+                        track->pendingSet = std::move(set);
                     else
-                        tracks_[i].error = error;
+                        track->error = error;
                 });
             }
         }
@@ -246,22 +306,12 @@ audio::TrackProcessor *AudioBridge::processor(int track) const
 void AudioBridge::dropAll()
 {
     // The tracks leave the graph; sync adds the project's. Loads still under way for the old
-    // tracks find their index gone (or another name there) and are dropped.
-    for (const TrackAudio &t : tracks_)
-        audio_.remove(*t.processor);
+    // tracks find no entry with their id and kind waiting for them, or one that asked for the same
+    // instrument, which gets the same samples, and are dropped otherwise.
+    for (TrackAudio &t : tracks_)
+        removeAudio(t);
     tracks_.clear();
     levels_.clear();
-}
-
-void AudioBridge::removeTrack(int index)
-{
-    const size_t i = static_cast<size_t>(index);
-    if (i >= tracks_.size())
-        return;
-    audio_.remove(*tracks_[i].processor);
-    tracks_.erase(tracks_.begin() + index);
-    if (i < levels_.size())
-        levels_.erase(levels_.begin() + index);
 }
 
 void AudioBridge::captureStates(ProjectStore &store)
@@ -281,12 +331,23 @@ void AudioBridge::captureStates(ProjectStore &store)
     const Project &project = store.project();
     for (size_t j = 0; j < project.masterEffects.size(); ++j)
         capture(audio_.masterEffects().effect(j), DevicePlace::effect(true, 0, static_cast<int>(j)));
-    for (size_t i = 0; i < tracks_.size() && i < project.tracks.size(); ++i) {
+    // Each project track's audio side is the entry with its id and kind (a save can come before
+    // this frame's sync, when the list is still in the order it had)
+    for (size_t i = 0; i < project.tracks.size(); ++i) {
         const Track &t = project.tracks[i];
+        const TrackAudio *state = nullptr;
+        for (const TrackAudio &s : tracks_) {
+            if (s.id == t.id && s.kind == t.kind) {
+                state = &s;
+                break;
+            }
+        }
+        if (!state || !state->processor)
+            continue;
         if (t.kind == TrackKind::Instrument && t.hasInstrument())
-            capture(tracks_[i].processor->chain.instrument(), DevicePlace::instrumentOf(static_cast<int>(i)));
+            capture(state->processor->chain.instrument(), DevicePlace::instrumentOf(static_cast<int>(i)));
         for (size_t j = 0; j < t.effects.size(); ++j)
-            capture(tracks_[i].processor->chain.effect(j), DevicePlace::effect(false, static_cast<int>(i), static_cast<int>(j)));
+            capture(state->processor->chain.effect(j), DevicePlace::effect(false, static_cast<int>(i), static_cast<int>(j)));
     }
 }
 

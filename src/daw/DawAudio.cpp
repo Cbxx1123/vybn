@@ -364,8 +364,7 @@ void DawApp::deleteTrack(int index)
         ui_.post([this, index] {
             if (!project().track(index))
                 return;
-            bridge_->removeTrack(index);
-            session_.store().edit().deleteTrack(index);
+            session_.store().edit().deleteTrack(index); // sync takes the track's processor out when its id is gone
             arrangement_->rebuild();
             mixer_->rebuild();
         });

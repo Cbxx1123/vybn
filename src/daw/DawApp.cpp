@@ -171,6 +171,7 @@ void DawApp::buildBody()
 
     // First each frame: the output peaks, read once for every meter, and the audio graph
     body.add<FrameHook>([this](const Input &input) {
+        session_.store().normalizeIds(); // edits made last frame get their ids before history, autosave and the audio see them
         recordingController_->updateCountIn(); // starts the take when the count-in ends
         // Undo: last frame's edits become a step once nothing is being dragged or typed
         mouseHeld_ = input.down || input.middleDown;
@@ -861,15 +862,17 @@ void DawApp::redo()
 void DawApp::restore(Project state)
 {
     restoring_ = false;
-    // Arming and monitoring aren't part of the history: they stay as they are now
-    bool sameTracks = state.tracks.size() == project().tracks.size();
-    for (size_t i = 0; i < state.tracks.size() && i < project().tracks.size(); ++i) {
-        Track &t = state.tracks[i];
-        const Track &now = project().tracks[i];
-        sameTracks = sameTracks && t.kind == now.kind;
-        if (t.kind == now.kind) {
-            t.armed = now.armed;
-            t.monitor = now.monitor;
+    // Whether the tracks came, went, moved or changed kind: compared before the replace
+    bool tracksChanged = state.tracks.size() != project().tracks.size();
+    for (size_t i = 0; !tracksChanged && i < state.tracks.size(); ++i) {
+        tracksChanged = state.tracks[i].id != project().tracks[i].id || state.tracks[i].kind != project().tracks[i].kind;
+    }
+    // Arming and monitoring aren't part of the history: they stay as they are now, kept by track id
+    for (Track &t : state.tracks) {
+        const Track *now = project().findTrack(t.id);
+        if (now && now->kind == t.kind) {
+            t.armed = now->armed;
+            t.monitor = now->monitor;
         }
     }
     // Nor is the loop
@@ -877,12 +880,11 @@ void DawApp::restore(Project state)
     state.loopEnd = project().loopEnd;
     state.looping = project().looping;
     audio_.transport().setTempo(state.tempo);
-    if (!sameTracks)
-        bridge_->dropAll(); // tracks came or went: their processors are made again
-    // The store's replace: the history and the saved text stay as they are
+    // The store's replace: the history and the saved text stay as they are. The bridge matches the
+    // tracks by id in sync, so a kept track keeps its processor and plugins.
     session_.store().replace(std::move(state));
     syncTracks();
-    if (!sameTracks) {
+    if (tracksChanged) {
         arrangement_->rebuild();
         mixer_->rebuild();
     }
@@ -1062,6 +1064,7 @@ void DawApp::pickDevice(bool instrument, bool master, int track, Rect anchor)
 
 void DawApp::saveTo(const std::string &path, std::function<void()> after)
 {
+    session_.store().normalizeIds(); // a save can run before this frame's hook: the file gets usable ids
     bridge_->captureStates(session_.store());
     std::string error;
     if (!saveProjectFile(path, project(), error)) {

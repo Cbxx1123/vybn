@@ -1,6 +1,7 @@
 #include "Project.h"
 
 #include <algorithm>
+#include <set>
 
 #include "audio/Effects.h"
 #include "audio/PluginInstrument.h"
@@ -15,6 +16,60 @@ Track *Project::track(int index)
 const Track *Project::track(int index) const
 {
     return index >= 0 && index < static_cast<int>(tracks.size()) ? &tracks[static_cast<size_t>(index)] : nullptr;
+}
+
+int Project::trackIndex(ObjectId id) const
+{
+    if (id == kNoId)
+        return -1;
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        if (tracks[i].id == id)
+            return static_cast<int>(i);
+    }
+    return -1;
+}
+
+Track *Project::findTrack(ObjectId id)
+{
+    return track(trackIndex(id));
+}
+
+const Track *Project::findTrack(ObjectId id) const
+{
+    return track(trackIndex(id));
+}
+
+bool Project::normalizeIds(ObjectId &next)
+{
+    // Above every id in use, so a fresh one never matches an existing one
+    for (const Track &t : tracks) {
+        next = std::max(next, t.id + 1);
+        for (const Clip &c : t.clips)
+            next = std::max(next, c.id + 1);
+    }
+    next = std::max<ObjectId>(next, 1);
+
+    bool changed = false;
+    std::set<ObjectId> trackIds;
+    for (Track &t : tracks) {
+        if (t.id == kNoId || trackIds.count(t.id)) {
+            t.id = next++;
+            changed = true;
+        }
+        trackIds.insert(t.id);
+    }
+    // Clip ids are unique across the whole project, not per track
+    std::set<ObjectId> clipIds;
+    for (Track &t : tracks) {
+        for (Clip &c : t.clips) {
+            if (c.id == kNoId || clipIds.count(c.id)) {
+                c.id = next++;
+                changed = true;
+            }
+            clipIds.insert(c.id);
+        }
+    }
+    return changed;
 }
 
 std::vector<audio::DeviceSetting> *Project::effects(bool master, int index)
@@ -361,6 +416,8 @@ Project demoProject()
     add("Ambience", TrackKind::Audio, 0.4f, 0.5f, {{"Room tone", 0.0, 96.0, {}}});
     p.bars = 32;
     p.select(0);
+    ObjectId next = 1;
+    p.normalizeIds(next); // made with its ids, as a project read from a file is
     return p;
 }
 
@@ -385,6 +442,8 @@ Project newProject(const audio::DeviceSetting &instrument, const NewProjectOptio
     if (options.audioTrack)
         p.addTrack(TrackKind::Audio);
     p.select(p.tracks.empty() ? -1 : 0, options.instrumentTrack ? 0 : -1);
+    ObjectId next = 1;
+    p.normalizeIds(next); // made with its ids, as a project read from a file is
     return p;
 }
 

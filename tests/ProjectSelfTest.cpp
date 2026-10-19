@@ -1,5 +1,7 @@
 #include "ProjectSelfTest.h"
 
+#include "BridgeSelfTest.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -1389,6 +1391,188 @@ id = "vibin.synth"
 
         fs::remove_all(base, ec);
     }
+
+    // Stable ids: every track and clip has a unique non-zero id, kept through edits, saving and opening
+    {
+        auto trackIds = [](const daw::Project &p) {
+            std::vector<daw::ObjectId> ids;
+            for (const daw::Track &t : p.tracks)
+                ids.push_back(t.id);
+            return ids;
+        };
+        auto clipIds = [](const daw::Project &p) {
+            std::vector<daw::ObjectId> ids;
+            for (const daw::Track &t : p.tracks) {
+                for (const daw::Clip &cl : t.clips)
+                    ids.push_back(cl.id);
+            }
+            return ids;
+        };
+        // No id is 0 and no two are alike
+        auto distinctNonZero = [](std::vector<daw::ObjectId> ids) {
+            if (std::find(ids.begin(), ids.end(), daw::kNoId) != ids.end())
+                return false;
+            std::sort(ids.begin(), ids.end());
+            return std::adjacent_find(ids.begin(), ids.end()) == ids.end();
+        };
+        // The highest track or clip id in a project
+        auto highest = [](const daw::Project &p) {
+            daw::ObjectId top = daw::kNoId;
+            for (const daw::Track &t : p.tracks) {
+                top = std::max(top, t.id);
+                for (const daw::Clip &cl : t.clips)
+                    top = std::max(top, cl.id);
+            }
+            return top;
+        };
+        // Two tracks (the first with two clips, the second with one) with the given ids
+        auto shape = [](daw::ObjectId t0, daw::ObjectId t1, daw::ObjectId c0, daw::ObjectId c1, daw::ObjectId c2) {
+            daw::Project p;
+            p.tracks.resize(2);
+            p.tracks[0].id = t0;
+            p.tracks[1].id = t1;
+            p.tracks[0].clips = {daw::Clip("A", 0.0, 4.0), daw::Clip("B", 4.0, 4.0)};
+            p.tracks[0].clips[0].id = c0;
+            p.tracks[0].clips[1].id = c1;
+            p.tracks[1].clips = {daw::Clip("C", 0.0, 4.0)};
+            p.tracks[1].clips[0].id = c2;
+            return p;
+        };
+
+        // normalizeIds on ids all 0: every track and clip gets a unique non-zero id; a second call changes nothing
+        daw::Project z = shape(0, 0, 0, 0, 0);
+        daw::ObjectId next = 1;
+        const bool zeroChanged = z.normalizeIds(next);
+        c.check(zeroChanged && distinctNonZero(trackIds(z)) && distinctNonZero(clipIds(z)),
+                "Ids: zero ids become unique non-zero ids", std::to_string(trackIds(z).size()) + " tracks");
+        c.check(next > highest(z), "Ids: next ends above every id given");
+        const std::vector<daw::ObjectId> zTracks = trackIds(z), zClips = clipIds(z);
+        const bool zAgain = z.normalizeIds(next);
+        c.check(!zAgain && trackIds(z) == zTracks && clipIds(z) == zClips, "Ids: a second normalizeIds changes nothing");
+
+        // Unique ids are kept exactly
+        daw::Project k = shape(3, 9, 4, 6, 10);
+        daw::ObjectId nextK = 1;
+        const bool keptChanged = k.normalizeIds(nextK);
+        c.check(!keptChanged && trackIds(k) == std::vector<daw::ObjectId>({3, 9}) && clipIds(k) == std::vector<daw::ObjectId>({4, 6, 10}),
+                "Ids: unique ids are kept exactly");
+
+        // A duplicated track id: the first keeps it, the later gets a new one
+        daw::Project dt = shape(3, 3, 4, 6, 10);
+        daw::ObjectId nextT = 1;
+        const bool dupTrackChanged = dt.normalizeIds(nextT);
+        c.check(dupTrackChanged && dt.tracks[0].id == 3 && dt.tracks[1].id != 3 && distinctNonZero(trackIds(dt)) && nextT > highest(dt),
+                "Ids: a duplicate track id is renumbered after the first");
+
+        // A clip copied into another track (same id): the first keeps it, and next ends above every id
+        daw::Project dc = shape(3, 9, 4, 6, 4);
+        daw::ObjectId nextC = 1;
+        const bool dupClipChanged = dc.normalizeIds(nextC);
+        c.check(dupClipChanged && dc.tracks[0].clips[0].id == 4 && dc.tracks[1].clips[0].id != 4 && distinctNonZero(clipIds(dc)) &&
+                    nextC > highest(dc),
+                "Ids: a duplicate clip id is renumbered after the first");
+
+        // A track and a clip may share a number: the namespaces are separate
+        daw::Project ns;
+        ns.tracks.resize(1);
+        ns.tracks[0].id = 5;
+        ns.tracks[0].clips = {daw::Clip("D", 0.0, 4.0)};
+        ns.tracks[0].clips[0].id = 5;
+        daw::ObjectId nextNs = 1;
+        const bool nsChanged = ns.normalizeIds(nextNs);
+        c.check(!nsChanged && ns.tracks[0].id == 5 && ns.tracks[0].clips[0].id == 5, "Ids: a track and a clip may share a number");
+
+        // Lookups by id: the index or the track, -1 or nullptr for a missing id and for kNoId
+        daw::Project f = shape(10, 20, 1, 2, 3);
+        f.tracks.push_back(daw::Track()); // id 0, which kNoId must not find
+        const daw::Project &cf = f;
+        c.check(f.trackIndex(20) == 1 && cf.trackIndex(10) == 0 && f.trackIndex(30) == -1 && f.trackIndex(daw::kNoId) == -1 &&
+                    f.findTrack(20) == &f.tracks[1] && cf.findTrack(10) == &f.tracks[0] && f.findTrack(30) == nullptr &&
+                    cf.findTrack(daw::kNoId) == nullptr,
+                "Ids: tracks are found by id, none for a missing id or kNoId");
+
+        // A store made from a project with zero ids has non-zero ids at once
+        daw::ProjectStore zs(shape(0, 0, 0, 0, 0));
+        c.check(distinctNonZero(trackIds(zs.project())) && distinctNonZero(clipIds(zs.project())),
+                "Ids: a store gives its project ids on construction");
+
+        // normalizeIds with nothing to do moves no revision
+        const uint64_t nr = zs.revision(), ns0 = zs.structureRevision(), nt = zs.trackRevision(0);
+        const bool noop = zs.normalizeIds();
+        c.check(!noop && zs.revision() == nr && zs.structureRevision() == ns0 && zs.trackRevision(0) == nt,
+                "Ids: a store's normalizeIds with nothing to do moves nothing");
+
+        // A clip with id 0 added by an edit: normalizeIds gives it an id, moving the revisions but not the structure
+        daw::Clip stray("Stray", 0.0, 4.0);
+        zs.editTrack(0).clips.push_back(stray);
+        const uint64_t r0 = zs.revision(), t0 = zs.trackRevision(0), s0 = zs.structureRevision();
+        const bool fixed = zs.normalizeIds();
+        c.check(fixed && zs.revision() > r0 && zs.trackRevision(0) > t0 && zs.structureRevision() == s0 &&
+                    zs.project().tracks[0].clips.back().id != daw::kNoId && distinctNonZero(clipIds(zs.project())),
+                "Ids: a stray clip gets an id; revisions move, structure does not");
+
+        // replace with zero ids: the new ids are all above every id the store gave before
+        const daw::ObjectId before = highest(zs.project());
+        zs.replace(shape(0, 0, 0, 0, 0));
+        bool above = true;
+        for (daw::ObjectId id : trackIds(zs.project()))
+            above = above && id > before;
+        for (daw::ObjectId id : clipIds(zs.project()))
+            above = above && id > before;
+        c.check(above && distinctNonZero(trackIds(zs.project())) && distinctNonZero(clipIds(zs.project())),
+                "Ids: replace gives new ids above every id given before");
+
+        // Ids are ignored by sameContent and sameSaved, so an id-only difference is not a change
+        daw::Project sa = daw::demoProject();
+        daw::Project sb = sa;
+        sb.tracks[0].id = 77;
+        sb.tracks[0].clips[0].id = 88;
+        sb.tracks[1].id = 0;
+        c.check(daw::sameContent(sa, sb) && daw::sameSaved(sa, sb), "Ids: sameContent and sameSaved ignore ids");
+        daw::History ih;
+        ih.reset(sa);
+        const bool idStep = ih.update(sb, true, false, 1.0);
+        c.check(!idStep && !ih.canUndo(), "Ids: an id-only difference is not an undo step");
+
+        // Through a file: ids saved and read back unchanged, a track's table starting with its id
+        daw::Project idp = shape(7, 3, 11, 12, 13);
+        const std::string idText = daw::writeProject(idp);
+        daw::Project idBack;
+        std::string idError;
+        const bool idOk = daw::readProject(idText, idBack, idError);
+        c.check(idOk && trackIds(idBack) == trackIds(idp) && clipIds(idBack) == clipIds(idp) && daw::writeProject(idBack) == idText,
+                "Ids: saved ids read back unchanged", idError);
+        const size_t tablePos = idText.find("[[tracks]]\n");
+        c.check(tablePos != std::string::npos && idText.compare(tablePos + 11, 5, "id = ") == 0,
+                "Ids: a track's table starts with its id");
+
+        // A file with no id keys reads with unique non-zero ids
+        const std::string bare = "format = 3\nname = \"Bare ids\"\n[[tracks]]\nname = \"One\"\n[[tracks.clips]]\nname = \"a\"\n"
+                                 "[[tracks.clips]]\nname = \"b\"\n[[tracks]]\nname = \"Two\"\n[[tracks.clips]]\nname = \"c\"\n";
+        daw::Project bareP;
+        std::string bareError;
+        const bool bareIds = daw::readProject(bare, bareP, bareError);
+        c.check(bareIds && bareP.tracks.size() == 2 && distinctNonZero(trackIds(bareP)) && distinctNonZero(clipIds(bareP)),
+                "Ids: a file without ids reads with unique non-zero ids", bareError);
+
+        // Invalid ids refuse the file, with a reason
+        const std::string negTrack = refusal("format = 3\nname = \"Bad\"\n[[tracks]]\nid = -1\nname = \"A\"\n");
+        const std::string textTrack = refusal("format = 3\n[[tracks]]\nid = \"x\"\nname = \"A\"\n");
+        const std::string bigTrack = refusal("format = 3\n[[tracks]]\nid = 4294967296\nname = \"A\"\n");
+        const std::string negClip = refusal("format = 3\n[[tracks]]\nname = \"A\"\n[[tracks.clips]]\nid = -1\nname = \"c\"\n");
+        c.check(!negTrack.empty(), "Ids: a negative track id refuses the file", negTrack);
+        c.check(!textTrack.empty(), "Ids: a text track id refuses the file", textTrack);
+        c.check(!bigTrack.empty(), "Ids: a track id above 4294967295 refuses the file", bigTrack);
+        c.check(!negClip.empty(), "Ids: a negative clip id refuses the file", negClip);
+
+        // The largest id is allowed
+        daw::Project maxP;
+        const bool maxOk = daw::readProject("format = 3\n[[tracks]]\nid = 4294967295\nname = \"A\"\n", maxP, bareError);
+        c.check(maxOk && maxP.tracks.size() == 1 && maxP.tracks[0].id == 4294967295u, "Ids: the largest id is read", bareError);
+    }
+
+    // The audio bridge keeps processors across structural edits (its own checks)
+    c.failures += runBridgeChecks();
 
     std::printf("\n%s: %d failed\n", c.failures == 0 ? "All passed" : "FAILED", c.failures);
     return c.failures == 0 ? 0 : 1;

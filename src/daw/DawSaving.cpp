@@ -278,6 +278,7 @@ void DawApp::openVersionCopy(const std::string &folder, const AutosaveVersion &v
 void DawApp::restoreVersion(const std::string &folder, const AutosaveVersion &version, const std::string &path)
 {
     // What is there now stays as a version of its own first
+    session_.store().normalizeIds();
     autosave_->saveVersion(session_, "Before restore");
     Project project;
     std::string error;
@@ -329,6 +330,7 @@ void DawApp::openSaveVersion()
     TextField &label = dialog.body().add<TextField>("Name, e.g. Before the bridge");
     TextField *field = &label;
     auto save = [this, field] {
+        session_.store().normalizeIds();
         autosave_->saveVersion(session_, field->text().empty() ? std::string("Saved version") : field->text());
     };
     // Enter saves too

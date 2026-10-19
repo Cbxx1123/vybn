@@ -53,7 +53,8 @@ public:
     // Project::normalizeIds with the store's high-water mark, so an id is never given twice in a
     // session (across replace, undo and redo too). When an id changed, revision() and the
     // changed tracks' trackRevision move (not the structure: no track came or went); when none
-    // did it moves nothing and costs one pass over the tracks and clips. The constructor and
+    // did it moves nothing. It only looks when edit(), editTrack() or replace() ran since the last call
+    // (nothing else can add a track or a clip), so an idle frame costs a flag test. The constructor and
     // replace() run it; DawApp runs it at the start of every frame, so edits made in a frame
     // have their ids by the next. Call it before anything that relies on ids.
     bool normalizeIds();
@@ -81,8 +82,9 @@ private:
     mutable uint64_t structureRevision_ = 1;
     mutable std::vector<uint64_t> trackRevision_;
     mutable std::vector<uint64_t> mixRevision_;
-    mutable bool structureDirty_ = false;
-    ObjectId nextId_ = 1; // above every id this store has given or seen // edit() was called: tracks may have been added, removed or moved
+    mutable bool structureDirty_ = false; // edit() was called: tracks may have been added, removed or moved
+    ObjectId nextId_ = 1;   // above every id this store has given or seen
+    bool idsDirty_ = true;  // edit(), editTrack() or replace() ran since the last normalizeIds()
 };
 
 }
