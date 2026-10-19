@@ -49,13 +49,29 @@ void DawApp::applyPluginSettings()
     plugins_->setConfig(config);
 }
 
+// The key of a view's place: the master by its index, a track by its id (ids are never reused)
+static std::string viewKey(const DevicePlace &place, ObjectId track)
+{
+    return place.master ? "M:" + std::to_string(place.index) : "T" + std::to_string(track) + ":" + std::to_string(place.index);
+}
+
+DevicePlace DawApp::placeAt(const DevicePlace &place, ObjectId track) const
+{
+    DevicePlace found = place;
+    if (!place.master)
+        found.track = project().trackIndex(track); // -1 once the track is gone
+    return found;
+}
+
 void DawApp::openDevice(const DevicePlace &place, bool interface)
 {
     const audio::DeviceSetting *setting = project().device(place);
     if (!setting)
         return;
     const std::string key = setting->key();
-    const std::string where = place.key();
+    const Track *track = project().track(place.track);
+    const ObjectId trackId = track ? track->id : kNoId;
+    const std::string where = viewKey(place, trackId);
     if (auto it = deviceViews_.find(where); it != deviceViews_.end() && it->second.key == key && !it->second.closing) {
         dock_->show(*it->second.panel);
         if (interface)
@@ -66,24 +82,25 @@ void DawApp::openDevice(const DevicePlace &place, bool interface)
     std::string caption = deviceKindText(*setting, place.instrument());
     if (const CatalogueEntry *e = catalogue_->find(DeviceCatalogue::keyOf(*setting)); e && setting->kind == audio::DeviceKind::Plugin)
         caption += "  /  " + e->source;
-    const Track *t = project().track(place.track);
-    caption += "  /  " + (place.master ? std::string("Master") : t ? t->name : std::string());
+    caption += "  /  " + (place.master ? std::string("Master") : track ? track->name : std::string());
     // A synth's view is bigger: its panel lays out every section
     const bool synth = setting->kind == audio::DeviceKind::Synth;
-    gui_.post([this, place, key, where, title, caption, interface, synth] {
-        // Found again each time: the same place, still holding the same device
+    gui_.post([this, place, trackId, key, where, title, caption, interface, synth] {
+        // Found again each time: the same place (its track by id), still holding the same device
         DeviceAccess access;
-        access.setting = [this, place, key]() -> const audio::DeviceSetting * {
-            const audio::DeviceSetting *d = session_.store().project().device(place);
+        access.setting = [this, place, trackId, key]() -> const audio::DeviceSetting * {
+            const audio::DeviceSetting *d = session_.store().project().device(placeAt(place, trackId));
             return d && d->key() == key ? d : nullptr;
         };
-        access.edit = [this, place, key]() -> audio::DeviceSetting * {
-            const audio::DeviceSetting *d = session_.store().project().device(place);
-            return d && d->key() == key ? session_.store().editDevice(place) : nullptr;
+        access.edit = [this, place, trackId, key]() -> audio::DeviceSetting * {
+            const DevicePlace at = placeAt(place, trackId);
+            const audio::DeviceSetting *d = session_.store().project().device(at);
+            return d && d->key() == key ? session_.store().editDevice(at) : nullptr;
         };
-        access.device = [this, place, key]() -> audio::Device * {
-            const audio::DeviceSetting *d = project().device(place);
-            return d && d->key() == key ? bridge_->deviceAt(project(), place) : nullptr;
+        access.device = [this, place, trackId, key]() -> audio::Device * {
+            const DevicePlace at = placeAt(place, trackId);
+            const audio::DeviceSetting *d = project().device(at);
+            return d && d->key() == key ? bridge_->deviceAt(project(), at) : nullptr;
         };
         // A panel of the dock grid of its own, floating in a native window to begin with (it can be
         // docked anywhere in the grid, and closed from its tab or its window)
@@ -100,7 +117,7 @@ void DawApp::openDevice(const DevicePlace &place, bool interface)
         auto &view = panel.add<DeviceView>(gui_, access, title, caption, !place.instrument(), synth);
         view.setGrow(1.0f);
         DeviceView *raw = &view;
-        deviceViews_[where] = {p, raw, key, place, false};
+        deviceViews_[where] = {p, raw, key, place, trackId, false};
         if (interface)
             view.showInterface(true);
         // While it floats on the plugin's interface, its window takes the interface's size (as far

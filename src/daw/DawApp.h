@@ -173,6 +173,8 @@ public:
     // A device's full view in a dock panel of its own, floating at first (one per place; asking
     // again shows it), on its plugin's interface when `interface` and it has one
     void openDevice(const DevicePlace &place, bool interface = false);
+    // The place as it is now: a view's track is found again by its id (-1 if it was deleted)
+    DevicePlace placeAt(const DevicePlace &place, ObjectId track) const;
     // Puts a sound file on the selected audio track (or a new one) at the playhead
     void addSound(const std::string &path);
     // Asks for sound files and copies them into the library's Samples/<category>
@@ -301,6 +303,7 @@ private:
         DeviceView *view;
         std::string key; // the device's (DeviceSetting::key) when opened
         DevicePlace place;
+        ObjectId track = kNoId; // the place's track by id (kNoId for the master): its index moves
         bool closing = false; // its device left its place: being taken out
     };
     std::map<std::string, OpenDevice> deviceViews_;

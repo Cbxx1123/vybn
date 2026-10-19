@@ -182,7 +182,7 @@ void DawApp::buildBody()
         for (auto &open : deviceViews_) {
             if (PluginEditorView *editor = open.second.view->editor())
                 editor->hideIfUnseen(input.time);
-            const audio::DeviceSetting *d = project().device(open.second.place);
+            const audio::DeviceSetting *d = project().device(placeAt(open.second.place, open.second.track));
             if (!open.second.closing && (!d || d->key() != open.second.key)) {
                 open.second.closing = true;
                 dock_->removePanel(*open.second.panel);
