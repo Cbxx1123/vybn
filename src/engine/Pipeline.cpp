@@ -94,11 +94,11 @@ Pipeline::Pipeline(VkDevice device, VkRenderPass renderPass, const Shader &verte
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &pushRange;
     }
-    VkDescriptorSetLayout setLayout = options.descriptorSetLayout ? options.descriptorSetLayout->handle() : VK_NULL_HANDLE;
-    if (setLayout != VK_NULL_HANDLE) {
-        layoutInfo.setLayoutCount = 1;
-        layoutInfo.pSetLayouts = &setLayout;
-    }
+    std::vector<VkDescriptorSetLayout> setLayouts;
+    for (const DescriptorSetLayout *setLayout : options.descriptorSetLayouts)
+        setLayouts.push_back(setLayout->handle());
+    layoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
+    layoutInfo.pSetLayouts = setLayouts.empty() ? nullptr : setLayouts.data();
     check(vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &layout_), "vkCreatePipelineLayout");
 
     VkGraphicsPipelineCreateInfo info{};

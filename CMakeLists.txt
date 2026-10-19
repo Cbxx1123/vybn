@@ -68,11 +68,6 @@ endif()
 
 set(SHADER_DIR "${CMAKE_SOURCE_DIR}/output/shaders")
 set(SHADER_SOURCES
-    shaders/ui.vert
-    shaders/ui.frag
-    shaders/text.vert
-    shaders/text.frag
-    shaders/image.frag
     shaders/prim.vert
     shaders/prim.frag
 )

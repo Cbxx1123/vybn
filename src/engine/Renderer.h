@@ -74,8 +74,9 @@ public:
     void drawInstanced(const Buffer &instances, uint32_t vertexCount);
     // Same, for `instanceCount` elements starting at `firstInstance`
     void drawInstanced(const Buffer &instances, uint32_t vertexCount, uint32_t firstInstance, uint32_t instanceCount);
-    // Binds `set` as set 0 of `pipeline`'s layout; call after bind()
-    void bindDescriptorSet(const Pipeline &pipeline, const DescriptorSet &set);
+    // Binds `set` as set `index` of `pipeline`'s layout; call after bind(). Sets bound for one
+    // pipeline stay bound for another whose layout matches up to that set.
+    void bindDescriptorSet(const Pipeline &pipeline, const DescriptorSet &set, uint32_t index = 0);
     void pushConstants(const Pipeline &pipeline, const void *data, uint32_t size);
     // Limits drawing to a rectangle in framebuffer pixels (clamped to the framebuffer).
     // beginFrame resets it to the whole framebuffer; clearScissor does the same mid-frame.

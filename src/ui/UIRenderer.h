@@ -12,10 +12,12 @@
 
 namespace ui {
 
-// Draws a DrawList's prims in order: one pipeline (shaders/prim.vert and prim.frag) for surfaces
-// and glyphs, one instanced draw per run of them, and images on their own pipeline, one draw each.
-// Its shaders, pipelines and the font atlas's texture are shared by every UIRenderer on the same
-// device and font, so another window costs only its buffers. Must be destroyed before the
+// Draws a DrawList's prims in order with one pipeline (shaders/prim.vert and prim.frag) for every
+// kind: surfaces, glyphs and images. Each maximal run of surfaces and glyphs is one instanced draw,
+// and each image is a draw of its own. Set 0 of the pipeline is the font atlas, set 1 the image
+// being drawn (a blank one when none is). Each prim is clipped in the shader, so there are no
+// scissors. Its shaders, pipeline and the atlas's texture are shared by every UIRenderer on the
+// same device and font, so another window costs only its buffers. Must be destroyed before the
 // engine::Renderer; `font` must outlive it.
 class UIRenderer {
 public:
@@ -36,7 +38,7 @@ private:
     struct Shared;
     std::shared_ptr<Shared> shared_;
 
-    // One per frame in flight: the frame's prims (every kind but images)
+    // One per frame in flight: the frame's prims, every kind
     std::vector<engine::Buffer> primBuffers_;
 
     // The descriptor set showing `image` for frame slot `frame`, its texture brought up to date
@@ -55,7 +57,6 @@ private:
         uint64_t lastFrame = 0;
     };
     std::unordered_map<uint64_t, LiveImage> images_;
-    std::vector<engine::Buffer> imageBuffers_;
     uint64_t frames_ = 0;
     FrameStats stats_;
     bool imagesFailed_ = false; // the device can't show them: images are skipped

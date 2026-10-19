@@ -353,11 +353,11 @@ void Renderer::drawInstanced(const Buffer &instances, uint32_t vertexCount, uint
     vkCmdDraw(cmd, vertexCount, instanceCount, 0, firstInstance);
 }
 
-void Renderer::bindDescriptorSet(const Pipeline &pipeline, const DescriptorSet &set)
+void Renderer::bindDescriptorSet(const Pipeline &pipeline, const DescriptorSet &set, uint32_t index)
 {
     VkDescriptorSet handle = set.handle();
     vkCmdBindDescriptorSets(recording(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout(),
-                            0, 1, &handle, 0, nullptr);
+                            index, 1, &handle, 0, nullptr);
 }
 
 void Renderer::pushConstants(const Pipeline &pipeline, const void *data, uint32_t size)

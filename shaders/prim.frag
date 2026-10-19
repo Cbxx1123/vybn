@@ -1,10 +1,12 @@
 #version 450
 
 // Every prim (src/ui/Prim.h), by kind. See prim.vert for the inputs.
-// CONTRACT: set 0 binding 0 is the font atlas (sampler2D, single channel coverage). Images bind
-// their own texture at set 0 binding 0 in the MVP (as image.frag did); Extension moves them to set 1.
+// CONTRACT: set 0 binding 0 is the font atlas (sampler2D, single channel coverage), used by glyphs.
+// Set 1 binding 0 is the picture an image prim shows (sampler2D, sRGB pixels); UIRenderer binds
+// a blank one when no image is drawn.
 
-layout(set = 0, binding = 0) uniform sampler2D atlas; // glyphs: coverage; images: the picture
+layout(set = 0, binding = 0) uniform sampler2D atlas; // glyphs: coverage
+layout(set = 1, binding = 0) uniform sampler2D image; // images: the picture
 
 layout(location = 0) in vec2 vLocal;
 layout(location = 1) in vec2 vUv;
@@ -89,7 +91,7 @@ void main() {
     vec2 g = vec2(dFdx(dist), dFdy(dist));
     vec2 normal = g / max(length(g), 1e-4); // outward
 
-    // The atlas and the image are sampled here, in uniform control flow, for every kind
+    // The atlas is sampled here, in uniform control flow, for every kind
     vec4 tex = texture(atlas, vUv);
 
     if (vKind == 1u) {
@@ -101,8 +103,9 @@ void main() {
     }
 
     if (vKind == 2u) {
-        // Image: image.frag's body. Its pixels are sRGB; the capture's alpha byte is unused.
-        vec3 rgb = tex.rgb;
+        // Image: its pixels are sRGB; the capture's alpha byte is unused. textureLod, so the
+        // branch needs no derivatives.
+        vec3 rgb = textureLod(image, vUv, 0.0).rgb;
         outColor = vec4(pow(rgb, vec3(2.2)), vBase.a);
         return;
     }

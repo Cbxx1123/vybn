@@ -25,9 +25,10 @@ struct VertexLayout {
 struct PipelineOptions {
     bool alphaBlending = false;
     uint32_t pushConstantSize = 0; // bytes visible to vertex and fragment stages
-    // Set 0 of the pipeline layout, for shaders that read descriptors (e.g. a sampled texture).
-    // Only read while the pipeline is created; bind sets with Renderer::bindDescriptorSet.
-    const DescriptorSetLayout *descriptorSetLayout = nullptr;
+    // The pipeline layout's descriptor sets, set 0 first, for shaders that read descriptors
+    // (sampled textures). Only read while the pipeline is created; bind sets with
+    // Renderer::bindDescriptorSet.
+    std::vector<const DescriptorSetLayout *> descriptorSetLayouts;
 };
 
 // A graphics pipeline: vertex and fragment shaders, a vertex layout, drawing triangles.

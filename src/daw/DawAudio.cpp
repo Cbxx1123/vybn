@@ -739,6 +739,22 @@ void DawApp::buildMetrics(Container &body)
         return "UI frames:  " + format("%.0f drawn", rate.drawn) + format(",  %.0f skipped per second", rate.skipped) +
                ",  loop " + ui_.paceText();
     });
+    // What the window drew: draws, submit time and upload size are only recorded on presented
+    // frames, so the last presented values are kept while frames are skipped as unchanged
+    figure([this, draws = uint32_t(0), submitMs = 0.0, bytes = size_t(0)]() mutable {
+        const ui::FrameStats &s = ui_.frameStats();
+        if (s.presented) {
+            draws = s.draws;
+            submitMs = s.submitMs;
+            bytes = s.uploadBytes;
+        }
+        const uint32_t prims = s.surfaces + s.glyphs + s.images;
+        return "UI drawing:  " + format("%.0f prims", static_cast<double>(prims)) +
+               format(" (%.0f glyphs)", static_cast<double>(s.glyphs)) +
+               format(",  %.0f", static_cast<double>(draws)) + (draws == 1 ? " draw" : " draws") +
+               format(",  %.0f KB", static_cast<double>(bytes) / 1024.0) +
+               format(";  build %.2f ms", s.buildMs) + format(", submit %.2f ms", submitMs);
+    });
 
     // A line per daemon (one line for all would widen the dialog)
     heading("Main loop, busy per frame");
