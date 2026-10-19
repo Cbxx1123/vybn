@@ -10,7 +10,7 @@ namespace daw {
 // The step sequencer's menus and its one dialog, for DawApp, built from the view's state each time
 // they open. Every action goes through the view's row tools, so it is one undoable clip edit.
 
-// A row's menu (right-click its name or a step): Hear (auditions the key), then Fill every 1, 2, 3,
+// A row's menu (right-click its name or a step): Select row, then Fill every 1, 2, 3,
 // 4 and 8 steps (a sub-menu), Euclidean... (the dialog), Random (sparse 25%, medium 50%, dense
 // 75%, a sub-menu, a new seed each time), Shift left and Shift right (a step), Copy row, Paste row
 // (only when there is one), Mute row (a toggle), Clear row, and Remove row
