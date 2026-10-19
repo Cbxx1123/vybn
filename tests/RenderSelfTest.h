@@ -37,7 +37,7 @@ namespace tests {
 // and animations have settled, before the frame is drawn off screen.
 //
 // After the comparisons it prints an INFO line per scene with what the frame cost and drew (from
-// ui::FrameStats: build ms, surfaces, texts, glyphs, batches, draws, bytes uploaded, submit ms),
+// ui::FrameStats: build ms, surfaces, texts, glyphs, prims, draws, bytes uploaded, submit ms),
 // so refactors can compare. Returns the number of failures (0 is a pass).
 int runRenderSelfTest(int argc, char **argv);
 
