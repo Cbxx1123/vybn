@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "daw/NoteTools.h"
+#include "StepSelfTest.h"
 
 namespace tests {
 
@@ -371,6 +372,8 @@ int runNoteSelfTest()
                     daw::gridName(1.0, 3) == "1/4",
                 "Grid names", daw::gridName(1.0 / 3.0, 4));
     }
+
+    c.failures += runStepChecks();
 
     std::printf("\n%s: %d failed\n", c.failures == 0 ? "All passed" : "FAILED", c.failures);
     return c.failures == 0 ? 0 : 1;

@@ -26,6 +26,7 @@
 #include "PianoRoll.h"
 #include "ProjectFile.h"
 #include "ShortcutsEditor.h"
+#include "StepMenus.h"
 #include "Toml.h"
 #include "engine/FileDialog.h"
 #include "engine/Shell.h"
@@ -248,6 +249,13 @@ void DawApp::buildBody()
                 if (settings_.save(error))
                     rollViewSaved_ = view;
             }
+            // The step sequencer's view, the same way
+            const std::string stepView = StepSequencerView::writeView(steps_->view());
+            if (stepView != stepViewSaved_) {
+                settings_.stepSequencerView = stepView;
+                if (settings_.save(error))
+                    stepViewSaved_ = stepView;
+            }
         }
         // Inputs: their meters, MIDI arriving, takes being recorded
         for (uint32_t c = 0; c < audio::AudioSystem::kMaxInputs; ++c)
@@ -265,7 +273,7 @@ void DawApp::buildBody()
         exporter_->update();
         // The editor for the selected clip's kind, and its gain control
         const Track *selected = project().track(project().selectedTrack);
-        editors_->setCurrent(selected && selected->kind == TrackKind::Audio ? 1 : 0);
+        editors_->setCurrent(selected && selected->kind == TrackKind::Audio ? 1 : (stepMode_ ? 2 : 0));
         if (const Clip *c = audioEditor_->clip())
             clipGain_->setValue(std::clamp((20.0f * std::log10(std::max(1e-4f, c->gain)) + 24.0f) / 36.0f, 0.0f, 1.0f));
         clipGain_->setEnabled(audioEditor_->clip() != nullptr);
@@ -346,7 +354,11 @@ void DawApp::buildBody()
     // The mixer, and the editor for the selected clip (its status in the panel's header)
     editorPanel_->header().add<LiveLabel>([this] {
         const Track *t = project().track(project().selectedTrack);
-        return pianoRoll_ && t && t->kind == TrackKind::Instrument ? pianoRoll_->hint() : std::string();
+        if (!t || t->kind != TrackKind::Instrument)
+            return std::string();
+        if (stepMode_)
+            return steps_ ? steps_->hint() : std::string();
+        return pianoRoll_ ? pianoRoll_->hint() : std::string();
     }, TextStyle::Caption, TextTone::Muted);
     editorPanel_->header().add<LiveLabel>([this] {
         const Track *t = project().track(project().selectedTrack);
@@ -356,7 +368,10 @@ void DawApp::buildBody()
         // The piano roll's last action, selection or velocity under the mouse, else what the
         // mouse can do there
         std::string status;
-        if (pianoRoll_ && t->kind == TrackKind::Instrument) {
+        if (stepMode_ && steps_) {
+            if (t->kind == TrackKind::Instrument)
+                status = steps_->message();
+        } else if (pianoRoll_ && t->kind == TrackKind::Instrument) {
             status = pianoRoll_->message();
             const int n = pianoRoll_->selectedCount();
             if (status.empty() && n > 0)
@@ -397,6 +412,20 @@ void DawApp::buildBody()
     // and mute; then the loop and the View and Notes menus. (The piano roll is made after its
     // toolbar, so the callbacks check it exists.)
     auto &rollTools = row(roll);
+    // Piano roll or Steps, the editor's two pages for an instrument clip: a segmented control kept in
+    // step with the mode (the steps' toolbar has one too)
+    auto modeControl = [this](Container &bar, int selected) {
+        SegmentedControl &control = bar.add<SegmentedControl>(std::vector<std::string>{"Piano roll", "Steps"}, selected,
+                                                              [this](int i) { setStepMode(i == 1); });
+        control.setSize(Size::Small);
+        SegmentedControl *raw = &control;
+        bar.add<FrameHook>([this, raw](const Input &) {
+            const int want = stepMode_ ? 1 : 0;
+            if (raw->selected() != want)
+                raw->setSelected(want);
+        });
+    };
+    modeControl(rollTools, 0);
     auto &tool = rollTools.add<SegmentedControl>(std::vector<std::string>{"Draw", "Select", "Slice", "Erase"}, 0, [this](int i) {
         const PianoRollView::Tool tools[] = {PianoRollView::Tool::Draw, PianoRollView::Tool::Select, PianoRollView::Tool::Slice,
                                              PianoRollView::Tool::Erase};
@@ -522,6 +551,59 @@ void DawApp::buildBody()
         .setShape(Shape::Circle)
         .setSize(Size::Small);
 
+    // The step sequencer, the editor's third page: a drum machine's grid over the clip's notes, with its
+    // toolbar (the step size, swing, and the gate and velocity of new steps) and the Loop and Add row tools
+    auto &stepPage = editors_->add<Container>(Direction::Column);
+    stepPage.setAlign(Align::Stretch);
+    auto &stepTools = row(stepPage);
+    modeControl(stepTools, 1);
+    menuButton(stepTools, [this] {
+        if (!steps_)
+            return std::string("Step");
+        return std::string("Step ") + stepChoices()[static_cast<size_t>(steps_->stepChoice())].name;
+    }, [this] { return stepSizeMenu(*steps_); }, 86.0f);
+    stepTools.add<Label>("Swing", TextStyle::Caption, TextTone::Secondary);
+    Slider &swing = stepTools.add<Slider>(0.0f, [this](float v) { steps_->setSwing(v); });
+    swing.setSize(Size::Small).setMinSize({96.0f, 0.0f});
+    Slider *swingRaw = &swing;
+    stepTools.add<FrameHook>([this, swingRaw](const Input &) {
+        const float v = static_cast<float>(steps_->swing());
+        if (swingRaw->value() != v)
+            swingRaw->setValue(v);
+    });
+    stepTools.add<ScrubField>("Gate", [this] { return format("%.0f%%", steps_->gate() * 100.0); },
+                              [this](int count, bool fine) { steps_->setGate(steps_->gate() + count * (fine ? 0.01 : 0.05)); })
+        .setValueWidth(40.0f);
+    stepTools.add<ScrubField>("Vel", [this] { return format("%.0f", std::round(steps_->velocity() * 127.0f)); },
+                              [this](int count, bool fine) {
+                                  steps_->setVelocity(steps_->velocity() + static_cast<float>(count) * (fine ? 1.0f : 4.0f) / 127.0f);
+                              })
+        .setValueWidth(26.0f);
+    stepTools.add<SmallToggle>("Hear", [this] { return steps_->audition(); }, [this](bool on) { steps_->setAudition(on); });
+    stepTools.add<Spacer>();
+    stepTools.add<SmallToggle>("Loop", [this] { return project().looping; }, [this](bool on) {
+        if (on && !project().hasLoop())
+            pianoRoll_->loopSelection();
+        else
+            session_.store().setLoop(project().loopStart, project().loopEnd, on && project().hasLoop());
+    });
+    menuButton(stepTools, [] { return std::string("Add row"); }, [this] { return stepAddRowMenu(*steps_); }, 0.0f);
+
+    // The view is made after its toolbar, so the callbacks check it exists
+    StepSequencerHooks stepHooks;
+    stepHooks.auditionOn = rollHooks.auditionOn;
+    stepHooks.auditionOff = rollHooks.auditionOff;
+    stepHooks.position = hooks.position;
+    stepHooks.playing = hooks.playing;
+    stepHooks.rowMenu = [this](int key, Vec2 at) {
+        openContextMenu(Context::activeOr(gui_), stepRowMenu(Context::activeOr(gui_), *steps_, key), at);
+    };
+    stepHooks.addRowMenu = [this](Vec2 at) { openContextMenu(Context::activeOr(gui_), stepAddRowMenu(*steps_), at); };
+    steps_ = &stepPage.add<StepSequencerView>(session_.store(), stepHooks);
+    steps_->setGrow(1.0f);
+    steps_->setView(StepSequencerView::readView(settings_.stepSequencerView));
+    stepViewSaved_ = StepSequencerView::writeView(steps_->view());
+
     // The effects: the chain of the selected track, or of the master bus
     {
         auto &target = effectsPanel_->header().add<SegmentedControl>(std::vector<std::string>{"Track", "Master"}, 0, [this](int i) {
@@ -584,6 +666,48 @@ void DawApp::keepRollView()
 void DawApp::setEditorShare(float share)
 {
     dock_->setShare(*editorPanel_, share);
+}
+
+void DawApp::setStepMode(bool on)
+{
+    // The frame hook shows the page for the selected clip's kind
+    stepMode_ = on;
+}
+
+void DawApp::stepsDemo()
+{
+    // A Drums track with a two-bar beat on 1/16 steps: kick, snare, closed hats, and an open hat on step 30
+    const int index = session_.store().edit().addTrack(TrackKind::Instrument);
+    std::vector<Note> notes;
+    auto hit = [&notes](int key, int step, float velocity) {
+        Note n;
+        n.start = step * 0.25;
+        n.length = 0.125;
+        n.key = key;
+        n.velocity = velocity;
+        notes.push_back(n);
+    };
+    for (int s = 0; s < 32; s += 4)
+        hit(36, s, 0.85f);
+    for (int s = 4; s < 32; s += 8)
+        hit(38, s, 0.85f);
+    for (int s = 0; s <= 30; s += 2)
+        hit(42, s, 0.6f);
+    hit(46, 30, 0.85f);
+    std::stable_sort(notes.begin(), notes.end(), [](const Note &a, const Note &b) { return a.start < b.start; });
+    // The track is made here, not through addTrack: that posts the change and then asks for an instrument
+    Track &track = session_.store().editTrack(index);
+    track.name = "Drums";
+    track.clips.push_back(Clip("Beat", 0.0, 2.0 * std::max(1, project().beatsPerBar), notes));
+    session_.store().select(index, static_cast<int>(track.clips.size()) - 1);
+    arrangement_->rebuild();
+    mixer_->rebuild();
+    steps_->selectRow(36);
+    setStepMode(true);
+    showEditor();
+    setEditorShare(0.8f);
+    // The step view as it is counts as saved (a demo's changes aren't the user's)
+    stepViewSaved_ = StepSequencerView::writeView(steps_->view());
 }
 
 void DawApp::showEffects()
@@ -1033,6 +1157,10 @@ void DawApp::buildMenus()
                          "view.browser"),
         MenuItem::toggle("Mixer", [this] { return dock_->isShowing(*mixerPanel_); }, [this] { showMixer(); }, "view.mixer"),
         MenuItem::toggle("Editor", [this] { return dock_->isShowing(*editorPanel_); }, [this] { showEditor(); }, "view.editor"),
+        MenuItem::toggle("Step sequencer", [this] { return stepMode_; }, [this] {
+            setStepMode(!stepMode_);
+            showEditor();
+        }, "view.steps"),
         MenuItem::toggle("Devices", [this] { return dock_->isShowing(*effectsPanel_); }, [this] { showEffects(); }, "view.effects"),
         MenuItem::toggle("Exports", [this] { return dock_->isShowing(*exportsPanel_); }, [this] { showExports(); }, "view.exports"),
         MenuItem::divider(),

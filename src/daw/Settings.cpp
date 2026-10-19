@@ -119,6 +119,8 @@ Settings Settings::load()
             settings.autosaveVersions = std::clamp(std::atoi(value.c_str()), 1, 50);
         else if (key == "pianoRoll")
             settings.pianoRollView = value;
+        else if (key == "stepSequencer")
+            settings.stepSequencerView = value;
         else if (key == "unusedSeconds" && !value.empty())
             settings.unusedSeconds = std::clamp(std::atoi(value.c_str()), -1, 86400);
         else if (key == "streamMemoryMB" && !value.empty())
@@ -162,6 +164,8 @@ bool Settings::save(std::string &error) const
     file << "autosaveVersions=" << autosaveVersions << "\n";
     if (!pianoRollView.empty())
         file << "pianoRoll=" << pianoRollView << "\n";
+    if (!stepSequencerView.empty())
+        file << "stepSequencer=" << stepSequencerView << "\n";
     file << "unusedSeconds=" << unusedSeconds << "\n";
     file << "streamMemoryMB=" << streamMemoryMB << "\n";
     for (const std::string &name : midiDisabled)

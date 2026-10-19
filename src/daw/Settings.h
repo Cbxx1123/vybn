@@ -52,6 +52,8 @@ struct Settings {
     std::vector<std::string> pluginGrants;
     // The piano roll's view (PianoRollView::writeView): its grid, scale, ghosts, lane and zoom
     std::string pianoRollView;
+    // The step sequencer's view (StepSequencerView::writeView): its step size, swing, gate, velocity, hearing
+    std::string stepSequencerView;
     static constexpr const char *kNoInput = "none";
 
     static std::string sampleCachePath(); // %LOCALAPPDATA%\Vibin\Sample cache

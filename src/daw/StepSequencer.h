@@ -88,7 +88,8 @@ public:
     std::vector<int> rows() const;
     // Shows a row for `key` (1-127) even while it is empty (kept for the session, for every clip)
     void addRow(int key);
-    // Clears the row's notes in this clip and stops showing it unless a note still uses it
+    // Clears the row's notes in this clip and stops showing it (a kit row too) unless a note still
+    // uses it
     void removeRow(int key);
     int selectedRow() const { return selectedRow_; } // a key, or -1
     void selectRow(int key);
@@ -125,8 +126,10 @@ private:
     StepSequencerHooks hooks_;
     ViewSettings view_;
     std::vector<int> added_;        // rows added by hand, shown while empty
+    std::vector<int> hidden_;       // kit rows removed by hand, hidden while empty
     std::vector<float> clipboard_;  // copyRow's pattern
     int selectedRow_ = -1;
+    bool addHot_ = false;           // the mouse is over the "Add row" line
 
     // Layout, set in arrange
     ui::Rect names_, header_, grid_, lane_, addRow_;

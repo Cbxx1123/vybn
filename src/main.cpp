@@ -37,7 +37,8 @@
 //                  rendered into the temp folder, without asking), exportrelease (the Release preset
 //                  rendered into the temp folder and the Exports panel shown), export (the export dialog),
 //                  versions (two saved versions, "First idea" and "With bass", and the Versions dialog),
-//                  recovery (a session that ended without closing, and the recovery dialog over the window).
+//                  recovery (a session that ended without closing, and the recovery dialog over the window),
+//                  steps (a drum beat on a Drums track in the step sequencer, its kick row selected).
 //                  Both autosave into a fresh temp folder unless VIBIN_AUTOSAVE_ROOT names one.
 //     PROJECT.vbp  open this project instead of the demo
 
@@ -299,6 +300,8 @@ int main(int argc, char **argv)
                     roll.setLooping(true);
                     app.keepRollView();
                 }
+                else if (demo == "steps")
+                    app.stepsDemo();
                 else if (demo == "effects") {
                     // A compressor, an EQ and a reverb on the first track, and a limiter on the master
                     app.store().select(0);

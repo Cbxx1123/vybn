@@ -24,6 +24,7 @@
 #include "ProjectSession.h"
 #include "Recording.h"
 #include "Settings.h"
+#include "StepSequencer.h"
 #include "Widgets.h"
 #include "audio/AudioSystem.h"
 #include "audio/ClipPlayer.h"
@@ -131,6 +132,12 @@ public:
     void setEditorShare(float share);
     // The piano roll's view as it is now counts as saved (a demo's changes aren't the user's)
     void keepRollView();
+    // The step sequencer, the editor's Steps page for instrument clips (View > Step sequencer, Ctrl+5)
+    StepSequencerView &steps() { return *steps_; }
+    void setStepMode(bool on);
+    bool stepMode() const { return stepMode_; }
+    // The --demo steps check: a drum beat on a Drums track, in the step sequencer with its kick row selected
+    void stepsDemo();
     void showMixer();
     void showEffects();
     void showExports();
@@ -335,6 +342,9 @@ private:
     ArrangementView *arrangement_ = nullptr;
     MixerView *mixer_ = nullptr;
     PianoRollView *pianoRoll_ = nullptr;
+    StepSequencerView *steps_ = nullptr; // the step sequencer, the editor's third page
+    bool stepMode_ = false;              // the editor shows the step sequencer for instrument clips
+    std::string stepViewSaved_;          // the step sequencer's view as last saved in the settings
     std::unique_ptr<PianoRollMenus> rollMenus_; // the piano roll's menus, made with the roll
     AudioEditorView *audioEditor_ = nullptr;
     ui::Slider *clipGain_ = nullptr;
@@ -345,7 +355,7 @@ private:
     ui::DockPanel *effectsPanel_ = nullptr;
     ui::DockPanel *exportsPanel_ = nullptr;
     DevicesView *effects_ = nullptr;
-    ui::Pages *editors_ = nullptr; // the piano roll and the audio editor
+    ui::Pages *editors_ = nullptr; // the piano roll, the audio editor and the step sequencer
 };
 
 }
