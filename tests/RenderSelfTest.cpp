@@ -1,4 +1,4 @@
-// Scenes, each described in RenderSelfTest.h: shapes, shapes-dark, text, clips, image, controls,
+// Scenes, each described in RenderSelfTest.h: shapes, shapes-dark, text, clips, image, lines, controls,
 // arrangement, pianoroll, steps, scroll (a 2000-row ScrollView, to show culling at work) and synth.
 // The synth scene is also timed over 50 settled frames (an INFO line after the scenes).
 #include "RenderSelfTest.h"
@@ -471,6 +471,60 @@ void makeImage(ui::ImageData &image)
     image.version = 1;
 }
 
+// Lines: rows at five widths and four angles (a row at opacity 0.3), a sine and a zigzag polyline,
+// a line cut by a clip and a dot
+void paintLines(ui::DrawList &list, const ui::Theme &theme, const ui::Rect &)
+{
+    const float widths[] = {1.0f, 1.5f, 2.0f, 3.0f, 6.0f};
+    const char *captions[] = {"1 px", "1.5 px", "2 px", "3 px", "6 px"};
+    const float angles[] = {0.0f, 15.0f, 45.0f, 90.0f};
+    const float columns[] = {60.0f, 150.0f, 240.0f, 330.0f};
+    const float half = 18.0f; // half a line's length
+    const float pi = 3.14159265f;
+
+    // A row's four lines, each centred on its column at its angle
+    auto row = [&](float y, float width, float opacity) {
+        for (int j = 0; j < 4; ++j) {
+            const float radians = angles[j] * pi / 180.0f;
+            const ui::Vec2 centre{columns[j], y};
+            const ui::Vec2 a{centre.x - half * std::cos(radians), centre.y - half * std::sin(radians)};
+            const ui::Vec2 b{centre.x + half * std::cos(radians), centre.y + half * std::sin(radians)};
+            list.add(theme.inkLine(a, b, width, ui::TextTone::Primary, opacity));
+        }
+    };
+
+    for (int i = 0; i < 5; ++i) {
+        const float y = 50.0f + i * 36.0f;
+        row(y, widths[i], 1.0f);
+        list.add(theme.text(captions[i], box(420, y - 10, 200, 20), ui::TextStyle::Caption, ui::TextTone::Secondary,
+                            ui::TextAlign::Start));
+    }
+    row(240.0f, 3.0f, 0.3f);
+    list.add(theme.text("3 px at 0.3 opacity", box(420, 230, 200, 20), ui::TextStyle::Caption,
+                        ui::TextTone::Secondary, ui::TextAlign::Start));
+
+    // A sine of two cycles over 500 px, 60 points, in the accent
+    std::vector<ui::Vec2> wave;
+    const int samples = 60;
+    for (int i = 0; i < samples; ++i) {
+        const float t = static_cast<float>(i) / (samples - 1);
+        wave.push_back({70.0f + t * 500.0f, 300.0f - 28.0f * std::sin(t * 2.0f * 2.0f * pi)});
+    }
+    list.addPolyline(wave.data(), wave.size(), theme.accentLine({0.0f, 0.0f}, {0.0f, 0.0f}, 2.0f));
+
+    // A zigzag in ink
+    std::vector<ui::Vec2> zigzag;
+    for (int i = 0; i < 25; ++i)
+        zigzag.push_back({70.0f + i * 20.0f, i % 2 == 0 ? 360.0f : 404.0f});
+    list.addPolyline(zigzag.data(), zigzag.size(), theme.inkLine({0.0f, 0.0f}, {0.0f, 0.0f}, 1.5f));
+
+    // A line cut short by its clip, and a dot of width 8
+    list.pushClip(box(200, 420, 200, 40));
+    list.add(theme.inkLine({40.0f, 440.0f}, {560.0f, 440.0f}, 6.0f));
+    list.popClip();
+    list.add(theme.accentLine({600.0f, 450.0f}, {600.0f, 450.0f}, 8.0f));
+}
+
 // ---- scenes ----
 
 Picture sceneShapes()
@@ -513,6 +567,11 @@ Picture sceneImage()
                                 ui::TextTone::Secondary, ui::TextAlign::Start));
         });
     });
+}
+
+Picture sceneLines()
+{
+    return renderPicture(640, 480, daw::studioTheme(true), [](ui::Context &context) { paintOverlay(context, paintLines); });
 }
 
 // ---- scenes: component trees ----
@@ -741,7 +800,7 @@ std::string describeColor(uint32_t packed)
     return describe(values, 4);
 }
 
-// One letter a prim: S surface, G glyph, I image, in drawing order
+// One letter a prim: S surface, G glyph, I image, L line, in drawing order
 std::string kindsOf(const ui::DrawList &list)
 {
     std::string s;
@@ -750,6 +809,7 @@ std::string kindsOf(const ui::DrawList &list)
         case ui::PrimKind::Surface: s += 'S'; break;
         case ui::PrimKind::Glyph: s += 'G'; break;
         case ui::PrimKind::Image: s += 'I'; break;
+        case ui::PrimKind::Line: s += 'L'; break;
         default: s += '?'; break;
         }
     }
@@ -1012,6 +1072,84 @@ void primChecks(Checker &c)
         c.check(n.surfaces == 1 && n.texts == 1 && n.glyphs == 5 && n.images == 0 && list.prims().size() == 6,
                 "Counts give only what was added", kindsOf(list));
     }
+
+    // Lines: a capsule's rect grown by half its width and a pixel, its ends in shape, half the width in style
+    {
+        ui::Line line;
+        line.a = {10.0f, 20.0f};
+        line.b = {40.0f, 30.0f};
+        line.width = 3.0f;
+        line.color = ui::Color{0.2f, 0.4f, 0.6f, 1.0f};
+        line.opacity = 0.5f;
+        const float lineClip[4] = {5, 5, 90, 90};
+        const ui::Prim p = ui::linePrim(line, lineClip);
+
+        c.check(p.kind == static_cast<uint32_t>(ui::PrimKind::Line) && near(p.shape[0], 10) && near(p.shape[1], 20) &&
+                    near(p.shape[2], 40) && near(p.shape[3], 30),
+                "A line prim has its kind and its ends in shape", describe(p.shape, 4));
+        c.check(near(p.style[0], 1.5f), "A line's style holds half its width", describe(p.style, 4));
+        c.check(near(p.rect[0], 7.5f) && near(p.rect[1], 17.5f) && near(p.rect[2], 35.0f) && near(p.rect[3], 15.0f),
+                "A line's rect covers both ends grown by half the width and a pixel", describe(p.rect, 4));
+        c.check(isClip(p.clip, 5, 5, 90, 90), "A line prim carries the clip it was given", describe(p.clip, 4));
+        c.check(nearRgb(p.base, 0.2f, 0.4f, 0.6f) && nearValue(ui::unpackColor(p.base).a, 0.5f),
+                "A line's colour is in base, with its opacity as alpha", describeColor(p.base));
+
+        line.width = 0.4f; // below a pixel: drawn half a pixel thick
+        const ui::Prim thin = ui::linePrim(line, lineClip);
+        c.check(near(thin.style[0], 0.5f) && near(thin.rect[0], 8.5f) && near(thin.rect[2], 33.0f),
+                "A line narrower than a pixel is 0.5 in style", describe(thin.style, 4));
+    }
+    {
+        ui::DrawList list;
+        ui::Line line;
+        line.a = {10.0f, 20.0f};
+        line.b = {40.0f, 30.0f};
+        line.width = 2.0f;
+        list.add(line);
+        c.check(kindsOf(list) == "L" && list.counts().lines == 1, "A line adds one prim and counts one line",
+                kindsOf(list));
+    }
+    {
+        // A line wholly outside its clip is culled
+        ui::DrawList list;
+        ui::Line line;
+        line.a = {200.0f, 50.0f};
+        line.b = {300.0f, 50.0f};
+        line.width = 2.0f;
+        list.pushClip(box(0, 0, 100, 100));
+        list.add(line);
+        list.popClip();
+        c.check(list.empty() && list.counts().lines == 0, "A line outside its clip adds nothing");
+    }
+    {
+        ui::DrawList list;
+        const std::vector<ui::Vec2> five = {{0, 0}, {10, 5}, {20, 0}, {30, 5}, {40, 0}};
+        ui::Line style;
+        style.width = 2.0f;
+        style.color = ui::Color{0.2f, 0.4f, 0.6f, 1.0f};
+        list.addPolyline(five.data(), five.size(), style);
+        c.check(kindsOf(list) == "LLLL" && list.counts().lines == 4, "A polyline of 5 points adds 4 lines",
+                kindsOf(list));
+        c.check(!list.prims().empty() && nearRgb(list.prims().back().base, 0.2f, 0.4f, 0.6f),
+                "A polyline's segments take the style's colour", describeColor(list.prims().back().base));
+    }
+    {
+        ui::DrawList list;
+        const ui::Vec2 one[1] = {{5, 5}};
+        ui::Line style;
+        style.width = 2.0f;
+        list.addPolyline(one, 1, style);
+        c.check(list.empty() && list.counts().lines == 0, "A polyline of 1 point adds nothing");
+    }
+    {
+        // The accent line is drawn in the theme's accent
+        const ui::Color accent = theme.accentColor();
+        const ui::Line accentLine = theme.accentLine({0.0f, 0.0f}, {10.0f, 0.0f}, 2.0f);
+        const float lineClip[4] = {-1000, -1000, 1000, 1000};
+        const ui::Prim p = ui::linePrim(accentLine, lineClip);
+        c.check(nearRgb(p.base, accent.r, accent.g, accent.b) && nearValue(ui::unpackColor(p.base).a, 1.0f),
+                "accentLine is the theme's accent", describeColor(p.base));
+    }
     std::printf("\n");
 }
 
@@ -1028,6 +1166,7 @@ const SceneEntry kScenes[] = {
     {"text", sceneText},
     {"clips", sceneClips},
     {"image", sceneImage},
+    {"lines", sceneLines},
     {"controls", sceneControls},
     {"arrangement", sceneArrangement},
     {"pianoroll", scenePianoRoll},

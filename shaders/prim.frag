@@ -4,6 +4,8 @@
 // CONTRACT: set 0 binding 0 is the font atlas (sampler2D, single channel coverage), used by glyphs.
 // Set 1 binding 0 is the picture an image prim shows (sampler2D, sRGB pixels); UIRenderer binds
 // a blank one when no image is drawn.
+// Lines (kind 3) use no texture: vLocal is the absolute pixel position, vShape.xy and vShape.zw are
+// the segment's ends, vStyle.x is the half width, and coverage is the capsule's distance (as surfaces' edge).
 
 layout(set = 0, binding = 0) uniform sampler2D atlas; // glyphs: coverage
 layout(set = 1, binding = 0) uniform sampler2D image; // images: the picture
@@ -98,6 +100,18 @@ void main() {
         // Glyph: text.frag's body
         float coverage = tex.r;
         // Colours arrive as sRGB; blending happens in linear space on an sRGB swapchain
+        outColor = vec4(pow(vBase.rgb, vec3(2.2)), coverage * vBase.a);
+        return;
+    }
+
+    if (vKind == 3u) {
+        // Line: the capsule around the segment from vShape.xy to vShape.zw, half-width vStyle.x
+        vec2 a = vShape.xy;
+        vec2 ba = vShape.zw - a;
+        vec2 pa = vLocal - a;
+        float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+        float d = length(pa - ba * h) - vStyle.x;
+        float coverage = 1.0 - smoothstep(-0.5, 0.5, d);
         outColor = vec4(pow(vBase.rgb, vec3(2.2)), coverage * vBase.a);
         return;
     }

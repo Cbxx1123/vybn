@@ -33,6 +33,11 @@ public:
     void add(const Text &text);
     // An image with no pixels (null, or zero width or height) adds nothing
     void add(const ImageDraw &image);
+    // A line, one prim; a line of zero length is a dot of its width
+    void add(const Line &line);
+    // A line through `count` points, one Line prim per segment, each with `style`'s width, colour
+    // and opacity (style.a and style.b are ignored); fewer than two points add nothing
+    void addPolyline(const Vec2 *points, size_t count, const Line &style);
 
     // Clips everything added until the matching popClip to `rect`, intersected with any clip
     // already in effect. Shadows are clipped too.
@@ -59,6 +64,7 @@ public:
         uint32_t texts = 0;
         uint32_t glyphs = 0;
         uint32_t images = 0;
+        uint32_t lines = 0; // Line prims added
     };
     const Counts &counts() const { return counts_; }
 

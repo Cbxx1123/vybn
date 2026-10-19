@@ -68,6 +68,16 @@ struct Text {
     Color color;
 };
 
+// A straight stroke with round caps, the third drawable primitive: from `a` to `b`, `width`
+// pixels thick (at least about 1 to read), anti-aliased like surfaces' edges
+struct Line {
+    Vec2 a;
+    Vec2 b;
+    float width = 1.0f;
+    Color color;
+    float opacity = 1.0f;
+};
+
 // Styling layer. The only place visual values live, and it is strictly neumorphic:
 // - every surface shares the background colour; depth comes from shadows alone
 // - shadow and text colours are derived from the base colour, never set directly
@@ -139,6 +149,9 @@ public:
                 float opacity = 1.0f) const;
     // Translucent base-coloured veil that pushes everything under it back (behind drawers, dialogs)
     Surface scrim(const Rect &rect, float opacity) const;
+    // Strokes in a text colour (`tone`) or the accent, for curves, guides and graphs
+    Line inkLine(Vec2 a, Vec2 b, float width, TextTone tone = TextTone::Primary, float opacity = 1.0f) const;
+    Line accentLine(Vec2 a, Vec2 b, float width, float opacity = 1.0f) const;
 
     // Typography. Text is the base hue pushed toward the shadow side (darker on light themes,
     // lighter on dark ones): low contrast, as neumorphism expects, but readable.

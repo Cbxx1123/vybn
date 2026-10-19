@@ -17,8 +17,8 @@ struct ImageDraw {
     float opacity = 1.0f;
 };
 
-// What a Prim draws. The values are the shader's encoding (shaders/prim.frag); Line and Plot are
-// for lines and plots (refactor 2) and not drawn yet.
+// What a Prim draws. The values are the shader's encoding (shaders/prim.frag); Plot is for plots
+// (refactor 2's Extension) and not drawn yet.
 enum class PrimKind : uint32_t { Surface = 0, Glyph = 1, Image = 2, Line = 3, Plot = 4 };
 
 // The clip of a prim drawn with no clip: the whole plane
@@ -47,9 +47,11 @@ struct Prim {
     float rect[4];  // 0: x, y, w, h in framebuffer pixels
     float clip[4];  // 1: x0, y0, x1, y1 in whole pixels; nothing outside is drawn
     float shape[4]; // 2: Surface: radius, shadow distance, blur, elevation (0 raised, 1 flat,
-                    //    2 inset) + rim * 0.45. Glyph, Image: u0, v0, u1, v1
+                    //    2 inset) + rim * 0.45. Glyph, Image: u0, v0, u1, v1. Line: a.x, a.y,
+                    //    b.x, b.y (framebuffer pixels)
     float style[4]; // 3: Surface: light direction x, y (unit, y down), curvature, form (0 rounded
-                    //    rect, 1 triangle right, 2 triangle left, 3 cross, 4 triangle down, 5 up)
+                    //    rect, 1 triangle right, 2 triangle left, 3 cross, 4 triangle down, 5 up).
+                    //    Line: half the width, 0, 0, 0
     // 4: packed colours (packColor), sRGB:
     uint32_t base;  //    a surface's colour and opacity, a glyph's colour and alpha, an image's
                     //    opacity in alpha (rgb white)
@@ -69,6 +71,10 @@ Prim surfacePrim(const Surface &surface, const float clip[4]);
 // One Glyph prim per visible glyph of `text`, from Font::layout: rect x0, y0, x1 - x0, y1 - y0; uv
 // in shape; the text's colour in base. Appended to `out`.
 void glyphPrims(const Font &font, const Text &text, const float clip[4], std::vector<Prim> &out);
+// A line: rect = the capsule's bounds (both ends, grown by half the width plus 1 px for the
+// anti-aliased edge), shape = the ends, style[0] = half the width (at least 0.5), base = its colour
+// with the opacity as alpha
+Prim linePrim(const Line &line, const float clip[4]);
 // An image's quad: its rect, uv 0 to 1, base white with the opacity as its alpha
 Prim imagePrim(const ImageDraw &image, const float clip[4]);
 

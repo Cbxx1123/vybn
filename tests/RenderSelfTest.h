@@ -21,6 +21,8 @@ namespace tests {
 //   clips         480x360  nested clips cutting raised surfaces' shadows, text and an inset well
 //   image         480x360  a generated ImageData (gradients and a checker) at its size, stretched,
 //                          at half opacity and clipped
+//   lines         640x480  rows of lines at widths 1 to 6 and angles 0 to 90, a row at opacity 0.3,
+//                          a sine and a zigzag polyline, a line cut by a clip and a dot, studio dark
 //   controls      900x600  a Context tree of the UI layer's controls (Button variants and sizes,
 //                          Toggle on and off, Slider, Checkbox, RadioGroup, SegmentedControl,
 //                          Stepper, Knob, ProgressBar, TextField, Chip, Badge, LevelMeter at a

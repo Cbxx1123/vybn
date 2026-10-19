@@ -80,4 +80,28 @@ Prim imagePrim(const ImageDraw &image, const float clip[4])
     return p;
 }
 
+Prim linePrim(const Line &line, const float clip[4])
+{
+    Prim p{}; // zeroed, pad included
+    const float half = std::max(0.5f, line.width * 0.5f);
+    const float grow = half + 1.0f;
+    const float x0 = std::min(line.a.x, line.b.x) - grow;
+    const float y0 = std::min(line.a.y, line.b.y) - grow;
+    const float x1 = std::max(line.a.x, line.b.x) + grow;
+    const float y1 = std::max(line.a.y, line.b.y) + grow;
+    p.rect[0] = x0;
+    p.rect[1] = y0;
+    p.rect[2] = x1 - x0;
+    p.rect[3] = y1 - y0;
+    std::memcpy(p.clip, clip, sizeof p.clip);
+    p.shape[0] = line.a.x;
+    p.shape[1] = line.a.y;
+    p.shape[2] = line.b.x;
+    p.shape[3] = line.b.y;
+    p.style[0] = half;
+    p.base = packColor(line.color.r, line.color.g, line.color.b, line.opacity);
+    p.kind = static_cast<uint32_t>(PrimKind::Line);
+    return p;
+}
+
 }

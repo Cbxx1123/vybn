@@ -284,7 +284,7 @@ public:
         }
         // The cutoff's line, and its raised handle on the curve (the drag target)
         const float cx = freqX(area, cutoff);
-        list.add(theme.accent({cx, area.y, 1.0f, area.h}, Shape::Rounded, 0.3f));
+        list.add(theme.accentLine({cx + 0.5f, area.y}, {cx + 0.5f, area.y + area.h}, 1.0f, 0.3f));
         knob(list, theme, {cx, dbY(area, filterDb(type, cutoff, cutoff, res))}, 12.0f, dragging_);
     }
 
@@ -360,14 +360,17 @@ public:
         const float bottom = area.y + area.h;
         const Envelope e = readEnvelope(access_, base_);
         const Marks m = marksOf(e);
+        std::vector<Vec2> points;
+        points.reserve(static_cast<size_t>(area.w / 2.0f) + 1);
         for (float x = area.x; x < area.x + area.w; x += 2.0f) {
             const double level = levelAt(m, e.sustain, static_cast<double>((x - area.x) / area.w));
             if (level < 0.0)
                 break;
             const float y = bottom - static_cast<float>(level) * area.h;
             list.add(theme.accent({x, y, 2.0f, std::max(1.0f, bottom - y)}, Shape::Rounded, 0.12f));
-            list.add(theme.accent({x, y - 1.0f, 2.0f, 2.0f}, Shape::Rounded, 0.9f));
+            points.push_back(Vec2{x + 1.0f, y});
         }
+        list.addPolyline(points.data(), points.size(), theme.accentLine({}, {}, 2.0f, 0.9f));
         const Vec2 handles[3] = {{area.x + static_cast<float>(m.attack) * area.w, area.y},
                                  {area.x + static_cast<float>(m.decay) * area.w, bottom - static_cast<float>(e.sustain) * area.h},
                                  {area.x + static_cast<float>(m.release) * area.w, bottom}};

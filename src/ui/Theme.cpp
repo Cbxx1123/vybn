@@ -396,6 +396,28 @@ Surface Theme::ink(const Rect &rect, Shape shape, TextTone tone, bool enabled, f
     return s;
 }
 
+Line Theme::inkLine(Vec2 a, Vec2 b, float width, TextTone tone, float opacity) const
+{
+    Line line;
+    line.a = a;
+    line.b = b;
+    line.width = width;
+    line.color = textColor(tone);
+    line.opacity = std::clamp(opacity, 0.0f, 1.0f);
+    return line;
+}
+
+Line Theme::accentLine(Vec2 a, Vec2 b, float width, float opacity) const
+{
+    Line line;
+    line.a = a;
+    line.b = b;
+    line.width = width;
+    line.color = accent_;
+    line.opacity = std::clamp(opacity, 0.0f, 1.0f);
+    return line;
+}
+
 Surface Theme::scrim(const Rect &rect, float opacity) const
 {
     Surface s;

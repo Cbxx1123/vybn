@@ -6,8 +6,9 @@
 // - per-instance inputs, matching ui::Prim member order (80 bytes):
 //     location 0 vec4 inRect    x, y, w, h
 //     location 1 vec4 inClip    x0, y0, x1, y1 (whole pixels)
-//     location 2 vec4 inShape   Surface: radius, distance, blur, elevation + rim * 0.45; Glyph/Image: u0, v0, u1, v1
-//     location 3 vec4 inStyle   Surface: light direction x, y, curvature, form
+//     location 2 vec4 inShape   Surface: radius, distance, blur, elevation + rim * 0.45; Glyph/Image: u0, v0, u1, v1;
+//                               Line: a.x, a.y, b.x, b.y (the ends, framebuffer pixels)
+//     location 3 vec4 inStyle   Surface: light direction x, y, curvature, form; Line: half the width, 0, 0, 0
 //     location 4 uvec4 inColors (base, light, dark, kind), each colour packed red in the low byte to
 //                               alpha in the high byte (unpackUnorm4x8, sRGB):
 //                               base  Surface: colour and opacity; Glyph: colour and alpha; Image: opacity in alpha
@@ -15,8 +16,10 @@
 //                               dark  Surface: dark shadow rgb, intensity in alpha
 //                               kind  0 Surface, 1 Glyph, 2 Image, 3 Line, 4 Plot
 // - outputs to prim.frag (the agent may add more, all flat except vLocal and vUv):
-//     location 0 vec2 vLocal      Surface: pixel position relative to the rect's centre
-//     location 1 vec2 vUv         Glyph/Image: atlas or image coordinates
+//     location 0 vec2 vLocal      Surface: pixel position relative to the rect's centre;
+//                                 Line: the clamped pixel position, absolute (framebuffer pixels);
+//                                 Glyph/Image: 0
+//     location 1 vec2 vUv         Glyph/Image: atlas or image coordinates; Line: 0
 //     location 2 flat vec2 vHalfSize
 //     location 3 flat vec4 vShape
 //     location 4 flat vec4 vBase
@@ -61,7 +64,7 @@ void main() {
         float margin = inShape.w < 0.5 ? inShape.y * 1.4143 + inShape.z + 1.0 : 1.0;
         pos = inRect.xy - margin + corner * (inRect.zw + 2.0 * margin);
     } else {
-        // Glyphs and images: the quad is the rect itself
+        // Glyphs, images and lines: the quad is the rect itself (a line's rect is its capsule's bounds)
         pos = mix(inRect.xy, inRect.xy + inRect.zw, corner);
     }
 
@@ -71,6 +74,10 @@ void main() {
 
     if (kind == 0u) {
         vLocal = pos - (inRect.xy + inRect.zw * 0.5);
+        vUv = vec2(0.0);
+    } else if (kind == 3u) {
+        // Lines: the clamped position itself, absolute, for the capsule distance in the fragment shader
+        vLocal = pos;
         vUv = vec2(0.0);
     } else {
         vLocal = vec2(0.0);

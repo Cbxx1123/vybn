@@ -87,6 +87,26 @@ void DrawList::add(const ImageDraw &image)
     ++counts_.images;
 }
 
+void DrawList::add(const Line &line)
+{
+    // Its rect is already the area it draws, so it is culled as a glyph is
+    const Prim prim = linePrim(line, currentClip());
+    if (!visible(prim))
+        return;
+    prims_.push_back(prim);
+    ++counts_.lines;
+}
+
+void DrawList::addPolyline(const Vec2 *points, size_t count, const Line &style)
+{
+    for (size_t i = 0; i + 1 < count; ++i) {
+        Line segment = style;
+        segment.a = points[i];
+        segment.b = points[i + 1];
+        add(segment);
+    }
+}
+
 void DrawList::pushClip(const Rect &rect)
 {
     Rect clip = rect;
