@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <vector>
 
 #include "Project.h"
@@ -53,8 +55,13 @@ public:
     MixerView(ui::Context &context, ProjectStore &store, audio::AudioSystem &audio, const StereoLevels &levels,
               const std::vector<float> &trackLevels, std::function<void(TrackKind)> onAddTrack);
 
-    // Rebuilds the strips from the project; call outside the tree's input and drawing
+    ~MixerView() override;
+
+    // Rebuilds the strips from the project. handleInput posts it when the tracks change, so callers
+    // don't need to; outside the tree's input and drawing it may also be called directly
     void rebuild();
+
+    void handleInput(const ui::Input &input) override;
 
 private:
     const Project &project() const { return store_.project(); }
@@ -64,6 +71,10 @@ private:
     const std::vector<float> &trackLevels_;
     std::function<void(TrackKind)> onAddTrack_;
     ui::Container *strips_ = nullptr;
+    uint64_t shownStructure_ = 0;      // the store's structureRevision last looked at
+    std::vector<uint64_t> shownShape_; // the tracks (trackShape) the strips were made for
+    // Cleared when the view is destroyed, so a rebuild posted before then does nothing
+    std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };
 
 }

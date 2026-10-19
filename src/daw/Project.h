@@ -187,6 +187,10 @@ struct Project {
     double lengthBeats() const { return static_cast<double>(bars) * beatsPerBar; }
 };
 
+// The tracks' ids and kinds in order (one number each). Views that make something per track
+// rebuild only when this changes, not on every edit() (which moves structureRevision for any edit)
+std::vector<uint64_t> trackShape(const Project &project);
+
 // A starting session with a few tracks and clips, shown when the app opens
 Project demoProject();
 // What Project > New starts from: the settings chosen, with an instrument track playing

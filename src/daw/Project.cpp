@@ -385,6 +385,15 @@ std::vector<Note> melody()
 
 }
 
+std::vector<uint64_t> trackShape(const Project &project)
+{
+    std::vector<uint64_t> shape;
+    shape.reserve(project.tracks.size());
+    for (const Track &t : project.tracks)
+        shape.push_back((static_cast<uint64_t>(t.id) << 1) | (t.kind == TrackKind::Instrument ? 1u : 0u));
+    return shape;
+}
+
 Project demoProject()
 {
     Project p;

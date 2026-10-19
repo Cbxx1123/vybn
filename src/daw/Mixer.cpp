@@ -159,8 +159,33 @@ MixerView::MixerView(ui::Context &context, ProjectStore &store, audio::AudioSyst
     rebuild();
 }
 
+MixerView::~MixerView()
+{
+    *alive_ = false;
+}
+
+void MixerView::handleInput(const Input &input)
+{
+    // The strips are tree children, so a rebuild is posted for after this frame's input. The
+    // revision is recorded at once, so it is posted once
+    // Any edit() moves the structure; only a change in the tracks themselves (trackShape) rebuilds
+    if (store_.structureRevision() != shownStructure_) {
+        shownStructure_ = store_.structureRevision();
+        if (trackShape(project()) != shownShape_) {
+            shownShape_ = trackShape(project()); // posted once
+            context_.post([this, alive = alive_] {
+                if (*alive)
+                    rebuild();
+            });
+        }
+    }
+    Container::handleInput(input);
+}
+
 void MixerView::rebuild()
 {
+    shownStructure_ = store_.structureRevision();
+    shownShape_ = trackShape(project());
     strips_->clear();
     for (size_t i = 0; i < project().tracks.size(); ++i)
         strips_->add<ChannelStrip>(store_, static_cast<int>(i), trackLevels_);

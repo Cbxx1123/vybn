@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -109,8 +110,8 @@ class ArrangementView : public ui::Component {
 public:
     ArrangementView(ProjectStore &store, TransportHooks transport);
 
-    // Rebuilds the track headers from the project; call after adding tracks, outside the
-    // tree's input and drawing (Context::post)
+    // Rebuilds the track headers from the project. handleInput calls it when the tracks change, so
+    // callers don't need to; it may also be called directly outside the tree's input and drawing
     void rebuild();
     void zoom(float factor);
     void setFollow(bool follow) { follow_ = follow; }
@@ -142,7 +143,9 @@ private:
 
     ProjectStore &store_;
     TransportHooks transport_;
-    std::vector<std::unique_ptr<TrackHeader>> headers_;
+    std::vector<std::unique_ptr<TrackHeader>> headers_; // not tree children, so rebuilt in handleInput
+    uint64_t shownStructure_ = 0;                       // the store's structureRevision last looked at
+    std::vector<uint64_t> shownShape_;                  // the tracks (trackShape) the headers were made for
     float pixelsPerBeat_ = 22.0f;
     float scrollX_ = 0.0f;
     float scrollY_ = 0.0f;

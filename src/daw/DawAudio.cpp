@@ -221,8 +221,6 @@ void DawApp::importAudioFiles(const std::vector<std::string> &files, int track)
         Project &added = session_.store().edit();
         index = added.addTrack(TrackKind::Audio);
         added.tracks[static_cast<size_t>(index)].name = fs::path(files.front()).stem().string();
-        arrangement_->rebuild();
-        mixer_->rebuild();
     }
     double beat = std::round(transportBeats(audio_));
     std::string errors;
@@ -365,8 +363,6 @@ void DawApp::deleteTrack(int index)
             if (!project().track(index))
                 return;
             session_.store().edit().deleteTrack(index); // sync takes the track's processor out when its id is gone
-            arrangement_->rebuild();
-            mixer_->rebuild();
         });
     };
     if (t->clips.empty()) {

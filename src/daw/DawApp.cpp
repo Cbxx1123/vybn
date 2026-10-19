@@ -701,8 +701,6 @@ void DawApp::stepsDemo()
     track.name = "Drums";
     track.clips.push_back(Clip("Beat", 0.0, 2.0 * std::max(1, project().beatsPerBar), notes));
     session_.store().select(index, static_cast<int>(track.clips.size()) - 1);
-    arrangement_->rebuild();
-    mixer_->rebuild();
     steps_->selectRow(36);
     setStepMode(true);
     showEditor();
@@ -821,8 +819,6 @@ void DawApp::replaceProject(Project project, std::string path, const Project *sa
         project.select(0);
     session_.replace(std::move(project), std::move(path), saved); // the model, its file, saved, and a new history
     syncTracks();
-    arrangement_->rebuild();
-    mixer_->rebuild();
     pianoRoll_->reveal();
 }
 
@@ -862,11 +858,6 @@ void DawApp::redo()
 void DawApp::restore(Project state)
 {
     restoring_ = false;
-    // Whether the tracks came, went, moved or changed kind: compared before the replace
-    bool tracksChanged = state.tracks.size() != project().tracks.size();
-    for (size_t i = 0; !tracksChanged && i < state.tracks.size(); ++i) {
-        tracksChanged = state.tracks[i].id != project().tracks[i].id || state.tracks[i].kind != project().tracks[i].kind;
-    }
     // Arming and monitoring aren't part of the history: they stay as they are now, kept by track id
     for (Track &t : state.tracks) {
         const Track *now = project().findTrack(t.id);
@@ -884,10 +875,6 @@ void DawApp::restore(Project state)
     // tracks by id in sync, so a kept track keeps its processor and plugins.
     session_.store().replace(std::move(state));
     syncTracks();
-    if (tracksChanged) {
-        arrangement_->rebuild();
-        mixer_->rebuild();
-    }
 }
 
 void DawApp::confirmDiscard(std::function<void()> then)
@@ -1016,8 +1003,6 @@ void DawApp::setInstrument(int track, const audio::DeviceSetting &device)
         fresh.instrument = device;
         fresh.name = device.name;
         freshProject.select(index);
-        arrangement_->rebuild();
-        mixer_->rebuild();
     });
 }
 
@@ -1086,8 +1071,6 @@ void DawApp::addTrack(TrackKind kind)
     // Changes the tree, so after this frame's input
     ui_.post([this, kind] {
         const int index = session_.store().edit().addTrack(kind);
-        arrangement_->rebuild();
-        mixer_->rebuild();
         if (kind == TrackKind::Instrument)
             pickDevice(true, false, index); // what it plays
     });

@@ -217,6 +217,8 @@ ArrangementView::ArrangementView(ProjectStore &store, TransportHooks transport)
 
 void ArrangementView::rebuild()
 {
+    shownStructure_ = store_.structureRevision();
+    shownShape_ = trackShape(project());
     headers_.clear();
     for (size_t i = 0; i < project().tracks.size(); ++i)
         headers_.push_back(std::make_unique<TrackHeader>(store_, static_cast<int>(i), transport_));
@@ -324,6 +326,19 @@ void ArrangementView::clampScroll()
 
 void ArrangementView::handleInput(const Input &input)
 {
+    // The headers aren't tree children, so they're rebuilt here. Not while a name is being typed:
+    // its field holds the keyboard focus, which a new header would leave dangling; the rebuild waits
+    bool renaming = false;
+    for (const auto &header : headers_)
+        renaming = renaming || header->name().editing();
+    // Any edit() moves the structure; only a change in the tracks themselves (trackShape) rebuilds
+    if (!renaming && store_.structureRevision() != shownStructure_) {
+        if (trackShape(project()) != shownShape_)
+            rebuild();
+        else
+            shownStructure_ = store_.structureRevision();
+    }
+
     const size_t count = std::min(headers_.size(), project().tracks.size());
     const Input headerInput = headerArea_.contains(input.mouse) ? input : input.occluded();
     for (size_t i = 0; i < count; ++i) {
