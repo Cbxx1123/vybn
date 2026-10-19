@@ -4,6 +4,7 @@
 #include <cmath>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace daw {
 
@@ -227,6 +228,25 @@ void AudioEditorView::draw(DrawList &list, const Theme &theme) const
         const double fileEnd = fileStart + data->seconds() / spb;
         const float from = std::max(area_.x, beatX(fileStart));
         const float to = std::min(area_.x + area_.w, beatX(fileEnd));
+        // Runs of columns that are all inside the clip or all outside it, one Range plot per run
+        std::vector<float> values; // low, high pairs of the current run
+        float runStart = from;
+        bool runInside = false;
+        auto flush = [&]() {
+            if (values.empty())
+                return;
+            const uint32_t columns = static_cast<uint32_t>(values.size() / 2);
+            const Rect rect{runStart, mid - half, 2.0f * static_cast<float>(columns), 2.0f * half};
+            Plot plot = theme.inkPlot(rect, PlotMode::Range, runInside ? TextTone::Secondary : TextTone::Muted,
+                                      runInside ? 0.8f : 0.25f);
+            plot.values = values.data();
+            plot.count = columns;
+            plot.low = -1.0f;
+            plot.high = 1.0f;
+            plot.barFraction = 0.75f;
+            list.add(plot);
+            values.clear();
+        };
         for (float x = from; x < to; x += 2.0f) {
             const double b0 = xBeat(x);
             const double b1 = xBeat(x + 2.0f);
@@ -234,24 +254,33 @@ void AudioEditorView::draw(DrawList &list, const Theme &theme) const
             data->range((b0 - fileStart) * spb, (b1 - fileStart) * spb, low, high);
             const bool inside = b0 >= c->start && b0 < c->start + c->length;
             const float g = inside ? c->gain : 1.0f;
-            const float top = mid - std::min(1.0f, high * g) * half;
-            const float bottom = mid - std::max(-1.0f, low * g) * half;
-            list.add(theme.ink({x, top, 1.5f, std::max(1.0f, bottom - top)}, Shape::Rounded,
-                               inside ? TextTone::Secondary : TextTone::Muted, true, inside ? 0.8f : 0.25f));
+            const float lo = std::max(-1.0f, std::min(1.0f, low * g));
+            const float hi = std::max(-1.0f, std::min(1.0f, high * g));
+            if (values.empty() || inside != runInside) {
+                flush();
+                runStart = x;
+                runInside = inside;
+            }
+            values.push_back(lo);
+            values.push_back(hi);
         }
+        flush();
     }
     list.add(theme.ink({area_.x, mid, area_.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.3f));
 
     // Fades: a curve of dots, and a handle at the top
     auto fade = [&](double fromBeat, double beats, bool in) {
         const int steps = std::max(2, static_cast<int>(beats * pixelsPerBeat_ / 6.0));
+        std::vector<Vec2> points;
+        points.reserve(static_cast<size_t>(steps) + 1);
         for (int k = 0; k <= steps; ++k) {
             const double f = static_cast<double>(k) / steps;
             const double level = in ? std::sin(f * kHalfPi) : std::cos(f * kHalfPi);
             const float x = beatX(fromBeat + f * beats);
             const float y = r.y + 4.0f + static_cast<float>(1.0 - level) * (r.h - 8.0f);
-            list.add(theme.accent({x - 1.5f, y - 1.5f, 3.0f, 3.0f}, Shape::Circle, 0.8f));
+            points.push_back({x, y});
         }
+        list.addPolyline(points.data(), points.size(), theme.accentLine({}, {}, 1.5f, 0.8f));
     };
     if (c->fadeIn > 0.0)
         fade(c->start, c->fadeIn / spb, true);

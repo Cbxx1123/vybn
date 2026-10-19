@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "Widgets.h"
 
@@ -633,28 +634,45 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
         const float half = body.h * 0.5f + 2.0f;
         if (data) {
             const double spb = project().secondsPerBeat();
-            for (float x = std::max(r.x, visibleStart); x < visibleEnd; x += 2.0f) {
+            // The waveform's columns, each a low and a high value (after gain, clamped), one plot
+            const float firstX = std::max(r.x, visibleStart);
+            std::vector<float> pairs;
+            pairs.reserve(static_cast<size_t>(std::max(0.0f, visibleEnd - firstX) / 2.0f + 1.0f) * 2);
+            uint32_t columns = 0;
+            for (float x = firstX; x < visibleEnd; x += 2.0f) {
                 const double b0 = (x - r.x) / pixelsPerBeat_;
                 const double b1 = (x + 2.0f - r.x) / pixelsPerBeat_;
                 if (b0 >= clip.length)
                     break;
                 float low = 0.0f, high = 0.0f;
                 data->range(clip.offset + b0 * spb, clip.offset + b1 * spb, low, high);
-                const float top = cy - std::min(1.0f, high * clip.gain) * half;
-                const float bottom = cy - std::max(-1.0f, low * clip.gain) * half;
-                list.add(theme.ink({x, top, 1.5f, std::max(1.0f, bottom - top)}, Shape::Rounded, TextTone::Secondary,
-                                   true, opacity + 0.15f));
+                pairs.push_back(std::max(-1.0f, low * clip.gain));
+                pairs.push_back(std::min(1.0f, high * clip.gain));
+                ++columns;
             }
-            // Fades, as a line of dots from silence to full
+            if (columns > 0) {
+                ui::Plot wave = theme.inkPlot({firstX, cy - half, 2.0f * static_cast<float>(columns), 2.0f * half},
+                                              ui::PlotMode::Range, TextTone::Secondary, opacity + 0.15f);
+                wave.low = -1.0f;
+                wave.high = 1.0f;
+                wave.barFraction = 0.75f;
+                wave.values = pairs.data();
+                wave.count = columns;
+                list.add(wave);
+            }
+            // Fades, as a line from silence to full
             auto fade = [&](double from, double beats, bool in) {
                 const int steps = std::max(2, static_cast<int>(beats * pixelsPerBeat_ / 5.0));
+                std::vector<Vec2> points;
+                points.reserve(static_cast<size_t>(steps) + 1);
                 for (int k = 0; k <= steps; ++k) {
                     const double f = static_cast<double>(k) / steps;
                     const double level = in ? std::sin(f * 1.5707963) : std::cos(f * 1.5707963);
                     const float x = r.x + static_cast<float>((from + f * beats) * pixelsPerBeat_);
                     const float y = body.y + static_cast<float>(1.0 - level) * body.h;
-                    list.add(theme.accent({x - 1.0f, y - 1.0f, 2.0f, 2.0f}, Shape::Circle, 0.7f));
+                    points.push_back({x, y});
                 }
+                list.addPolyline(points.data(), points.size(), theme.accentLine({}, {}, 1.5f, 0.7f));
             };
             if (clip.fadeIn > 0.0)
                 fade(0.0, clip.fadeIn / spb, true);

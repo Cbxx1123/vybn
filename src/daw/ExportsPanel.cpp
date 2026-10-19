@@ -47,17 +47,41 @@ public:
         if (series_.empty())
             return;
         const float step = plot.w / static_cast<float>(series_.size());
-        for (size_t i = 0; i < series_.size(); ++i) {
-            const float x = plot.x + step * static_cast<float>(i);
-            const float y = bottom - plot.h * graphPosition(series_[i]);
+        if (series_.size() < 2) {
+            // A single reading is one column (a plot needs two points)
+            const float x = plot.x;
+            const float y = bottom - plot.h * graphPosition(series_[0]);
             const float width = std::max(2.0f, step - 1.0f);
-            // A soft fill from the floor to the line, and the line itself
             list.add(theme.accent({x, y, width, std::max(1.0f, bottom - y)}, Shape::Rounded, 0.13f));
             list.add(theme.accent({x, y - 1.0f, width, 2.0f}, Shape::Rounded, 0.9f));
+        } else {
+            std::vector<float> values(series_.size());
+            for (size_t i = 0; i < series_.size(); ++i)
+                values[i] = graphPosition(series_[i]);
+            // From the first point's centre to the last's
+            const Rect span{plot.x + step * 0.5f, plot.y, step * static_cast<float>(series_.size() - 1), plot.h};
+            const auto count = static_cast<uint32_t>(values.size());
+
+            // A soft fill from the floor to the curve, and the curve itself
+            Plot fill = theme.accentPlot(span, PlotMode::Fill, 0.12f);
+            fill.values = values.data();
+            fill.count = count;
+            fill.low = 0.0f;
+            fill.high = 1.0f;
+            fill.baseline = 0.0f;
+            list.add(fill);
+
+            Plot curve = theme.accentPlot(span, PlotMode::Line, 0.9f);
+            curve.values = values.data();
+            curve.count = count;
+            curve.low = 0.0f;
+            curve.high = 1.0f;
+            curve.width = 1.5f;
+            list.add(curve);
         }
         if (hasTarget_) {
             const float y = bottom - plot.h * graphPosition(target_);
-            list.add(theme.ink({plot.x, y, plot.w, 1.0f}, Shape::Rounded, TextTone::Secondary, true, 0.45f));
+            list.add(theme.inkLine({plot.x, y}, {plot.x + plot.w, y}, 1.0f, TextTone::Secondary, 0.45f));
         }
     }
 

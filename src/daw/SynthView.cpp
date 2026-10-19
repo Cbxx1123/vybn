@@ -127,16 +127,38 @@ void knob(DrawList &list, const Theme &theme, Vec2 at, float diameter, bool hot)
     list.add(theme.accent(r.inset(2.5f), Shape::Circle, hot ? 1.0f : 0.8f));
 }
 
-// One cycle of a wave across the well's width, from its middle, as columns; a curve of accent
+// The number of 2 px columns that fit a width, as the curves below sample them
+size_t columnsIn(float width)
+{
+    return static_cast<size_t>(std::max(0.0f, std::ceil(width / 2.0f)));
+}
+
+// A curve through `values`, one per 2 px from the left edge of `box` (the box's width is replaced by
+// the values' span). `low` is the value at the box's bottom and `high` at its top; a Fill goes down
+// to `baseline`. The values must live until the plot is added.
+Plot curvePlot(const Theme &theme, Rect box, PlotMode mode, const std::vector<float> &values, float low, float high, float baseline,
+               float opacity)
+{
+    box.w = values.size() > 1 ? 2.0f * static_cast<float>(values.size() - 1) : 0.0f;
+    Plot plot = theme.accentPlot(box, mode, opacity);
+    plot.values = values.data();
+    plot.count = static_cast<uint32_t>(values.size());
+    plot.low = low;
+    plot.high = high;
+    plot.baseline = baseline;
+    plot.width = 2.0f;
+    return plot;
+}
+
+// One wave's values (-1 to 1, one per column) across the well, from its middle: a soft fill to the
+// middle and a bright line 2 px thick
 void drawCycle(DrawList &list, const Theme &theme, const Rect &area, const std::vector<float> &cycle, float opacity)
 {
     const float middle = area.y + area.h * 0.5f;
-    for (size_t c = 0; c < cycle.size(); ++c) {
-        const float x = area.x + 2.0f * static_cast<float>(c);
-        const float y = middle - cycle[c] * area.h * 0.45f;
-        list.add(theme.accent({x, std::min(y, middle), 2.0f, std::max(1.0f, std::fabs(middle - y))}, Shape::Rounded, 0.13f * opacity));
-        list.add(theme.accent({x, y - 1.0f, 2.0f, 2.0f}, Shape::Rounded, 0.9f * opacity));
-    }
+    // The range of the values is 0.45 of the height either side of the middle
+    const Rect box{area.x, middle - 0.45f * area.h, 0.0f, 0.9f * area.h};
+    list.add(curvePlot(theme, box, PlotMode::Fill, cycle, -1.0f, 1.0f, 0.0f, 0.13f * opacity));
+    list.add(curvePlot(theme, box, PlotMode::Line, cycle, -1.0f, 1.0f, 0.0f, 0.9f * opacity));
 }
 
 // One cycle of an oscillator's wave, in a well
@@ -190,11 +212,11 @@ public:
         const double colour = paramValue(access_, paramOf(sp::kNoiseColour)) / 100.0;
         const double level = paramValue(access_, paramOf(sp::kNoiseLevel)) / 100.0;
         const float noiseOpacity = level > 0.0 ? 0.25f + 0.5f * static_cast<float>(level) : 0.12f;
-        for (float x = area.x; x < area.x + area.w; x += 2.0f) {
-            const double t = static_cast<double>((x - area.x) / area.w);
-            const float y = area.y + area.h * static_cast<float>(0.3 + 0.4 * (colour * t + (1.0 - colour) * 0.5));
-            list.add(theme.ink({x, y - 1.0f, 2.0f, 2.0f}, Shape::Rounded, TextTone::Secondary, true, noiseOpacity));
-        }
+        auto noiseY = [&](double t) {
+            return area.y + area.h * static_cast<float>(0.3 + 0.4 * (colour * t + (1.0 - colour) * 0.5));
+        };
+        list.add(theme.inkLine({area.x + 1.0f, noiseY(0.0)}, {area.x + area.w - 1.0f, noiseY(1.0)}, 2.0f,
+                               TextTone::Secondary, noiseOpacity));
     }
 
 private:
@@ -274,14 +296,19 @@ public:
         const double res = paramValue(access_, paramOf(sp::kResonance)) / 100.0;
         const float zero = dbY(area, 0.0);
         list.add(theme.ink({area.x, zero, area.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.3f));
-        // The response: a soft fill down to the bottom, and a bright line three pixels thick
-        const float bottom = area.y + area.h;
-        for (float x = area.x; x < area.x + area.w; x += 2.0f) {
-            const double hz = kFreqMin * std::pow(kFreqMax / kFreqMin, static_cast<double>((x - area.x) / area.w));
-            const float y = dbY(area, filterDb(type, hz, cutoff, res));
-            list.add(theme.accent({x, y, 2.0f, std::max(1.0f, bottom - y)}, Shape::Rounded, 0.06f));
-            list.add(theme.accent({x, y - 1.5f, 2.0f, 3.0f}, Shape::Rounded, 0.95f));
+        // The response, one dB value per column: a soft fill down to the bottom, and a bright line three pixels thick
+        std::vector<float> response(columnsIn(area.w));
+        for (size_t c = 0; c < response.size(); ++c) {
+            const double hz = kFreqMin * std::pow(kFreqMax / kFreqMin, 2.0 * static_cast<double>(c) / static_cast<double>(area.w));
+            response[c] = static_cast<float>(filterDb(type, hz, cutoff, res));
         }
+        const Rect box{area.x, area.y, 0.0f, area.h};
+        list.add(curvePlot(theme, box, PlotMode::Fill, response, static_cast<float>(kDbMin), static_cast<float>(kDbMax),
+                           static_cast<float>(kDbMin), 0.06f));
+        Plot line = curvePlot(theme, box, PlotMode::Line, response, static_cast<float>(kDbMin), static_cast<float>(kDbMax),
+                              static_cast<float>(kDbMin), 0.95f);
+        line.width = 3.0f;
+        list.add(line);
         // The cutoff's line, and its raised handle on the curve (the drag target)
         const float cx = freqX(area, cutoff);
         list.add(theme.accentLine({cx + 0.5f, area.y}, {cx + 0.5f, area.y + area.h}, 1.0f, 0.3f));
@@ -360,16 +387,20 @@ public:
         const float bottom = area.y + area.h;
         const Envelope e = readEnvelope(access_, base_);
         const Marks m = marksOf(e);
+        std::vector<float> levels;
         std::vector<Vec2> points;
+        levels.reserve(static_cast<size_t>(area.w / 2.0f) + 1);
         points.reserve(static_cast<size_t>(area.w / 2.0f) + 1);
         for (float x = area.x; x < area.x + area.w; x += 2.0f) {
             const double level = levelAt(m, e.sustain, static_cast<double>((x - area.x) / area.w));
             if (level < 0.0)
                 break;
             const float y = bottom - static_cast<float>(level) * area.h;
-            list.add(theme.accent({x, y, 2.0f, std::max(1.0f, bottom - y)}, Shape::Rounded, 0.12f));
+            levels.push_back(static_cast<float>(level));
             points.push_back(Vec2{x + 1.0f, y});
         }
+        // The soft fill from the curve down to the bottom (it ends where the envelope does), then the bright line
+        list.add(curvePlot(theme, {area.x, area.y, 0.0f, area.h}, PlotMode::Fill, levels, 0.0f, 1.0f, 0.0f, 0.12f));
         list.addPolyline(points.data(), points.size(), theme.accentLine({}, {}, 2.0f, 0.9f));
         const Vec2 handles[3] = {{area.x + static_cast<float>(m.attack) * area.w, area.y},
                                  {area.x + static_cast<float>(m.decay) * area.w, bottom - static_cast<float>(e.sustain) * area.h},
@@ -414,12 +445,13 @@ public:
         const int wave = static_cast<int>(std::lround(paramValue(access_, paramOf(sp::kLfoBase[lfo_] + sp::kLfoWave))));
         const float middle = area.y + area.h * 0.5f;
         list.add(theme.ink({area.x, middle, area.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.3f));
-        for (float x = area.x; x < area.x + area.w; x += 2.0f) {
-            const double t = 2.0 * static_cast<double>((x - area.x) / area.w); // two cycles
-            const float y = middle - static_cast<float>(value(wave, t)) * area.h * 0.45f;
-            list.add(theme.accent({x, std::min(y, middle), 2.0f, std::max(1.0f, std::fabs(middle - y))}, Shape::Rounded, 0.13f * opacity));
-            list.add(theme.accent({x, y - 1.0f, 2.0f, 2.0f}, Shape::Rounded, 0.9f * opacity));
+        // Two cycles across the well, one value per column
+        std::vector<float> values(columnsIn(area.w));
+        for (size_t c = 0; c < values.size(); ++c) {
+            const double t = 2.0 * (2.0 * static_cast<double>(c)) / static_cast<double>(area.w);
+            values[c] = static_cast<float>(value(wave, t));
         }
+        drawCycle(list, theme, area, values, opacity);
     }
 
 private:

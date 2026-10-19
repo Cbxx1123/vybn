@@ -1837,18 +1837,32 @@ void PianoRollView::drawControls(DrawList &list, const Theme &theme, const Clip 
                             TextAlign::Center));
         return;
     }
-    // The curve, column by column: a soft fill from its resting place to the line, and the line
+    // The curve: one value a pixel, so a stepped controller's steps stay near-vertical. A plot maps
+    // 0-1 over the lane's height the way velocityY does, and its fill runs from the resting place.
     const float base = laneController_ == kPitchBend || laneController_ == 10 ? velocityY(0.5f) : lane_.y + lane_.h - 4.0f;
     const float from = std::max(lane_.x, beatX(0.0)), to = std::min(lane_.x + lane_.w, beatX(c.length));
-    float lastY = velocityY(lane->valueAt(xBeat(from)));
-    for (float x = from; x < to; x += 2.0f) {
-        const float y = velocityY(lane->valueAt(xBeat(x + 1.0f)));
-        const float top = std::min(y, base), height = std::max(1.0f, std::fabs(base - y));
-        list.add(theme.accent({x, top, 2.0f, height}, Shape::Rounded, 0.13f));
-        // A step joins the line vertically
-        const float y0 = std::min(y, lastY), y1 = std::max(y, lastY);
-        list.add(theme.accent({x, y0 - 1.0f, 2.0f, std::max(2.0f, y1 - y0 + 2.0f)}, Shape::Rounded, 0.9f));
-        lastY = y;
+    std::vector<float> values;
+    for (float x = from; x < to; x += 1.0f)
+        values.push_back(lane->valueAt(xBeat(x)));
+    if (values.size() >= 2) {
+        const float span = lane_.h - 14.0f;
+        const float lastX = from + static_cast<float>(values.size() - 1);
+        const float baseline = (lane_.y + lane_.h - 7.0f - base) / span;
+        const Rect area{from, velocityY(1.0f), lastX - from, velocityY(0.0f) - velocityY(1.0f)};
+        ui::Plot fill = theme.accentPlot(area, ui::PlotMode::Fill, 0.13f);
+        fill.values = values.data();
+        fill.count = static_cast<uint32_t>(values.size());
+        fill.low = 0.0f;
+        fill.high = 1.0f;
+        fill.baseline = baseline;
+        list.add(fill);
+        ui::Plot line = theme.accentPlot(area, ui::PlotMode::Line, 0.9f);
+        line.values = values.data();
+        line.count = static_cast<uint32_t>(values.size());
+        line.low = 0.0f;
+        line.high = 1.0f;
+        line.width = 2.0f;
+        list.add(line);
     }
     // Its points: small raised knobs with accent cores
     for (size_t i = 0; i < lane->points.size(); ++i) {
