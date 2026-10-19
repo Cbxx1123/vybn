@@ -12,11 +12,11 @@
 
 namespace ui {
 
-// Draws a DrawList in order, one instanced call per batch: each Surface becomes one quad shaded
-// by shaders/ui.frag, and each glyph of a Text one quad sampling the font atlas in
-// shaders/text.frag. Its shaders, pipelines and the font atlas's texture are shared by every
-// UIRenderer on the same device and font, so another window costs only its buffers. Must be
-// destroyed before the engine::Renderer; `font` must outlive it.
+// Draws a DrawList's prims in order: one pipeline (shaders/prim.vert and prim.frag) for surfaces
+// and glyphs, one instanced draw per run of them, and images on their own pipeline, one draw each.
+// Its shaders, pipelines and the font atlas's texture are shared by every UIRenderer on the same
+// device and font, so another window costs only its buffers. Must be destroyed before the
+// engine::Renderer; `font` must outlive it.
 class UIRenderer {
 public:
     UIRenderer(engine::Renderer &renderer, const Font &font);
@@ -24,8 +24,8 @@ public:
     // Call between Renderer::beginFrame and Renderer::endFrame
     void render(const DrawList &list);
 
-    // What the last render recorded: its time (submitMs), glyphs laid out, draw calls, pipeline
-    // binds and bytes of instance data written; the other fields are left at 0
+    // What the last render recorded: its time (submitMs), draw calls, pipeline binds and bytes of
+    // instance data written; the other fields are left at 0 (Context fills them)
     const FrameStats &stats() const { return stats_; }
 
 private:
@@ -36,11 +36,9 @@ private:
     struct Shared;
     std::shared_ptr<Shared> shared_;
 
-    // One per frame in flight
-    std::vector<engine::Buffer> surfaceBuffers_;
-    std::vector<engine::Buffer> glyphBuffers_;
+    // One per frame in flight: the frame's prims (every kind but images)
+    std::vector<engine::Buffer> primBuffers_;
 
-    std::vector<GlyphQuad> quads_; // scratch, reused each frame
     // The descriptor set showing `image` for frame slot `frame`, its texture brought up to date
     const engine::DescriptorSet *liveImage(const ImageData &image, uint32_t frame);
 

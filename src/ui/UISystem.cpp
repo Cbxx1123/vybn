@@ -278,7 +278,7 @@ void UISystem::reportStats(double now)
                  average(statsSum_.layoutMs, frames), average(statsSum_.buildMs, frames),
                  average(statsSum_.submitMs, presented),
                  counted(average(statsSum_.surfaces, frames)), counted(average(statsSum_.texts, frames)),
-                 counted(average(statsSum_.glyphs, presented)), counted(average(statsSum_.images, frames)),
+                 counted(average(statsSum_.glyphs, frames)), counted(average(statsSum_.images, frames)),
                  counted(average(statsSum_.batches, frames)), counted(average(statsSum_.draws, presented)),
                  counted(average(statsSum_.pipelineBinds, presented)),
                  static_cast<size_t>(average(static_cast<double>(statsSum_.uploadBytes), presented) / 1024.0 + 0.5));

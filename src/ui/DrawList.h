@@ -1,113 +1,78 @@
 #pragma once
 
-#include <algorithm>
 #include <cstdint>
-#include <utility>
-#include <vector>
-
 #include <cstring>
 #include <string>
 #include <type_traits>
+#include <vector>
 
+#include "Font.h"
 #include "Image.h"
+#include "Prim.h"
 #include "Theme.h"
 
 namespace ui {
 
-// A live image drawn into a rect (pixel for pixel when the rect matches its size)
-struct ImageDraw {
-    Rect rect;
-    const ImageData *image = nullptr; // must outlive the frame's rendering
-    float opacity = 1.0f;
-};
+// What one frame draws, as GPU-ready prims in drawing order (later on top, whatever their kind).
+// Surfaces become one prim each; text is laid out as it is added, one prim per glyph; images one
+// prim each, with the image itself in images(). Each prim carries the clip in effect when it was
+// added, so clipping never splits the list (UIRenderer draws it in a few calls).
+class DrawList {
+public:
+    // The font text is laid out with (Context sets its theme's each frame). Text added with no
+    // font draws nothing.
+    void setFont(const Font *font) { font_ = font; }
+    const Font *font() const { return font_; }
 
-// Surfaces, text and images collected for one frame, drawn in the order they were added (later on top).
-// Consecutive items of one kind with the same clip form a batch, which UIRenderer draws with a
-// single call.
-struct DrawList {
-    enum class Kind { Surface, Text, Image };
-    struct Batch {
-        Kind kind;
-        uint32_t count;
-        bool clipped; // false draws to the whole window
-        Rect clip;
+    void add(const Surface &surface);
+    // Laid out now; an empty text adds nothing
+    void add(const Text &text);
+    // An image with no pixels (null, or zero width or height) adds nothing
+    void add(const ImageDraw &image);
+
+    // Clips everything added until the matching popClip to `rect`, intersected with any clip
+    // already in effect. Shadows are clipped too.
+    void pushClip(const Rect &rect);
+    void popClip();
+
+    // Forgets everything drawn and every clip; keeps the font and the vectors' capacity
+    void clear();
+    bool empty() const { return prims_.empty(); }
+
+    const std::vector<Prim> &prims() const { return prims_; }
+    // Each Image prim's image: the prim's index and the image (which must outlive the frame's
+    // rendering), in the order added
+    struct ImageRef {
+        uint32_t prim;
+        const ImageData *image;
     };
+    const std::vector<ImageRef> &images() const { return images_; }
 
-    std::vector<Surface> surfaces;
-    std::vector<Text> texts;
-    std::vector<ImageDraw> images;
-    std::vector<Batch> batches;
-
-    void add(const Surface &surface)
-    {
-        surfaces.push_back(surface);
-        extend(Kind::Surface);
-    }
-    void add(const ImageDraw &image)
-    {
-        if (!image.image || image.image->width == 0 || image.image->height == 0)
-            return;
-        images.push_back(image);
-        extend(Kind::Image);
-    }
-    void add(Text text)
-    {
-        if (text.text.empty())
-            return;
-        texts.push_back(std::move(text));
-        extend(Kind::Text);
-    }
-
-    // Clips everything added until the matching popClip to `rect`, intersected with any
-    // clip already in effect. Shadows are clipped too.
-    void pushClip(const Rect &rect)
-    {
-        Rect clip = rect;
-        if (!clips_.empty()) {
-            const Rect &outer = clips_.back();
-            const float x0 = std::max(clip.x, outer.x);
-            const float y0 = std::max(clip.y, outer.y);
-            const float x1 = std::min(clip.x + clip.w, outer.x + outer.w);
-            const float y1 = std::min(clip.y + clip.h, outer.y + outer.h);
-            clip = {x0, y0, std::max(0.0f, x1 - x0), std::max(0.0f, y1 - y0)};
-        }
-        clips_.push_back(clip);
-    }
-    void popClip()
-    {
-        if (!clips_.empty())
-            clips_.pop_back();
-    }
-
-    void clear()
-    {
-        surfaces.clear();
-        texts.clear();
-        images.clear();
-        batches.clear();
-        clips_.clear();
-    }
-    bool empty() const { return batches.empty(); }
+    // What was added since the last clear, for FrameStats: surfaces, texts (each add(Text) that
+    // drew something), glyphs (their prims) and images
+    struct Counts {
+        uint32_t surfaces = 0;
+        uint32_t texts = 0;
+        uint32_t glyphs = 0;
+        uint32_t images = 0;
+    };
+    const Counts &counts() const { return counts_; }
 
 private:
-    void extend(Kind kind)
-    {
-        const bool clipped = !clips_.empty();
-        const Rect clip = clipped ? clips_.back() : Rect{};
-        if (!batches.empty()) {
-            Batch &last = batches.back();
-            const bool sameClip = last.clipped == clipped &&
-                                  (!clipped || (last.clip.x == clip.x && last.clip.y == clip.y &&
-                                                last.clip.w == clip.w && last.clip.h == clip.h));
-            if (last.kind == kind && sameClip) {
-                ++last.count;
-                return;
-            }
-        }
-        batches.push_back({kind, 1, clipped, clip});
-    }
+    // The clip in effect, as prims carry it (see clipBounds)
+    const float *currentClip() const { return clipped_.empty() ? noClip_ : clipped_.back().bounds; }
 
-    std::vector<Rect> clips_;
+    struct Clip {
+        Rect rect;       // for intersecting the next one
+        float bounds[4]; // rounded out, as prims carry it
+    };
+
+    const Font *font_ = nullptr;
+    std::vector<Prim> prims_;
+    std::vector<ImageRef> images_;
+    std::vector<Clip> clipped_;
+    Counts counts_;
+    float noClip_[4] = {-kNoClip, -kNoClip, kNoClip, kNoClip};
 };
 
 // Hashes plain values one field at a time (64-bit FNV-1a), so no padding bytes take part
@@ -169,54 +134,11 @@ private:
     uint64_t hash_;
 };
 
-// What a frame draws, in order: every batch (its kind, count and clip), then each item of the batch
-// with all its fields (a text's characters, an image's id and version). Two frames with the same
-// fingerprint draw the same picture, so the second need not be presented. `start` mixes in
-// anything else the frame depends on (the clear colour).
-inline uint64_t fingerprint(const DrawList &list, uint64_t start = Fingerprint::kOffset)
-{
-    Fingerprint f(start);
-    size_t surfaces = 0, texts = 0, images = 0;
-    f.add(static_cast<uint64_t>(list.batches.size()));
-    for (const DrawList::Batch &batch : list.batches) {
-        f.add(static_cast<int>(batch.kind));
-        f.add(batch.count);
-        f.add(batch.clipped);
-        f.add(batch.clip);
-        for (uint32_t i = 0; i < batch.count; ++i) {
-            if (batch.kind == DrawList::Kind::Surface && surfaces < list.surfaces.size()) {
-                const Surface &s = list.surfaces[surfaces++];
-                f.add(s.rect);
-                f.add(s.radius);
-                f.add(static_cast<int>(s.elevation));
-                f.add(s.distance);
-                f.add(s.blur);
-                f.add(s.base);
-                f.add(s.opacity);
-                f.add(s.light);
-                f.add(s.dark);
-                f.add(s.intensity);
-                f.add(s.lightDirection);
-                f.add(s.curvature);
-                f.add(s.rim);
-                f.add(s.form);
-            } else if (batch.kind == DrawList::Kind::Text && texts < list.texts.size()) {
-                const Text &t = list.texts[texts++];
-                f.add(t.text);
-                f.add(t.baseline);
-                f.add(t.size);
-                f.add(t.color);
-            } else if (batch.kind == DrawList::Kind::Image && images < list.images.size()) {
-                const ImageDraw &d = list.images[images++];
-                f.add(d.rect);
-                f.add(d.opacity);
-                // The pixels stay the same until their owner bumps the version
-                f.add(d.image ? d.image->id : 0);
-                f.add(d.image ? d.image->version : 0);
-            }
-        }
-    }
-    return f.value();
-}
+// What a frame draws: the number of prims, every prim's bytes in order (Prim has no padding that
+// isn't zeroed: pad is always 0), then each image's id and version (its pixels stay the same until
+// its owner bumps the version). Two frames with the same fingerprint draw the same picture, so the
+// second need not be presented. `start` mixes in anything else the frame depends on (the clear
+// colour).
+uint64_t fingerprint(const DrawList &list, uint64_t start = Fingerprint::kOffset);
 
 }

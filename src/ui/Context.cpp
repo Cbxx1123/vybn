@@ -358,7 +358,6 @@ uint64_t Context::buildFrame()
     const Clock::time_point start = Clock::now();
     // What submit records is unknown until it runs: the frame counts as not presented
     stats_.submitMs = 0.0;
-    stats_.glyphs = 0;
     stats_.draws = 0;
     stats_.pipelineBinds = 0;
     stats_.uploadBytes = 0;
@@ -368,6 +367,8 @@ uint64_t Context::buildFrame()
     const Clock::time_point layoutStart = Clock::now();
     layout();
     stats_.layoutMs += msSince(layoutStart);
+    // The theme may have changed this frame: text is laid out with its font
+    drawList_.setFont(&theme_.font());
     drawList_.clear();
     root_->draw(drawList_, theme_);
     for (const Overlay &o : overlays_) {
@@ -375,10 +376,12 @@ uint64_t Context::buildFrame()
             drawList_.add(theme_.scrim(bounds(), 0.6f));
         o.component->draw(drawList_, theme_);
     }
-    stats_.surfaces = static_cast<uint32_t>(drawList_.surfaces.size());
-    stats_.texts = static_cast<uint32_t>(drawList_.texts.size());
-    stats_.images = static_cast<uint32_t>(drawList_.images.size());
-    stats_.batches = static_cast<uint32_t>(drawList_.batches.size());
+    const DrawList::Counts &counts = drawList_.counts();
+    stats_.surfaces = counts.surfaces;
+    stats_.texts = counts.texts;
+    stats_.glyphs = counts.glyphs;
+    stats_.images = counts.images;
+    stats_.batches = 0; // batches are gone: the list is drawn as runs of prims
 
     // The clear colour is part of the picture too (update sets it from the theme)
     Fingerprint clear;
@@ -391,10 +394,9 @@ uint64_t Context::buildFrame()
 void Context::submit()
 {
     uiRenderer_.render(drawList_);
-    // What the renderer recorded (its time, glyphs, draws, binds and upload)
+    // What the renderer recorded (its time, draws, binds and upload; glyphs are counted in buildFrame)
     const FrameStats &recorded = uiRenderer_.stats();
     stats_.submitMs = recorded.submitMs;
-    stats_.glyphs = recorded.glyphs;
     stats_.draws = recorded.draws;
     stats_.pipelineBinds = recorded.pipelineBinds;
     stats_.uploadBytes = recorded.uploadBytes;

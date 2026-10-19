@@ -318,9 +318,11 @@ int runInputSelfTest()
         image.width = 8;
         image.height = 8;
         image.pixels.assign(8 * 8 * 4, 0);
-        auto picture = [&image](float dx, const std::string &label, uint64_t version, float clipWidth) {
+        const ui::Theme theme = ui::Theme::light(); // outlives the lists, which lay their text out with its font
+        auto picture = [&image, &theme](float dx, const std::string &label, uint64_t version, float clipWidth) {
             image.version = version;
             ui::DrawList list;
+            list.setFont(&theme.font());
             ui::Surface s;
             s.rect = {10.0f + dx, 10.0f, 100.0f, 40.0f};
             list.add(s);

@@ -96,7 +96,7 @@ public:
     // Records the DrawList from the last buildFrame into the current frame (between beginFrame and endFrame)
     void submit();
     // What the last update, buildFrame and submit cost and drew. buildFrame sets submit's fields
-    // (submitMs, glyphs, draws, pipelineBinds, uploadBytes) and `presented` back to 0 and false;
+    // (submitMs, draws, pipelineBinds, uploadBytes) and `presented` back to 0 and false;
     // submit fills them, so they are 0 for a frame skipped as unchanged.
     const FrameStats &stats() const { return stats_; }
     // Called by whoever presents (UISystem) after deciding: true when the last buildFrame was

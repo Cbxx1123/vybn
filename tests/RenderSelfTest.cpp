@@ -1,6 +1,7 @@
 #include "RenderSelfTest.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -26,8 +27,11 @@
 #include "engine/Renderer.h"
 #include "engine/Window.h"
 #include "ui/Context.h"
+#include "ui/DrawList.h"
 #include "ui/FrameStats.h"
 #include "ui/Image.h"
+#include "ui/Prim.h"
+#include "ui/Theme.h"
 #include "ui/UI.h"
 
 // stb's PNG writer, static so its copy stays apart from the browser self-test's
@@ -614,6 +618,232 @@ Picture sceneSynth()
     });
 }
 
+// ---- primitives (no window) ----
+
+struct Checker {
+    int failures = 0;
+
+    void check(bool ok, const std::string &what, const std::string &detail = {})
+    {
+        std::printf("%s  %-44s %s\n", ok ? "PASS" : "FAIL", what.c_str(), detail.c_str());
+        if (!ok)
+            ++failures;
+    }
+};
+
+// Numbers as text, for a check's detail
+std::string describe(const float *values, int count)
+{
+    std::string s;
+    for (int i = 0; i < count; ++i) {
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%s%g", i ? " " : "", static_cast<double>(values[i]));
+        s += buf;
+    }
+    return s;
+}
+
+bool near(float a, float b)
+{
+    return std::fabs(a - b) < 1e-4f;
+}
+
+bool isClip(const float *clip, float x0, float y0, float x1, float y1)
+{
+    return near(clip[0], x0) && near(clip[1], y0) && near(clip[2], x1) && near(clip[3], y1);
+}
+
+bool unclipped(const float *clip)
+{
+    return isClip(clip, -ui::kNoClip, -ui::kNoClip, ui::kNoClip, ui::kNoClip);
+}
+
+// One letter a prim: S surface, G glyph, I image, in drawing order
+std::string kindsOf(const ui::DrawList &list)
+{
+    std::string s;
+    for (const ui::Prim &p : list.prims()) {
+        switch (static_cast<ui::PrimKind>(p.kind)) {
+        case ui::PrimKind::Surface: s += 'S'; break;
+        case ui::PrimKind::Glyph: s += 'G'; break;
+        case ui::PrimKind::Image: s += 'I'; break;
+        default: s += '?'; break;
+        }
+    }
+    return s;
+}
+
+void primChecks(Checker &c)
+{
+    std::printf("Primitives: clips, surfaces, text, images and fingerprints, no window\n\n");
+    const ui::Theme theme = ui::Theme::light(); // outlives the lists, which lay their text out with its font
+
+    // Clips round out to whole pixels
+    float clip[4];
+    ui::clipBounds(box(10.3f, 20.7f, 5.2f, 5.2f), true, clip);
+    c.check(isClip(clip, 10, 20, 16, 26), "A clip rounds out to whole pixels", describe(clip, 4));
+    ui::clipBounds(box(10.3f, 20.7f, 5.2f, 5.2f), false, clip);
+    c.check(unclipped(clip), "An unclipped rect gives the whole plane", describe(clip, 4));
+
+    // Nested clips carry the rounded intersection; after both pops a surface is unclipped
+    {
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        ui::Surface s;
+        s.rect = box(0, 0, 40, 40);
+        list.pushClip(box(0, 0, 100, 100));
+        list.pushClip(box(50.4f, 20.2f, 100, 30.6f));
+        list.add(s);
+        list.popClip();
+        list.popClip();
+        list.add(s);
+        c.check(list.prims().size() == 2 && isClip(list.prims()[0].clip, 50, 20, 100, 51),
+                "Nested clips carry the rounded intersection", describe(list.prims()[0].clip, 4));
+        c.check(list.prims().size() == 2 && unclipped(list.prims()[1].clip),
+                "After both pops the next surface is unclipped");
+    }
+
+    // A surface packs as the shader reads it
+    {
+        ui::Surface s;
+        s.rect = box(12, 14, 60, 30);
+        s.radius = 6.0f;
+        s.distance = 3.0f;
+        s.blur = 4.0f;
+        s.elevation = ui::Elevation::Inset;
+        s.rim = 0.5f;
+        s.base = ui::Color{0.8f, 0.7f, 0.6f, 1.0f};
+        s.opacity = 0.9f;
+        s.light = ui::Color{1.0f, 1.0f, 1.0f, 1.0f};
+        s.dark = ui::Color{0.2f, 0.2f, 0.2f, 1.0f};
+        s.intensity = 0.4f;
+        s.curvature = 0.16f;
+        s.form = 2.0f;
+        const float clipIn[4] = {5, 5, 90, 90};
+        const ui::Prim p = ui::surfacePrim(s, clipIn);
+
+        c.check(p.kind == static_cast<uint32_t>(ui::PrimKind::Surface) && near(p.rect[0], 12) && near(p.rect[1], 14) &&
+                    near(p.rect[2], 60) && near(p.rect[3], 30),
+                "A surface prim has its kind and rect", describe(p.rect, 4));
+        c.check(isClip(p.clip, 5, 5, 90, 90), "A surface prim carries the clip it was given", describe(p.clip, 4));
+        c.check(near(p.shape[3], 2.225f), "The rim adds 0.45 of it to the elevation", describe(p.shape, 4));
+        c.check(near(p.style[3], 2.0f) && near(p.base[3], 0.9f),
+                "The form is in style and the opacity in base", describe(p.style, 4) + " / " + describe(p.base, 4));
+        c.check(near(p.base[0], 0.8f) && near(p.base[1], 0.7f) && near(p.base[2], 0.6f),
+                "A surface's colour is in base", describe(p.base, 3));
+        c.check(p.pad[0] == 0 && p.pad[1] == 0 && p.pad[2] == 0, "The pad is zero");
+    }
+
+    // Text: one glyph prim per visible glyph, the colour in base
+    ui::Text hello;
+    hello.text = "Hello";
+    hello.baseline = {20.0f, 30.0f};
+    hello.size = 13.0f;
+    hello.color = ui::Color{0.1f, 0.2f, 0.3f, 1.0f};
+    {
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        list.add(hello);
+        c.check(kindsOf(list) == "GGGGG", "Text adds one glyph prim per visible glyph", kindsOf(list));
+        c.check(list.prims().size() == 5 && near(list.prims()[0].base[0], 0.1f) &&
+                    near(list.prims()[0].base[1], 0.2f) && near(list.prims()[0].base[2], 0.3f),
+                "Glyphs carry the text's colour in base");
+    }
+    {
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        ui::Text spaced = hello;
+        spaced.text = "a b";
+        list.add(spaced);
+        // One prim per quad the font lays out (stb gives the space a blank quad of its own)
+        std::vector<ui::GlyphQuad> quads;
+        theme.font().layout(spaced.text, spaced.baseline, spaced.size, quads);
+        c.check(list.prims().size() == quads.size() && !quads.empty(), "A text adds one glyph per laid-out quad",
+                kindsOf(list));
+    }
+    {
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        ui::Text empty = hello;
+        empty.text = "";
+        list.add(empty);
+        c.check(list.empty(), "An empty text adds nothing");
+    }
+    {
+        ui::DrawList list; // no font set
+        list.add(hello);
+        c.check(list.empty(), "Text with no font adds nothing");
+    }
+    {
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        ui::Surface s;
+        s.rect = box(0, 0, 40, 40);
+        list.add(s);
+        list.add(hello);
+        list.add(s);
+        c.check(kindsOf(list) == "SGGGGGS", "Prims stay in drawing order across kinds", kindsOf(list));
+        c.check(list.counts().surfaces == 2 && list.counts().texts == 1 && list.counts().glyphs == 5 &&
+                    list.counts().images == 0,
+                "Counts give surfaces, texts and glyphs");
+    }
+
+    // Images: nothing without pixels or size; a real one is one prim, referenced by its index
+    {
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        list.add(ui::ImageDraw{box(0, 0, 8, 8), nullptr, 1.0f});
+        ui::ImageData zero; // no size
+        list.add(ui::ImageDraw{box(0, 0, 8, 8), &zero, 1.0f});
+        c.check(list.empty() && list.images().empty(), "An image with no pixels or size adds nothing");
+    }
+    ui::ImageData picture;
+    picture.width = 8;
+    picture.height = 8;
+    picture.pixels.assign(8 * 8 * 4, 128);
+    picture.version = 1;
+    {
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        ui::Surface s;
+        s.rect = box(0, 0, 40, 40);
+        list.add(s);
+        list.add(ui::ImageDraw{box(0, 0, 8, 8), &picture, 1.0f});
+        c.check(kindsOf(list) == "SI" && list.images().size() == 1 && list.images()[0].prim == 1 &&
+                    list.images()[0].image == &picture && list.counts().images == 1,
+                "An image adds one prim and a reference to its index", kindsOf(list));
+    }
+
+    // Fingerprints: the same lists agree; an image's version and a clear show through
+    {
+        ui::Surface s;
+        s.rect = box(10, 10, 100, 40);
+        auto make = [&] {
+            ui::DrawList list;
+            list.setFont(&theme.font());
+            list.add(s);
+            list.add(hello);
+            list.add(ui::ImageDraw{box(0, 0, 8, 8), &picture, 1.0f});
+            return ui::fingerprint(list);
+        };
+        const uint64_t first = make();
+        c.check(make() == first, "Two lists built the same have equal fingerprints");
+        picture.version = 2;
+        c.check(make() != first, "Bumping an image's version changes the fingerprint");
+        picture.version = 1;
+
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        list.add(s);
+        list.add(hello);
+        list.clear();
+        c.check(list.empty() && list.counts().glyphs == 0, "clear empties the list and its counts");
+        list.add(hello);
+        c.check(kindsOf(list) == "GGGGG", "clear keeps the font", kindsOf(list));
+    }
+    std::printf("\n");
+}
+
 // ---- checking ----
 
 struct SceneEntry {
@@ -697,9 +927,9 @@ int checkScene(const std::string &name, Picture (*render)(), bool update, std::v
 
 void printInfo(const std::string &name, const ui::FrameStats &s)
 {
-    std::printf("INFO render %s: build %.2f ms, %u surfaces, %u texts, %u glyphs, %u batches, %u draws, %zu KB, submit %.2f ms\n",
-                name.c_str(), s.buildMs, s.surfaces, s.texts, s.glyphs, s.batches, s.draws, s.uploadBytes / 1024,
-                s.submitMs);
+    std::printf("INFO render %s: build %.2f ms, %u surfaces, %u texts, %u glyphs, %u prims, %u draws, %zu KB, submit %.2f ms\n",
+                name.c_str(), s.buildMs, s.surfaces, s.texts, s.glyphs, s.surfaces + s.glyphs + s.images, s.draws,
+                s.uploadBytes / 1024, s.submitMs);
 }
 
 } // namespace
@@ -720,6 +950,11 @@ int runRenderSelfTest(int argc, char **argv)
             ++failures;
         }
     }
+
+    // The primitive checks need no window and run whatever scene is asked for
+    Checker prims;
+    primChecks(prims);
+    failures += prims.failures;
 
     bool found = only.empty();
     std::vector<std::pair<std::string, ui::FrameStats>> rendered;

@@ -22,9 +22,9 @@ struct FrameStats {
     // What the last buildFrame drew
     uint32_t surfaces = 0;
     uint32_t texts = 0;
-    uint32_t glyphs = 0; // filled by submit, when the text is laid out
+    uint32_t glyphs = 0; // text is laid out as it is added, one prim per glyph
     uint32_t images = 0;
-    uint32_t batches = 0;
+    uint32_t batches = 0; // always 0 since the unified pipeline (no batches); kept for old readers
 
     // What the last submit recorded
     uint32_t draws = 0;          // draw calls

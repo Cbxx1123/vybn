@@ -73,6 +73,8 @@ set(SHADER_SOURCES
     shaders/text.vert
     shaders/text.frag
     shaders/image.frag
+    shaders/prim.vert
+    shaders/prim.frag
 )
 set(SHADER_BINARIES)
 foreach(src IN LISTS SHADER_SOURCES)
@@ -145,6 +147,8 @@ add_executable(main
     src/ui/Panels.cpp
     src/ui/UISystem.cpp
     src/ui/UIRenderer.cpp
+    src/ui/DrawList.cpp
+    src/ui/Prim.cpp
     src/ui/Context.cpp
     src/ui/Keymap.cpp
     src/ui/Signals.cpp
