@@ -102,3 +102,32 @@ on, so before anything changes we need:
 `--render-selftest` scenes (one frame each, off screen): the synth panel is the heaviest, 4,578
 surfaces, 216 draws, 466 KB, build 3.87 ms, submit 1.89 ms; the piano roll 463 surfaces and 124
 draws; the arrangement 220 surfaces and 82 draws.
+
+## Outcome (19 October 2026)
+
+All three refactors ran their four stages. `--demo transport` while playing, per frame, main window
+(refactor 2 changed no view on that screen, so it wasn't measured there; its numbers are the synth's
+and the waveforms' below and in its plan):
+
+| | Baseline (R0) | After 1 (pipeline) | After 2 (lines, plots) | After 3 (caches) |
+|---|---|---|---|---|
+| update ms | 0.29 | 0.24 | not measured | 0.08 |
+| build ms | 1.00 | 0.71 | not measured | 0.41 |
+| submit ms | 0.50 | 0.01 | not measured | 0.01 |
+| total CPU ms | 1.79 | 0.96 | not measured | 0.50 |
+| draw calls / pipeline binds | 181 / 167 | 1 / 1 | not measured | 1 / 1 |
+| upload | 90 KB | 88 KB | not measured | 87 KB |
+
+The synth panel (render self-test, 50 settled frames): 4,578 surfaces and 216 draws, 3.87 ms build
+and 1.89 ms submit at the baseline; now 1,574 prims in 1 draw, 0.53 ms build and 0.03 ms submit.
+A 2,000-row scroll view: 14.5 ms to 3.4 ms. Curves are anti-aliased lines and plots instead of
+columns of rectangles. The look is unchanged where it should be (golden images), and smoother where
+curves were stair-stepped.
+
+Each plan's Results section records its stage numbers and the decisions taken along the way (the
+upload target missed by design in refactor 1; the waveform caches not built in refactor 2; control
+caches added in refactor 3 from a profile).
+
+Left for later: Unicode text and display scale; laying out long lists only where they show; the
+mixer's strips and the device cards (composed components, which have no key of their own); hover
+states exercised under the verifier by real mouse movement.
