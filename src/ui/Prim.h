@@ -24,24 +24,40 @@ enum class PrimKind : uint32_t { Surface = 0, Glyph = 1, Image = 2, Line = 3, Pl
 // The clip of a prim drawn with no clip: the whole plane
 constexpr float kNoClip = 1e7f;
 
-// One thing drawn, as the GPU takes it: an instance of shaders/prim.vert. Every member is an
-// input at the location of its order: 0-6 are vec4s (R32G32B32A32_SFLOAT), 7 the kind (R32_UINT).
-// Six vertices make its quad.
+// A colour packed as the GPU takes it: red in the low byte, then green, blue and alpha (what
+// GLSL's unpackUnorm4x8 reads back), each component clamped to 0-1 and rounded to 1/255
+inline uint32_t packColor(float r, float g, float b, float a)
+{
+    auto byte = [](float v) {
+        v = v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v;
+        return static_cast<uint32_t>(v * 255.0f + 0.5f);
+    };
+    return byte(r) | (byte(g) << 8) | (byte(b) << 16) | (byte(a) << 24);
+}
+inline Color unpackColor(uint32_t c)
+{
+    return {static_cast<float>(c & 0xFF) / 255.0f, static_cast<float>((c >> 8) & 0xFF) / 255.0f,
+            static_cast<float>((c >> 16) & 0xFF) / 255.0f, static_cast<float>(c >> 24) / 255.0f};
+}
+
+// One thing drawn, as the GPU takes it: an instance of shaders/prim.vert. Members are inputs at
+// the location of their order: 0-3 are vec4s (R32G32B32A32_SFLOAT), 4 is a uvec4
+// (R32G32B32A32_UINT) of base, light, dark and kind. Six vertices make its quad.
 struct Prim {
     float rect[4];  // 0: x, y, w, h in framebuffer pixels
     float clip[4];  // 1: x0, y0, x1, y1 in whole pixels; nothing outside is drawn
     float shape[4]; // 2: Surface: radius, shadow distance, blur, elevation (0 raised, 1 flat,
                     //    2 inset) + rim * 0.45. Glyph, Image: u0, v0, u1, v1
-    float base[4];  // 3: sRGB rgb and opacity: a surface's colour, a glyph's colour and alpha, an
-                    //    image's opacity in [3]
-    float light[4]; // 4: Surface: light shadow sRGB rgb, intensity
-    float dark[4];  // 5: Surface: dark shadow sRGB rgb, intensity
-    float style[4]; // 6: Surface: light direction x, y (unit, y down), curvature, form (0 rounded
+    float style[4]; // 3: Surface: light direction x, y (unit, y down), curvature, form (0 rounded
                     //    rect, 1 triangle right, 2 triangle left, 3 cross, 4 triangle down, 5 up)
-    uint32_t kind;  // 7: PrimKind
-    uint32_t pad[3];
+    // 4: packed colours (packColor), sRGB:
+    uint32_t base;  //    a surface's colour and opacity, a glyph's colour and alpha, an image's
+                    //    opacity in alpha (rgb white)
+    uint32_t light; //    Surface: light shadow rgb, intensity in alpha
+    uint32_t dark;  //    Surface: dark shadow rgb, intensity in alpha
+    uint32_t kind;  //    PrimKind
 };
-static_assert(sizeof(Prim) == 128, "Prim must match shaders/prim.vert's inputs");
+static_assert(sizeof(Prim) == 80, "Prim must match shaders/prim.vert's inputs");
 
 // The clip prims carry: `clip` rounded out to whole pixels (floor of its start, ceil of its end,
 // as the scissor used to be), or kNoClip on every side when `clipped` is false
@@ -53,7 +69,7 @@ Prim surfacePrim(const Surface &surface, const float clip[4]);
 // One Glyph prim per visible glyph of `text`, from Font::layout: rect x0, y0, x1 - x0, y1 - y0; uv
 // in shape; the text's colour in base. Appended to `out`.
 void glyphPrims(const Font &font, const Text &text, const float clip[4], std::vector<Prim> &out);
-// An image's quad: its rect, uv 0 to 1, opacity in base[3] (base rgb 1)
+// An image's quad: its rect, uv 0 to 1, base white with the opacity as its alpha
 Prim imagePrim(const ImageDraw &image, const float clip[4]);
 
 }

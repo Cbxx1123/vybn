@@ -47,6 +47,13 @@ struct Font::Impl {
     int descent = 0;
     int lineGap = 0;
     int capHeight = 0;
+    // Kern advance in font units for every pair of the printable characters, [previous][codepoint]
+    std::vector<int> kerning = std::vector<int>(kCharCount * kCharCount, 0);
+
+    int kern(int previous, int codepoint) const
+    {
+        return kerning[(previous - kFirstChar) * kCharCount + (codepoint - kFirstChar)];
+    }
 };
 
 Font::Font(const std::string &path, const std::vector<float> &pixelSizes)
@@ -68,6 +75,14 @@ Font::Font(const std::string &path, const std::vector<float> &pixelSizes)
     stbtt_GetFontVMetrics(&impl_->info, &impl_->ascent, &impl_->descent, &impl_->lineGap);
     int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
     impl_->capHeight = stbtt_GetCodepointBox(&impl_->info, 'H', &x0, &y0, &x1, &y1) ? y1 : impl_->ascent;
+
+    // Kerning is looked up per pair while text is measured and laid out every frame, so fill it once here
+    for (int previous = 0; previous < kCharCount; ++previous) {
+        for (int codepoint = 0; codepoint < kCharCount; ++codepoint) {
+            impl_->kerning[previous * kCharCount + codepoint] =
+                stbtt_GetCodepointKernAdvance(&impl_->info, previous + kFirstChar, codepoint + kFirstChar);
+        }
+    }
 
     for (float size : pixelSizes) {
         Face face;
@@ -149,7 +164,7 @@ float Font::measure(const std::string &text, float size) const
     for (unsigned char c : text) {
         const int codepoint = toCodepoint(c);
         if (previous)
-            width += stbtt_GetCodepointKernAdvance(&impl_->info, previous, codepoint) * face.scale;
+            width += impl_->kern(previous, codepoint) * face.scale;
         width += face.chars[codepoint - kFirstChar].xadvance;
         previous = codepoint;
     }
@@ -188,7 +203,7 @@ void Font::layout(const std::string &text, Vec2 baseline, float size, std::vecto
     for (unsigned char c : text) {
         const int codepoint = toCodepoint(c);
         if (previous)
-            x += stbtt_GetCodepointKernAdvance(&impl_->info, previous, codepoint) * face.scale;
+            x += impl_->kern(previous, codepoint) * face.scale;
 
         stbtt_aligned_quad q;
         stbtt_GetPackedQuad(face.chars.data(), static_cast<int>(atlasWidth_), static_cast<int>(atlasHeight_),

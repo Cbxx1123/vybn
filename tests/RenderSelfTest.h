@@ -29,6 +29,7 @@ namespace tests {
 //   pianoroll     1200x520 daw::PianoRollView on the demo project's first instrument clip
 //   steps         1000x420 daw::StepSequencerView on a drum clip (a kick, snare and hat beat)
 //   synth         1180x860 daw::SynthView on the synthesizer's Init setting (no audio device)
+//   scroll        600x400  a ScrollView of 2000 ListItems (culling: only the rows in view are drawn)
 //
 // A scene with a component tree is rendered by a ui::Context on the hidden window: the window is
 // placed far off the desktop so the real mouse never hovers it, and frames (update, then

@@ -369,6 +369,7 @@ uint64_t Context::buildFrame()
     stats_.layoutMs += msSince(layoutStart);
     // The theme may have changed this frame: text is laid out with its font
     drawList_.setFont(&theme_.font());
+    drawList_.setBounds(bounds());
     drawList_.clear();
     root_->draw(drawList_, theme_);
     for (const Overlay &o : overlays_) {

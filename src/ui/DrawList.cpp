@@ -6,9 +6,50 @@
 
 namespace ui {
 
+namespace {
+
+// The area a prim draws, as x0, y0, x1, y1: its rect, grown for a surface as prim.vert grows its
+// quad (a raised surface by its shadow, every other surface by the anti-aliased edge's pixel)
+void drawnArea(const Prim &prim, float out[4])
+{
+    float margin = 0.0f;
+    if (prim.kind == static_cast<uint32_t>(PrimKind::Surface))
+        margin = prim.shape[3] < 0.5f ? prim.shape[1] * 1.4143f + prim.shape[2] + 1.0f : 1.0f;
+    out[0] = prim.rect[0] - margin;
+    out[1] = prim.rect[1] - margin;
+    out[2] = prim.rect[0] + prim.rect[2] + margin;
+    out[3] = prim.rect[1] + prim.rect[3] + margin;
+}
+
+// Whether two areas (x0, y0, x1, y1) overlap with some area; edges that only touch don't count
+bool shares(const float a[4], const float b[4])
+{
+    return std::min(a[2], b[2]) > std::max(a[0], b[0]) && std::min(a[3], b[3]) > std::max(a[1], b[1]);
+}
+
+}
+
+void DrawList::setBounds(const Rect &bounds)
+{
+    bounds_[0] = bounds.x;
+    bounds_[1] = bounds.y;
+    bounds_[2] = bounds.x + bounds.w;
+    bounds_[3] = bounds.y + bounds.h;
+}
+
+bool DrawList::visible(const Prim &prim) const
+{
+    float area[4];
+    drawnArea(prim, area);
+    return shares(area, prim.clip) && shares(area, bounds_);
+}
+
 void DrawList::add(const Surface &surface)
 {
-    prims_.push_back(surfacePrim(surface, currentClip()));
+    const Prim prim = surfacePrim(surface, currentClip());
+    if (!visible(prim))
+        return;
+    prims_.push_back(prim);
     ++counts_.surfaces;
 }
 
@@ -18,7 +59,16 @@ void DrawList::add(const Text &text)
         return;
     const size_t before = prims_.size();
     glyphPrims(*font_, text, currentClip(), prims_);
-    const size_t glyphs = prims_.size() - before;
+    // Keep the glyphs that draw something, in order
+    size_t kept = before;
+    for (size_t i = before; i < prims_.size(); ++i) {
+        if (!visible(prims_[i]))
+            continue;
+        prims_[kept] = prims_[i];
+        ++kept;
+    }
+    prims_.resize(kept); // shrinking keeps the capacity
+    const size_t glyphs = kept - before;
     if (glyphs == 0)
         return;
     ++counts_.texts;
@@ -29,8 +79,11 @@ void DrawList::add(const ImageDraw &image)
 {
     if (!image.image || image.image->width == 0 || image.image->height == 0)
         return;
+    const Prim prim = imagePrim(image, currentClip());
+    if (!visible(prim))
+        return;
     images_.push_back({static_cast<uint32_t>(prims_.size()), image.image});
-    prims_.push_back(imagePrim(image, currentClip()));
+    prims_.push_back(prim);
     ++counts_.images;
 }
 

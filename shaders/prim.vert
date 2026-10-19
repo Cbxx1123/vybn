@@ -3,15 +3,17 @@
 // Every prim (src/ui/Prim.h): one instance each; six vertices make its quad.
 // CONTRACT (the orchestrator's; the shader agent fills in main):
 // - push constant: vec2 screenSize, framebuffer pixels
-// - per-instance inputs, matching ui::Prim member order:
-//     location 0 vec4 inRect   x, y, w, h
-//     location 1 vec4 inClip   x0, y0, x1, y1 (whole pixels)
-//     location 2 vec4 inShape  Surface: radius, distance, blur, elevation + rim * 0.45; Glyph/Image: u0, v0, u1, v1
-//     location 3 vec4 inBase   sRGB rgb, opacity
-//     location 4 vec4 inLight  Surface: light shadow sRGB rgb, intensity
-//     location 5 vec4 inDark   Surface: dark shadow sRGB rgb, intensity
-//     location 6 vec4 inStyle  Surface: light direction x, y, curvature, form
-//     location 7 uint inKind   0 Surface, 1 Glyph, 2 Image
+// - per-instance inputs, matching ui::Prim member order (80 bytes):
+//     location 0 vec4 inRect    x, y, w, h
+//     location 1 vec4 inClip    x0, y0, x1, y1 (whole pixels)
+//     location 2 vec4 inShape   Surface: radius, distance, blur, elevation + rim * 0.45; Glyph/Image: u0, v0, u1, v1
+//     location 3 vec4 inStyle   Surface: light direction x, y, curvature, form
+//     location 4 uvec4 inColors (base, light, dark, kind), each colour packed red in the low byte to
+//                               alpha in the high byte (unpackUnorm4x8, sRGB):
+//                               base  Surface: colour and opacity; Glyph: colour and alpha; Image: opacity in alpha
+//                               light Surface: light shadow rgb, intensity in alpha
+//                               dark  Surface: dark shadow rgb, intensity in alpha
+//                               kind  0 Surface, 1 Glyph, 2 Image, 3 Line, 4 Plot
 // - outputs to prim.frag (the agent may add more, all flat except vLocal and vUv):
 //     location 0 vec2 vLocal      Surface: pixel position relative to the rect's centre
 //     location 1 vec2 vUv         Glyph/Image: atlas or image coordinates
@@ -30,11 +32,8 @@ layout(push_constant) uniform Push {
 layout(location = 0) in vec4 inRect;
 layout(location = 1) in vec4 inClip;
 layout(location = 2) in vec4 inShape;
-layout(location = 3) in vec4 inBase;
-layout(location = 4) in vec4 inLight;
-layout(location = 5) in vec4 inDark;
-layout(location = 6) in vec4 inStyle;
-layout(location = 7) in uint inKind;
+layout(location = 3) in vec4 inStyle;
+layout(location = 4) in uvec4 inColors;
 
 layout(location = 0) out vec2 vLocal;
 layout(location = 1) out vec2 vUv;
@@ -53,8 +52,9 @@ const vec2 corners[6] = vec2[](
 
 void main() {
     vec2 corner = corners[gl_VertexIndex];
+    uint kind = inColors.w;
     vec2 pos;
-    if (inKind == 0u) {
+    if (kind == 0u) {
         // Raised surfaces cast shadows outside their rect, so grow the quad to cover them
         // (the offset is up to distance * sqrt(2) along one axis). Everything else stays inside;
         // 1px covers the anti-aliased edge.
@@ -69,7 +69,7 @@ void main() {
     // clip (or a zero-area quad when they don't meet)
     pos = clamp(pos, inClip.xy, inClip.zw);
 
-    if (inKind == 0u) {
+    if (kind == 0u) {
         vLocal = pos - (inRect.xy + inRect.zw * 0.5);
         vUv = vec2(0.0);
     } else {
@@ -79,11 +79,11 @@ void main() {
 
     vHalfSize = inRect.zw * 0.5;
     vShape = inShape;
-    vBase = inBase;
-    vLight = inLight;
-    vDark = inDark;
+    vBase = unpackUnorm4x8(inColors.x);
+    vLight = unpackUnorm4x8(inColors.y);
+    vDark = unpackUnorm4x8(inColors.z);
     vStyle = inStyle;
-    vKind = inKind;
+    vKind = kind;
 
     gl_Position = vec4(pos / pc.screenSize * 2.0 - 1.0, 0.0, 1.0);
 }

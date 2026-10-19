@@ -31,18 +31,9 @@ Prim surfacePrim(const Surface &s, const float clip[4])
     p.shape[1] = s.distance;
     p.shape[2] = s.blur;
     p.shape[3] = static_cast<float>(s.elevation) + std::clamp(s.rim, 0.0f, 1.0f) * 0.45f;
-    p.base[0] = s.base.r;
-    p.base[1] = s.base.g;
-    p.base[2] = s.base.b;
-    p.base[3] = s.opacity;
-    p.light[0] = s.light.r;
-    p.light[1] = s.light.g;
-    p.light[2] = s.light.b;
-    p.light[3] = s.intensity;
-    p.dark[0] = s.dark.r;
-    p.dark[1] = s.dark.g;
-    p.dark[2] = s.dark.b;
-    p.dark[3] = s.intensity;
+    p.base = packColor(s.base.r, s.base.g, s.base.b, s.opacity);
+    p.light = packColor(s.light.r, s.light.g, s.light.b, s.intensity);
+    p.dark = packColor(s.dark.r, s.dark.g, s.dark.b, s.intensity);
     p.style[0] = s.lightDirection.x;
     p.style[1] = s.lightDirection.y;
     p.style[2] = s.curvature;
@@ -68,10 +59,7 @@ void glyphPrims(const Font &font, const Text &text, const float clip[4], std::ve
         p.shape[1] = q.v0;
         p.shape[2] = q.u1;
         p.shape[3] = q.v1;
-        p.base[0] = text.color.r;
-        p.base[1] = text.color.g;
-        p.base[2] = text.color.b;
-        p.base[3] = text.color.a;
+        p.base = packColor(text.color.r, text.color.g, text.color.b, text.color.a);
         p.kind = static_cast<uint32_t>(PrimKind::Glyph);
         out.push_back(p);
     }
@@ -87,10 +75,7 @@ Prim imagePrim(const ImageDraw &image, const float clip[4])
     std::memcpy(p.clip, clip, sizeof p.clip);
     p.shape[2] = 1.0f;
     p.shape[3] = 1.0f;
-    p.base[0] = 1.0f;
-    p.base[1] = 1.0f;
-    p.base[2] = 1.0f;
-    p.base[3] = image.opacity;
+    p.base = packColor(1.0f, 1.0f, 1.0f, image.opacity);
     p.kind = static_cast<uint32_t>(PrimKind::Image);
     return p;
 }

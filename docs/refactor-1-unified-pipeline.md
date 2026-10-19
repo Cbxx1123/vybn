@@ -184,3 +184,23 @@ The orchestrator runs every demo with `VIBIN_FRAME_STATS=1`, looks at screenshot
 ## Out of scope
 
 Unicode text, display scale, GPU timestamps, multi-window submission in one queue submit.
+
+## Results (19 October 2026)
+
+`--demo transport` while playing, per frame, against the R0 baseline:
+
+| | Baseline | After R1.1 (MVP) | After R1.3 (Performance) |
+|---|---|---|---|
+| draws / pipeline binds | 181 / 167 | 1 / 1 | 1 / 1 |
+| build ms | 1.00 | 1.01 | 0.71 |
+| layout ms (both passes) | 0.42 | 0.45 | 0.32 |
+| submit ms | 0.50 | 0.02 | 0.01 |
+| upload | 90 KB | 157 KB | 88 KB |
+
+Every target is met but the upload's: packing took it from 157 KB to 88 KB, but a glyph that was a
+48-byte instance is now an 80-byte prim, so against the baseline it is about even (2% less, not
+30%). At 60 frames a second that is about 5 MB/s, nothing to the GPU; a second, smaller glyph format
+would undo the one-type design, so it stays. The render self-test's synth panel: 216 draws to 1,
+submit 1.89 ms to 0.05 ms (averaged over 50 frames), build 3.87 ms to 1.92 ms (culling and kerning).
+Culling: a 2,000-row scroll view draws 117 prims, but still costs 15 ms to build, since every row is
+laid out and asked to draw; refactor 3's Performance stage skips drawing children outside the clip.

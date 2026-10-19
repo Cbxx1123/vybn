@@ -1,3 +1,6 @@
+// Scenes, each described in RenderSelfTest.h: shapes, shapes-dark, text, clips, image, controls,
+// arrangement, pianoroll, steps, scroll (a 2000-row ScrollView, to show culling at work) and synth.
+// The synth scene is also timed over 50 settled frames (an INFO line after the scenes).
 #include "RenderSelfTest.h"
 
 #include <algorithm>
@@ -53,6 +56,7 @@ const int kTolerance = 2;            // per channel
 const double kMaxBeyondShare = 0.0005; // share of pixels allowed beyond the tolerance
 const int kSettleFrames = 300;       // at most this many frames before drawing
 const int kSteadyFrames = 3;         // the same fingerprint this many frames running
+const int kTimedFrames = 50;         // the synth scene's timed frames (build and submit, averaged)
 
 // A picture: opaque RGB, 3 bytes a pixel, rows packed, top row first
 struct Picture {
@@ -190,11 +194,23 @@ Picture fromBgra(uint32_t width, uint32_t height, const std::vector<uint8_t> &bg
     return picture;
 }
 
+// What the timed frames of a settled scene cost, on average (the readback isn't timed)
+struct Timing {
+    int frames = 0;
+    double buildMs = 0.0;
+    double submitMs = 0.0;
+    uint32_t prims = 0;
+    size_t uploadBytes = 0;
+};
+
 // Builds a tree into a context on a hidden window of the given size, settles it, and draws it
-// off screen. The context dies before the renderer and the window; whatever `build` captured
-// (stores, views' models, images) must outlive this call.
+// off screen. With `timedFrames` and `timing`, the settled scene first runs that many frames of
+// update, buildFrame and submit, and the averages go to `timing`. The context dies before the
+// renderer and the window; whatever `build` captured (stores, views' models, images) must outlive
+// this call.
 Picture renderPicture(uint32_t width, uint32_t height, const ui::Theme &theme,
-                      const std::function<void(ui::Context &)> &build)
+                      const std::function<void(ui::Context &)> &build, int timedFrames = 0,
+                      Timing *timing = nullptr)
 {
     engine::Window window(width, height, "Vibin render test", false);
     window.setPosition(-32000, -32000); // far off the desktop, so the real mouse never hovers it
@@ -217,7 +233,30 @@ Picture renderPicture(uint32_t width, uint32_t height, const ui::Theme &theme,
 
         int fbWidth = 0, fbHeight = 0;
         window.framebufferSize(fbWidth, fbHeight);
-        renderer.beginOffscreen(static_cast<uint32_t>(fbWidth), static_cast<uint32_t>(fbHeight));
+        const uint32_t fbW = static_cast<uint32_t>(fbWidth), fbH = static_cast<uint32_t>(fbHeight);
+
+        if (timedFrames > 0 && timing) {
+            double buildSum = 0.0, submitSum = 0.0;
+            size_t bytesSum = 0;
+            for (int i = 0; i < timedFrames; ++i) {
+                context.update();
+                context.buildFrame();
+                renderer.beginOffscreen(fbW, fbH);
+                context.submit();
+                renderer.endOffscreen(); // the readback is not timed
+                const ui::FrameStats &s = context.stats();
+                buildSum += s.buildMs;
+                submitSum += s.submitMs;
+                bytesSum += s.uploadBytes;
+                timing->prims = s.surfaces + s.glyphs + s.images;
+            }
+            timing->frames = timedFrames;
+            timing->buildMs = buildSum / timedFrames;
+            timing->submitMs = submitSum / timedFrames;
+            timing->uploadBytes = bytesSum / static_cast<size_t>(timedFrames);
+        }
+
+        renderer.beginOffscreen(fbW, fbH);
         context.submit();
         const std::vector<uint8_t> bgra = renderer.endOffscreen();
         picture = fromBgra(static_cast<uint32_t>(fbWidth), static_cast<uint32_t>(fbHeight), bgra);
@@ -606,16 +645,37 @@ Picture sceneSteps()
     });
 }
 
-Picture sceneSynth()
+// A long list in a scroll view: 2000 rows, of which only the ones on screen should draw
+Picture sceneScroll()
+{
+    return renderPicture(600, 400, daw::studioTheme(true), [](ui::Context &context) {
+        ui::ScrollView &scroll = context.root().add<ui::ScrollView>();
+        stretch(scroll);
+        for (int row = 0; row < 2000; ++row)
+            scroll.content()
+                .add<ui::ListItem>("Row " + std::to_string(row), [] {})
+                .setSubtitle("Subtitle of row " + std::to_string(row));
+    });
+}
+
+// The synthesizer's panel; with timedFrames, the settled panel is timed (see renderPicture)
+Picture renderSynth(int timedFrames, Timing *timing)
 {
     audio::DeviceSetting setting = audio::SynthDevice::setting("Init"); // outlives the context
     daw::DeviceAccess access;
     access.setting = [&setting] { return &setting; };
     access.edit = [&setting] { return &setting; };
     access.device = [] { return static_cast<audio::Device *>(nullptr); };
-    return renderPicture(1180, 860, daw::studioTheme(true), [&access](ui::Context &context) {
-        stretch(context.root().add<daw::SynthView>(context, access));
-    });
+    return renderPicture(1180, 860, daw::studioTheme(true),
+                         [&access](ui::Context &context) {
+                             stretch(context.root().add<daw::SynthView>(context, access));
+                         },
+                         timedFrames, timing);
+}
+
+Picture sceneSynth()
+{
+    return renderSynth(0, nullptr);
 }
 
 // ---- primitives (no window) ----
@@ -658,6 +718,29 @@ bool unclipped(const float *clip)
     return isClip(clip, -ui::kNoClip, -ui::kNoClip, ui::kNoClip, ui::kNoClip);
 }
 
+// Packed colours are rounded to 1/255, so a checked component may be that far off (and a little more)
+const float kColorTolerance = 1.0f / 255.0f + 0.001f;
+
+bool nearValue(float a, float b)
+{
+    return std::fabs(a - b) <= kColorTolerance;
+}
+
+// The red, green and blue of a packed colour are near the given ones
+bool nearRgb(uint32_t packed, float r, float g, float b)
+{
+    const ui::Color c = ui::unpackColor(packed);
+    return nearValue(c.r, r) && nearValue(c.g, g) && nearValue(c.b, b);
+}
+
+// A packed colour's components, as text
+std::string describeColor(uint32_t packed)
+{
+    const ui::Color c = ui::unpackColor(packed);
+    const float values[4] = {c.r, c.g, c.b, c.a};
+    return describe(values, 4);
+}
+
 // One letter a prim: S surface, G glyph, I image, in drawing order
 std::string kindsOf(const ui::DrawList &list)
 {
@@ -690,7 +773,7 @@ void primChecks(Checker &c)
         ui::DrawList list;
         list.setFont(&theme.font());
         ui::Surface s;
-        s.rect = box(0, 0, 40, 40);
+        s.rect = box(60, 25, 40, 40); // inside the inner clip, so culling keeps it
         list.pushClip(box(0, 0, 100, 100));
         list.pushClip(box(50.4f, 20.2f, 100, 30.6f));
         list.add(s);
@@ -727,11 +810,9 @@ void primChecks(Checker &c)
                 "A surface prim has its kind and rect", describe(p.rect, 4));
         c.check(isClip(p.clip, 5, 5, 90, 90), "A surface prim carries the clip it was given", describe(p.clip, 4));
         c.check(near(p.shape[3], 2.225f), "The rim adds 0.45 of it to the elevation", describe(p.shape, 4));
-        c.check(near(p.style[3], 2.0f) && near(p.base[3], 0.9f),
-                "The form is in style and the opacity in base", describe(p.style, 4) + " / " + describe(p.base, 4));
-        c.check(near(p.base[0], 0.8f) && near(p.base[1], 0.7f) && near(p.base[2], 0.6f),
-                "A surface's colour is in base", describe(p.base, 3));
-        c.check(p.pad[0] == 0 && p.pad[1] == 0 && p.pad[2] == 0, "The pad is zero");
+        c.check(near(p.style[3], 2.0f) && nearValue(ui::unpackColor(p.base).a, 0.9f),
+                "The form is in style and the opacity in base", describe(p.style, 4) + " / " + describeColor(p.base));
+        c.check(nearRgb(p.base, 0.8f, 0.7f, 0.6f), "A surface's colour is in base", describeColor(p.base));
     }
 
     // Text: one glyph prim per visible glyph, the colour in base
@@ -745,9 +826,8 @@ void primChecks(Checker &c)
         list.setFont(&theme.font());
         list.add(hello);
         c.check(kindsOf(list) == "GGGGG", "Text adds one glyph prim per visible glyph", kindsOf(list));
-        c.check(list.prims().size() == 5 && near(list.prims()[0].base[0], 0.1f) &&
-                    near(list.prims()[0].base[1], 0.2f) && near(list.prims()[0].base[2], 0.3f),
-                "Glyphs carry the text's colour in base");
+        c.check(list.prims().size() == 5 && nearRgb(list.prims()[0].base, 0.1f, 0.2f, 0.3f),
+                "Glyphs carry the text's colour in base", describeColor(list.prims()[0].base));
     }
     {
         ui::DrawList list;
@@ -841,6 +921,97 @@ void primChecks(Checker &c)
         list.add(hello);
         c.check(kindsOf(list) == "GGGGG", "clear keeps the font", kindsOf(list));
     }
+
+    // Culling: a prim whose drawn area misses its clip (or the bounds) is not added
+    {
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        ui::Surface flat;
+        flat.rect = box(0, 0, 40, 40);
+        list.pushClip(box(100, 100, 50, 50));
+        list.add(flat); // entirely outside
+        flat.rect = box(90, 90, 30, 30);
+        list.add(flat); // partly inside
+        list.popClip();
+        c.check(kindsOf(list) == "S", "A flat surface outside its clip adds nothing, one partly in is added",
+                kindsOf(list));
+    }
+    {
+        // A raised surface's drawn area grows by its shadow: 1.4143 * distance + blur + 1 (prim.vert)
+        ui::Surface raised;
+        raised.rect = box(-24, 20, 20, 20); // right edge at -4: outside, but its margin is 9.24 ...
+        raised.elevation = ui::Elevation::Raised;
+        raised.distance = 3.0f;
+        raised.blur = 4.0f;
+        ui::Surface flat = raised;
+        flat.elevation = ui::Elevation::Flat;
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        list.pushClip(box(0, 0, 100, 100));
+        list.add(raised); // ... so its shadow reaches in and it is added
+        list.add(flat);   // a flat one just as far out draws nothing inside
+        list.popClip();
+        c.check(kindsOf(list) == "S" && list.counts().surfaces == 1,
+                "A raised surface just outside its clip is added when its shadow reaches in", kindsOf(list));
+    }
+    {
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        list.setBounds(box(0, 0, 100, 100));
+        ui::Surface s;
+        s.rect = box(500, 10, 40, 40);
+        list.add(s); // outside the bounds
+        s.rect = box(50, 10, 40, 40);
+        list.add(s); // inside
+        c.check(kindsOf(list) == "S", "Bounds drop a surface outside them and keep one inside", kindsOf(list));
+    }
+    {
+        // A text half outside its clip keeps the glyphs that overlap the clip
+        ui::Text sentence = hello;
+        sentence.text = "Hello world, cut in half";
+        std::vector<ui::GlyphQuad> quads;
+        theme.font().layout(sentence.text, sentence.baseline, sentence.size, quads);
+        const float middle = (quads.front().x0 + quads.back().x1) / 2.0f;
+
+        ui::DrawList whole;
+        whole.setFont(&theme.font());
+        whole.add(sentence);
+        ui::DrawList cut;
+        cut.setFont(&theme.font());
+        cut.pushClip(box(0, 0, middle, 100));
+        cut.add(sentence);
+        cut.popClip();
+        const size_t laid = quads.size(), kept = cut.prims().size();
+        c.check(whole.prims().size() == laid && kept > 0 && kept < laid,
+                "A text half outside its clip keeps only the glyphs that overlap it",
+                std::to_string(kept) + " of " + std::to_string(laid));
+    }
+    {
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        list.pushClip(box(0, 0, 10, 10));
+        list.add(ui::ImageDraw{box(50, 50, 8, 8), &picture, 1.0f});
+        list.popClip();
+        c.check(list.empty() && list.images().empty() && list.counts().images == 0,
+                "An image outside its clip adds no prim and no reference");
+    }
+    {
+        // Counts give only what was added: the culled surface and text are not counted
+        ui::DrawList list;
+        list.setFont(&theme.font());
+        list.pushClip(box(0, 0, 200, 100));
+        ui::Surface s;
+        s.rect = box(400, 0, 40, 40);
+        list.add(s); // outside
+        s.rect = box(10, 10, 20, 20);
+        list.add(s); // inside
+        list.add(ui::Text{"Hello", {400.0f, 30.0f}, 13.0f, ui::Color{0.1f, 0.2f, 0.3f, 1.0f}}); // outside
+        list.add(ui::Text{"Hello", {20.0f, 30.0f}, 13.0f, ui::Color{0.1f, 0.2f, 0.3f, 1.0f}});  // inside
+        list.popClip();
+        const ui::DrawList::Counts &n = list.counts();
+        c.check(n.surfaces == 1 && n.texts == 1 && n.glyphs == 5 && n.images == 0 && list.prims().size() == 6,
+                "Counts give only what was added", kindsOf(list));
+    }
     std::printf("\n");
 }
 
@@ -861,6 +1032,7 @@ const SceneEntry kScenes[] = {
     {"arrangement", sceneArrangement},
     {"pianoroll", scenePianoRoll},
     {"steps", sceneSteps},
+    {"scroll", sceneScroll},
     {"synth", sceneSynth},
 };
 
@@ -971,6 +1143,19 @@ int runRenderSelfTest(int argc, char **argv)
 
     for (const auto &entry : rendered)
         printInfo(entry.first, entry.second);
+
+    // The heaviest scene, timed on its settled frames
+    if (only.empty() || only == "synth") {
+        try {
+            Timing timing;
+            renderSynth(kTimedFrames, &timing);
+            std::printf("INFO render synth x%d: build %.2f ms, submit %.2f ms, %u prims, %zu KB\n", timing.frames,
+                        timing.buildMs, timing.submitMs, timing.prims, timing.uploadBytes / 1024);
+        } catch (const std::exception &e) {
+            std::printf("FAIL  synth timing failed: %s\n", e.what());
+            ++failures;
+        }
+    }
     return failures;
 }
 

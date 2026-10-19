@@ -13,7 +13,8 @@ constexpr VkDeviceSize kInitialPrimCapacity = 1024 * sizeof(Prim);
 // The picture set 1 shows when no image is drawn: one transparent pixel
 const uint8_t kBlankPixel[4] = {0, 0, 0, 0};
 
-// Matches the instance inputs of shaders/prim.vert: locations 0-6 vec4s, 7 the kind
+// Matches the instance inputs of shaders/prim.vert: locations 0-3 vec4s (rect, clip, shape, style),
+// 4 the uvec4 of packed base, light, dark and kind
 engine::VertexLayout primLayout()
 {
     engine::VertexLayout layout{
@@ -22,11 +23,8 @@ engine::VertexLayout primLayout()
             {VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Prim, rect)},
             {VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Prim, clip)},
             {VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Prim, shape)},
-            {VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Prim, base)},
-            {VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Prim, light)},
-            {VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Prim, dark)},
             {VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Prim, style)},
-            {VK_FORMAT_R32_UINT, offsetof(Prim, kind)},
+            {VK_FORMAT_R32G32B32A32_UINT, offsetof(Prim, base)},
         },
     };
     layout.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
@@ -152,10 +150,9 @@ void UIRenderer::render(const DrawList &list)
     // First pass: every image's texture, brought up to date before anything is drawn (each buffer
     // is written once a frame). The images are in prim order, so the i-th image prim is refs[i];
     // an image that can't be shown keeps its place with a null set and is skipped when drawn.
-    std::vector<const engine::DescriptorSet *> imageSets;
-    imageSets.reserve(refs.size());
+    imageSets_.clear();
     for (const DrawList::ImageRef &ref : refs)
-        imageSets.push_back(imagesFailed_ ? nullptr : liveImage(*ref.image, frame));
+        imageSets_.push_back(imagesFailed_ ? nullptr : liveImage(*ref.image, frame));
 
     engine::Buffer &primBuffer = primBuffers_[frame];
     upload(renderer_, primBuffer, prims);
@@ -187,7 +184,7 @@ void UIRenderer::render(const DrawList &list)
             continue;
         }
 
-        const engine::DescriptorSet *set = image < imageSets.size() ? imageSets[image] : nullptr;
+        const engine::DescriptorSet *set = image < imageSets_.size() ? imageSets_[image] : nullptr;
         ++image;
         if (set) {
             renderer_.bindDescriptorSet(pipeline, *set, 1);

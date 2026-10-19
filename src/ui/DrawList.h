@@ -23,6 +23,10 @@ public:
     // font draws nothing.
     void setFont(const Font *font) { font_ = font; }
     const Font *font() const { return font_; }
+    // The window's area (Context sets it each frame). A prim whose drawn area (a raised
+    // surface's grown by its shadow, as prim.vert grows it) misses these bounds or its clip is
+    // not added: it would draw nothing. Unset, only the clip culls.
+    void setBounds(const Rect &bounds);
 
     void add(const Surface &surface);
     // Laid out now; an empty text adds nothing
@@ -61,6 +65,9 @@ public:
 private:
     // The clip in effect, as prims carry it (see clipBounds)
     const float *currentClip() const { return clipped_.empty() ? noClip_ : clipped_.back().bounds; }
+    // Whether the area a prim draws shares some with its clip and the bounds (edges that only
+    // touch don't count); a prim that doesn't is not added
+    bool visible(const Prim &prim) const;
 
     struct Clip {
         Rect rect;       // for intersecting the next one
@@ -73,6 +80,8 @@ private:
     std::vector<Clip> clipped_;
     Counts counts_;
     float noClip_[4] = {-kNoClip, -kNoClip, kNoClip, kNoClip};
+    // The window's area as x0, y0, x1, y1 (the whole plane until setBounds)
+    float bounds_[4] = {-kNoClip, -kNoClip, kNoClip, kNoClip};
 };
 
 // Hashes plain values one field at a time (64-bit FNV-1a), so no padding bytes take part

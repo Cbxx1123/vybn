@@ -41,6 +41,10 @@ private:
     // One per frame in flight: the frame's prims, every kind
     std::vector<engine::Buffer> primBuffers_;
 
+    // The image sets of the frame being drawn, one per image in prim order; cleared and reused each
+    // frame so render allocates nothing once it has grown
+    std::vector<const engine::DescriptorSet *> imageSets_;
+
     // The descriptor set showing `image` for frame slot `frame`, its texture brought up to date
     const engine::DescriptorSet *liveImage(const ImageData &image, uint32_t frame);
 
