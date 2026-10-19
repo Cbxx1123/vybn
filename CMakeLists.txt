@@ -179,6 +179,9 @@ add_executable(main
     src/daw/Autosave.cpp
     src/daw/PreviewPlayer.cpp
     src/daw/PianoRollMenus.cpp
+    src/daw/StepSequence.cpp
+    src/daw/StepSequencer.cpp
+    src/daw/StepMenus.cpp
     src/daw/ProjectSession.cpp
     src/daw/ProjectStore.cpp
     src/daw/DawApp.cpp
@@ -212,6 +215,7 @@ add_executable(main
     tests/ProjectSelfTest.cpp
     tests/BrowserSelfTest.cpp
     tests/NoteSelfTest.cpp
+    tests/StepSelfTest.cpp
     tests/EngineSelfTest.cpp
     tests/PluginSelfTest.cpp
     tests/SynthSelfTest.cpp
