@@ -22,6 +22,7 @@ public:
         auto child = std::make_unique<T>(std::forward<Args>(args)...);
         T &ref = *child;
         children_.push_back(std::move(child));
+        treeChanged();
         return ref;
     }
 
@@ -29,13 +30,18 @@ public:
     Component &adopt(std::unique_ptr<Component> child)
     {
         children_.push_back(std::move(child));
+        treeChanged();
         return *children_.back();
     }
     // Removes `child` and hands it back (nullptr if it isn't a child of this container)
     std::unique_ptr<Component> release(const Component &child);
     // Removes every child.
     // Changing children is only safe outside the tree's input and drawing: use Context::post.
-    void clear() { children_.clear(); }
+    void clear()
+    {
+        children_.clear();
+        treeChanged();
+    }
     size_t childCount() const { return children_.size(); }
     Component &child(size_t index) { return *children_[index]; }
 

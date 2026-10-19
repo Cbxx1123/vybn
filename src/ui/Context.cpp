@@ -5,6 +5,8 @@
 #include <cmath>
 #include <variant>
 
+#include "DrawCache.h"
+
 namespace ui {
 
 namespace {
@@ -126,15 +128,34 @@ void Context::removeClosedOverlays()
             ++it;
         }
     }
+    // Gone from the tree: the next update must lay it out again
+    if (!closed.empty())
+        Component::treeChanged();
     for (Overlay &o : closed) {
         if (o.options.onClose)
             o.options.onClose();
     }
 }
 
+bool Context::needsLayout() const
+{
+    if (!laidOut_)
+        return true;
+    const Rect window = bounds();
+    return Component::treeVersion() != layoutTree_ || window.w != layoutBounds_.w || window.h != layoutBounds_.h ||
+           theme_.fingerprint() != layoutTheme_;
+}
+
+// Arranges the root and the overlays in the window. Records what it is done for, so update can
+// tell whether the rects on screen still hold (see needsLayout). The recording comes first: if
+// arranging changed the tree, the layout is already out of date and the next one must run.
 void Context::layout()
 {
     const Rect window = bounds();
+    laidOut_ = true;
+    layoutTree_ = Component::treeVersion();
+    layoutTheme_ = theme_.fingerprint();
+    layoutBounds_ = window;
     LayoutPass pass; // each component measured once
     root_->arrange(window, theme_);
     for (Overlay &o : overlays_)
@@ -241,6 +262,12 @@ Vec2 Context::fromScreen(Vec2 p) const
     return {(p.x - x) * sx, (p.y - y) * sy};
 }
 
+// Takes the window's input and runs its callbacks. The tree is laid out only when it needs it
+// (needsLayout): the first frame, a tree change (Component::treeVersion), a window resize or a
+// theme change. Otherwise the layout is skipped and input is hit-tested against the rects of the
+// frame on screen, which are what the user is pointing at; a layout that is skipped costs
+// nothing. Changes made between frames that alter the tree always bump the tree version, so
+// they are laid out before they get input. buildFrame lays out again after the callbacks.
 void Context::update()
 {
     const Clock::time_point start = Clock::now();
@@ -253,10 +280,14 @@ void Context::update()
         ~Activate() { activeContext = previous; }
     } activate(this);
 
+    // Before the decision: closing an overlay changes the tree
     removeClosedOverlays();
-    const Clock::time_point layoutStart = Clock::now();
-    layout();
-    stats_.layoutMs += msSince(layoutStart);
+    stats_.layoutSkipped = !needsLayout();
+    if (!stats_.layoutSkipped) {
+        const Clock::time_point layoutStart = Clock::now();
+        layout();
+        stats_.layoutMs += msSince(layoutStart);
+    }
 
     signals_.beginFrame();
 
@@ -353,6 +384,8 @@ void Context::update()
     stats_.updateMs = msSince(start);
 }
 
+// Records the frame into the DrawList and returns its fingerprint. Always lays out: input and
+// callbacks may have changed anything since update's layout (the theme, the tree, the overlays).
 uint64_t Context::buildFrame()
 {
     const Clock::time_point start = Clock::now();
@@ -377,6 +410,11 @@ uint64_t Context::buildFrame()
             drawList_.add(theme_.scrim(bounds(), 0.6f));
         o.component->draw(drawList_, theme_);
     }
+    // Draw caches: sections appended again, sections painted, and the prims the appended ones brought
+    const DrawCache::Totals cache = DrawCache::takeTotals();
+    stats_.cacheHits = cache.hits;
+    stats_.cacheMisses = cache.misses;
+    stats_.cachedPrims = cache.cachedPrims;
     const DrawList::Counts &counts = drawList_.counts();
     stats_.surfaces = counts.surfaces;
     stats_.texts = counts.texts;

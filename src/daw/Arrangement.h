@@ -9,6 +9,7 @@
 #include "Project.h"
 #include "ProjectStore.h"
 #include "audio/AudioFile.h"
+#include "ui/DrawCache.h"
 #include "ui/UI.h"
 
 namespace daw {
@@ -140,9 +141,18 @@ private:
     float contentWidth() const;
     void clampScroll();
     void drawClip(ui::DrawList &list, const ui::Theme &theme, int track, int index) const;
+    // Whether a clip's rect (from clipRect) is in the lanes at all: drawClip draws nothing else
+    bool clipShown(const ui::Rect &r) const;
+    // Whether any clip is being recorded (its take grows every frame)
+    bool anyRecording() const;
+    // Everything drawContent reads, for the cache; `recording` is anyRecording()
+    uint64_t contentKey(bool recording) const;
+    // The ruler, the lanes with their clips, and the scroll bar: cached (see draw)
+    void drawContent(ui::DrawList &list, const ui::Theme &theme) const;
 
     ProjectStore &store_;
     TransportHooks transport_;
+    ui::DrawCache cache_{"ArrangementView"}; // drawContent, while nothing it reads has changed
     std::vector<std::unique_ptr<TrackHeader>> headers_; // not tree children, so rebuilt in handleInput
     uint64_t shownStructure_ = 0;                       // the store's structureRevision last looked at
     std::vector<uint64_t> shownShape_;                  // the tracks (trackShape) the headers were made for

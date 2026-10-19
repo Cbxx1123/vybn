@@ -1,12 +1,51 @@
 #include "DrawList.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstring>
 
 namespace ui {
 
 namespace {
+
+constexpr uint64_t kFnvPrime = 1099511628211ULL;
+
+// Folds one 64-bit word into a running FNV-1a hash
+uint64_t foldWord(uint64_t h, uint64_t word)
+{
+    return (h ^ word) * kFnvPrime;
+}
+
+// Folds bytes 64 bits at a time; a last piece shorter than a word is zero-padded to one
+uint64_t foldBytes(uint64_t h, const void *data, size_t size)
+{
+    const auto *bytes = static_cast<const unsigned char *>(data);
+    size_t off = 0;
+    for (; off + sizeof(uint64_t) <= size; off += sizeof(uint64_t)) {
+        uint64_t word = 0;
+        std::memcpy(&word, bytes + off, sizeof word);
+        h = foldWord(h, word);
+    }
+    if (off < size) {
+        uint64_t word = 0;
+        std::memcpy(&word, bytes + off, size - off);
+        h = foldWord(h, word);
+    }
+    return h;
+}
+
+// A prim's bytes (Prim is whole 64-bit words, and zeroed where it has padding)
+uint64_t foldPrim(uint64_t h, const Prim &prim)
+{
+    static_assert(sizeof(Prim) % sizeof(uint64_t) == 0, "Prim is folded as whole 64-bit words");
+    return foldBytes(h, &prim, sizeof prim);
+}
+
+bool isPlot(const Prim &prim)
+{
+    return prim.kind == static_cast<uint32_t>(PrimKind::Plot);
+}
 
 // The area a prim draws, as x0, y0, x1, y1: its rect, grown for a surface as prim.vert grows its
 // quad (a raised surface by its shadow, every other surface by the anti-aliased edge's pixel)
@@ -52,6 +91,7 @@ void DrawList::add(const Surface &surface)
     if (!visible(prim))
         return;
     prims_.push_back(prim);
+    hash_ = foldPrim(hash_, prim);
     ++counts_.surfaces;
 }
 
@@ -70,6 +110,8 @@ void DrawList::add(const Text &text)
         ++kept;
     }
     prims_.resize(kept); // shrinking keeps the capacity
+    for (size_t i = before; i < kept; ++i)
+        hash_ = foldPrim(hash_, prims_[i]);
     const size_t glyphs = kept - before;
     if (glyphs == 0)
         return;
@@ -86,6 +128,7 @@ void DrawList::add(const ImageDraw &image)
         return;
     images_.push_back({static_cast<uint32_t>(prims_.size()), image.image});
     prims_.push_back(prim);
+    hash_ = foldPrim(hash_, prim);
     ++counts_.images;
 }
 
@@ -96,6 +139,7 @@ void DrawList::add(const Line &line)
     if (!visible(prim))
         return;
     prims_.push_back(prim);
+    hash_ = foldPrim(hash_, prim);
     ++counts_.lines;
 }
 
@@ -123,6 +167,13 @@ void DrawList::add(const Plot &plot)
     const size_t floats = static_cast<size_t>(plot.count) * (range ? 2 : 1);
     plotData_.insert(plotData_.end(), plot.values, plot.values + floats);
     prims_.push_back(prim);
+    // A plot's index is folded relative to its section's values, so the same section hashes the
+    // same wherever it lands (painted, or appended at another offset)
+    Prim hashed = prim;
+    if (!sections_.empty())
+        hashed.shape[0] -= static_cast<float>(sections_.back().data);
+    hash_ = foldPrim(hash_, hashed);
+    hash_ = foldBytes(hash_, plot.values, floats * sizeof(float));
     ++counts_.plots;
 }
 
@@ -156,55 +207,68 @@ void DrawList::clear()
     plotData_.clear();
     clipped_.clear();
     counts_ = Counts{};
+    hash_ = Fingerprint::kOffset;
+    sections_.clear();
 }
 
-namespace {
-
-// One FNV-1a step per 64-bit word of the prim's bytes
-uint64_t mixPrim(uint64_t h, const Prim &prim)
+void DrawList::clip(float out[4]) const
 {
-    static_assert(sizeof(Prim) % 8 == 0, "Prim is read as whole 64-bit words");
-    const auto *bytes = reinterpret_cast<const unsigned char *>(&prim);
-    for (size_t off = 0; off < sizeof(Prim); off += 8) {
-        uint64_t word = 0;
-        std::memcpy(&word, bytes + off, sizeof word);
-        h = (h ^ word) * 1099511628211ULL;
-    }
-    return h;
+    std::memcpy(out, currentClip(), sizeof(float) * 4);
 }
 
-// The plot data: its size, then its floats two at a time as 64-bit words, an odd last float on its own
-uint64_t mixPlots(uint64_t h, const std::vector<float> &values)
+void DrawList::bounds(float out[4]) const
 {
-    constexpr uint64_t kPrime = 1099511628211ULL;
-    h = (h ^ static_cast<uint64_t>(values.size())) * kPrime;
-    const size_t n = values.size();
-    size_t i = 0;
-    for (; i + 1 < n; i += 2) {
-        uint64_t word = 0;
-        std::memcpy(&word, &values[i], sizeof word);
-        h = (h ^ word) * kPrime;
-    }
-    if (i < n) {
-        uint32_t bits = 0;
-        std::memcpy(&bits, &values[i], sizeof bits);
-        h = (h ^ bits) * kPrime;
-    }
-    return h;
+    std::memcpy(out, bounds_, sizeof(float) * 4);
 }
 
+void DrawList::beginSection()
+{
+    sections_.push_back({hash_, prims_.size(), plotData_.size(), images_.size()});
+    hash_ = Fingerprint::kOffset;
+}
+
+void DrawList::endSection(DrawSection &out)
+{
+    assert(!sections_.empty() && "endSection without beginSection");
+    const OpenSection open = sections_.back();
+    sections_.pop_back();
+
+    out.prims.assign(prims_.begin() + static_cast<std::ptrdiff_t>(open.prims), prims_.end());
+    out.data.assign(plotData_.begin() + static_cast<std::ptrdiff_t>(open.data), plotData_.end());
+    const float dataStart = static_cast<float>(open.data);
+    for (Prim &prim : out.prims) {
+        if (isPlot(prim))
+            prim.shape[0] -= dataStart;
+    }
+    out.hasImages = images_.size() > open.images;
+    out.hash = hash_;
+    hash_ = foldWord(open.outerHash, out.hash);
+}
+
+void DrawList::appendSection(const DrawSection &section)
+{
+    assert(!section.hasImages && "a section with images is never appended");
+    const float base = static_cast<float>(plotData_.size());
+    plotData_.insert(plotData_.end(), section.data.begin(), section.data.end());
+    for (Prim prim : section.prims) {
+        if (isPlot(prim))
+            prim.shape[0] += base;
+        prims_.push_back(prim);
+        switch (static_cast<PrimKind>(prim.kind)) {
+        case PrimKind::Surface: ++counts_.surfaces; break;
+        case PrimKind::Glyph: ++counts_.glyphs; break;
+        case PrimKind::Line: ++counts_.lines; break;
+        case PrimKind::Plot: ++counts_.plots; break;
+        case PrimKind::Image: break; // never appended (see DrawSection)
+        }
+    }
+    hash_ = foldWord(hash_, section.hash);
 }
 
 uint64_t fingerprint(const DrawList &list, uint64_t start)
 {
-    Fingerprint count(start);
-    count.add(static_cast<uint64_t>(list.prims().size()));
-    uint64_t h = count.value();
-    for (const Prim &prim : list.prims())
-        h = mixPrim(h, prim);
-    h = mixPlots(h, list.plotData());
-
-    Fingerprint f(h);
+    Fingerprint f(start);
+    f.add(list.hash());
     for (const DrawList::ImageRef &ref : list.images()) {
         f.add(ref.prim);
         f.add(ref.image ? ref.image->id : uint64_t{0});

@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+
+#include "DrawList.h"
 
 namespace ui {
 
@@ -552,6 +555,26 @@ Text Theme::text(const std::string &text, const Rect &box, Size size, TextAlign 
 Text Theme::text(const std::string &text, const Rect &box, TextStyle style, TextTone tone, TextAlign align) const
 {
     return this->text(text, box, fontSize(style), align, textColor(tone));
+}
+
+uint64_t Theme::fingerprint() const
+{
+    Fingerprint fp;
+    fp.add(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(font_.get())));
+    fp.add(base_);
+    fp.add(accent_);
+    fp.add(depth_);
+    fp.add(softness_);
+    fp.add(radius_);
+    fp.add(intensity_);
+    fp.add(lightAngle_);
+    fp.add(curvature_);
+    fp.add(textContrast_);
+    fp.add(fontScale_);
+    fp.add(spacingScale_);
+    fp.add(rim_);
+    fp.add(controlScale_);
+    return fp.value();
 }
 
 }

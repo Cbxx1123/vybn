@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -32,6 +33,7 @@
 #include "engine/Renderer.h"
 #include "engine/Window.h"
 #include "ui/Context.h"
+#include "ui/DrawCache.h"
 #include "ui/DrawList.h"
 #include "ui/FrameStats.h"
 #include "ui/Image.h"
@@ -212,7 +214,7 @@ struct Timing {
 // this call.
 Picture renderPicture(uint32_t width, uint32_t height, const ui::Theme &theme,
                       const std::function<void(ui::Context &)> &build, int timedFrames = 0,
-                      Timing *timing = nullptr)
+                      Timing *timing = nullptr, ui::FrameStats *afterFrame = nullptr)
 {
     engine::Window window(width, height, "Vibin render test", false);
     window.setPosition(-32000, -32000); // far off the desktop, so the real mouse never hovers it
@@ -263,6 +265,13 @@ Picture renderPicture(uint32_t width, uint32_t height, const ui::Theme &theme,
         const std::vector<uint8_t> bgra = renderer.endOffscreen();
         picture = fromBgra(static_cast<uint32_t>(fbWidth), static_cast<uint32_t>(fbHeight), bgra);
         picture.stats = context.stats();
+
+        // With afterFrame, one more update and buildFrame on the settled scene; their stats go there
+        if (afterFrame) {
+            context.update();
+            context.buildFrame();
+            *afterFrame = context.stats();
+        }
     }
     return picture;
 }
@@ -762,12 +771,18 @@ Picture sceneControls()
     return renderPicture(900, 600, daw::studioTheme(true), buildControls);
 }
 
-Picture sceneArrangement()
+// The arrangement over the demo project; with `after`, one more frame is run after the picture
+Picture renderArrangement(ui::FrameStats *after)
 {
     daw::ProjectStore store(daw::demoProject()); // outlives the context
     return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
         stretch(context.root().add<daw::ArrangementView>(store, quietTransport()));
-    });
+    }, 0, nullptr, after);
+}
+
+Picture sceneArrangement()
+{
+    return renderArrangement(nullptr);
 }
 
 // One track's sound for the waveforms scene: 30 seconds of stereo noise, a decaying burst every half
@@ -1476,6 +1491,263 @@ void primChecks(Checker &c)
     std::printf("\n");
 }
 
+// ---- draw sections and draw caches (no window) ----
+
+// Whether two lists hold the same prims, byte for byte
+bool samePrims(const ui::DrawList &a, const ui::DrawList &b)
+{
+    if (a.prims().size() != b.prims().size())
+        return false;
+    return a.prims().empty() ||
+           std::memcmp(a.prims().data(), b.prims().data(), a.prims().size() * sizeof(ui::Prim)) == 0;
+}
+
+// An empty list with the theme's font, as a frame's list has
+ui::DrawList fontedList(const ui::Theme &theme)
+{
+    ui::DrawList list;
+    list.setFont(&theme.font());
+    return list;
+}
+
+const float kBeforeValues[3] = {0.2f, 0.5f, 0.8f};        // the plot drawn before a section
+const float kSectionValues[4] = {0.1f, 0.6f, 0.3f, 0.9f}; // the plot drawn in a section
+
+// What comes before a section in each list, a plot included, so the section's offsets are not zero
+void addBefore(ui::DrawList &list, const ui::Theme &theme)
+{
+    list.add(theme.surface(box(4, 4, 40, 40), ui::Shape::Rounded, ui::Elevation::Flat));
+    ui::Plot plot = theme.inkPlot(box(60, 4, 80, 40), ui::PlotMode::Line, ui::TextTone::Secondary);
+    plot.values = kBeforeValues;
+    plot.count = 3;
+    plot.low = 0.0f;
+    plot.high = 1.0f;
+    list.add(plot);
+}
+
+// The content a section paints: a surface, a text, a Line and a Plot
+void paintSection(ui::DrawList &list, const ui::Theme &theme)
+{
+    list.add(theme.surface(box(30, 30, 60, 40), ui::Shape::Rounded, ui::Elevation::Raised));
+    list.add(theme.text("Section", box(30, 80, 120, 24), ui::TextStyle::Body, ui::TextTone::Primary, ui::TextAlign::Start));
+    list.add(theme.inkLine({30.0f, 120.0f}, {150.0f, 112.0f}, 2.0f, ui::TextTone::Secondary, 1.0f));
+    ui::Plot plot = theme.accentPlot(box(30, 130, 120, 40), ui::PlotMode::Line);
+    plot.values = kSectionValues;
+    plot.count = 4;
+    plot.low = 0.0f;
+    plot.high = 1.0f;
+    list.add(plot);
+}
+
+// What a cached view paints: a raised surface and a text
+void paintCached(ui::DrawList &list, const ui::Theme &theme)
+{
+    list.add(theme.surface(box(10, 10, 50, 30), ui::Shape::Rounded, ui::Elevation::Raised));
+    list.add(theme.text("Cache", box(10, 50, 80, 24), ui::TextStyle::Body, ui::TextTone::Primary, ui::TextAlign::Start));
+}
+
+// The DrawCache counts: a miss paints, the same key again appends, and a change of key, reuse, invalidate,
+// rect or clip paints again. Only without VIBIN_VERIFY_CACHE, which paints every draw.
+void cacheChecks(Checker &c, const ui::Theme &theme)
+{
+    ui::DrawCache cache("sections-check");
+    (void)ui::DrawCache::takeTotals(); // forget what earlier draws counted
+    int paints = 0;
+    const ui::Rect wide = box(0, 0, 200, 100);
+    const ui::Rect tall = box(0, 0, 300, 100);
+    auto draw = [&](ui::DrawList &list, const ui::Rect &rect, uint64_t key, bool reuse) {
+        cache.draw(list, theme, rect, key, [&] { ++paints; paintCached(list, theme); }, reuse);
+    };
+
+    ui::DrawList first = fontedList(theme), second = fontedList(theme);
+    draw(first, wide, 7, true);
+    draw(second, wide, 7, true);
+    c.check(paints == 1 && cache.hits() == 1 && cache.misses() == 1,
+            "The same key paints once: a miss, then a hit",
+            "paints " + std::to_string(paints) + ", hits " + std::to_string(cache.hits()) + ", misses " +
+                std::to_string(cache.misses()));
+    c.check(!first.empty() && samePrims(first, second), "The cached draw gives the same prims as painting");
+    const ui::DrawCache::Totals totals = ui::DrawCache::takeTotals();
+    const ui::DrawCache::Totals rest = ui::DrawCache::takeTotals();
+    c.check(totals.hits == 1 && totals.misses == 1 && rest.hits == 0 && rest.misses == 0,
+            "takeTotals reports the hits and misses, then zero",
+            std::to_string(totals.hits) + " hits, " + std::to_string(totals.misses) + " misses");
+
+    ui::DrawList third = fontedList(theme);
+    draw(third, wide, 8, true);
+    c.check(paints == 2, "A new key paints again", "paints " + std::to_string(paints));
+
+    ui::DrawList r1 = fontedList(theme), r2 = fontedList(theme);
+    draw(r1, wide, 8, false);
+    draw(r2, wide, 8, false);
+    c.check(paints == 4 && cache.hits() == 1, "With reuse false every draw paints", "paints " + std::to_string(paints));
+
+    cache.invalidate();
+    ui::DrawList i1 = fontedList(theme), i2 = fontedList(theme);
+    draw(i1, wide, 8, true);
+    draw(i2, wide, 8, true);
+    c.check(paints == 5 && samePrims(i1, i2), "After invalidate the next draw paints, and the one after is a hit",
+            "paints " + std::to_string(paints));
+
+    ui::DrawList t1 = fontedList(theme);
+    draw(t1, tall, 8, true);
+    c.check(paints == 6, "A different rect paints again", "paints " + std::to_string(paints));
+
+    ui::DrawList c1 = fontedList(theme);
+    c1.pushClip(box(0, 0, 50, 50));
+    draw(c1, tall, 8, true);
+    c.check(paints == 7, "A different clip around it paints again", "paints " + std::to_string(paints));
+    ui::DrawList c2 = fontedList(theme);
+    c2.pushClip(box(0, 0, 50, 50));
+    draw(c2, tall, 8, true);
+    c.check(paints == 7 && !c1.empty() && samePrims(c1, c2), "The same clip again is a hit with the same prims",
+            "paints " + std::to_string(paints));
+}
+
+// With VIBIN_VERIFY_CACHE every draw paints, so a matched key's paint is compared with the cached section
+void verifierChecks(Checker &c, const ui::Theme &theme)
+{
+    ui::DrawCache verifier("verifier-check");
+    int paints = 0;
+    const ui::Rect rect = box(0, 0, 200, 100);
+    ui::DrawList x = fontedList(theme), y = fontedList(theme);
+    verifier.draw(x, theme, rect, 3, [&] { ++paints; paintCached(x, theme); });
+    verifier.draw(y, theme, rect, 3, [&] { ++paints; paintCached(y, theme); });
+    c.check(paints == 2 && !x.empty() && samePrims(x, y), "With the verifier every draw paints, and the same content matches",
+            "paints " + std::to_string(paints));
+}
+
+void sectionChecks(Checker &c)
+{
+    std::printf("Draw sections and draw caches: appending, nesting, hashes, no window\n\n");
+    const ui::Theme theme = ui::Theme::light(); // outlives the lists, which lay their text out with its font
+
+    // A section painted, then appended into a second list, gives the prims and plot data of painting it directly
+    ui::DrawSection section;
+    {
+        ui::DrawList direct = fontedList(theme);
+        addBefore(direct, theme);
+        const size_t before = direct.prims().size();
+        paintSection(direct, theme);
+
+        ui::DrawList sectioned = fontedList(theme);
+        addBefore(sectioned, theme);
+        sectioned.beginSection();
+        paintSection(sectioned, theme);
+        sectioned.endSection(section);
+
+        ui::DrawList appended = fontedList(theme);
+        addBefore(appended, theme);
+        appended.appendSection(section);
+
+        c.check(samePrims(direct, appended) && direct.plotData() == appended.plotData(),
+                "An appended section gives the prims and plot data of painting it directly",
+                kindsOf(appended));
+        c.check(samePrims(sectioned, appended) && sectioned.hash() == appended.hash(),
+                "A painted section and an appended one leave the same prims and hash");
+        c.check(section.prims.size() == direct.prims().size() - before && section.data.size() == 4,
+                "The section holds its own prims and plot values", std::to_string(section.prims.size()) + " prims");
+
+        // The appended plot's first value points at its values in the new list, after the first plot's
+        const ui::Prim &plot = appended.prims().back();
+        const size_t first = static_cast<size_t>(std::lround(plot.shape[0]));
+        bool values = plot.kind == static_cast<uint32_t>(ui::PrimKind::Plot) && first + 4 <= appended.plotData().size();
+        for (size_t i = 0; values && i < 4; ++i)
+            values = near(appended.plotData()[first + i], kSectionValues[i]);
+        c.check(values && first == 3, "An appended plot reads its own values in the new list",
+                "first value " + std::to_string(first));
+
+        // The fingerprints of the painted and the appended lists agree, and equal content agrees
+        ui::DrawList again = fontedList(theme);
+        addBefore(again, theme);
+        paintSection(again, theme);
+        c.check(ui::fingerprint(direct) == ui::fingerprint(again), "Two lists with the same content have equal fingerprints");
+        c.check(ui::fingerprint(sectioned) == ui::fingerprint(appended),
+                "A section's hash folded in makes the painted and appended fingerprints equal");
+    }
+
+    // endSection reports an image in the section, and none without one
+    {
+        ui::ImageData image;
+        makeImage(image);
+        ui::DrawList withImage = fontedList(theme);
+        withImage.beginSection();
+        withImage.add(theme.surface(box(0, 0, 40, 40), ui::Shape::Rounded, ui::Elevation::Flat));
+        withImage.add(ui::ImageDraw{box(0, 0, 8, 8), &image, 1.0f});
+        ui::DrawSection imaged;
+        withImage.endSection(imaged);
+
+        ui::DrawList plain = fontedList(theme);
+        plain.beginSection();
+        paintSection(plain, theme);
+        ui::DrawSection unimaged;
+        plain.endSection(unimaged);
+        c.check(imaged.hasImages && !unimaged.hasImages, "endSection reports an image in its section and none without one");
+    }
+
+    // Nested sections: appending the outer one reproduces both
+    {
+        ui::DrawList nested = fontedList(theme);
+        addBefore(nested, theme);
+        nested.beginSection(); // the outer
+        nested.add(theme.surface(box(30, 30, 60, 40), ui::Shape::Rounded, ui::Elevation::Raised));
+        nested.beginSection(); // the inner
+        nested.add(theme.text("Inner", box(30, 80, 120, 24), ui::TextStyle::Body, ui::TextTone::Primary, ui::TextAlign::Start));
+        ui::DrawSection inner;
+        nested.endSection(inner);
+        nested.add(theme.inkLine({30.0f, 120.0f}, {150.0f, 112.0f}, 2.0f, ui::TextTone::Secondary, 1.0f));
+        ui::DrawSection outer;
+        nested.endSection(outer);
+
+        ui::DrawList direct = fontedList(theme);
+        addBefore(direct, theme);
+        direct.add(theme.surface(box(30, 30, 60, 40), ui::Shape::Rounded, ui::Elevation::Raised));
+        direct.add(theme.text("Inner", box(30, 80, 120, 24), ui::TextStyle::Body, ui::TextTone::Primary, ui::TextAlign::Start));
+        direct.add(theme.inkLine({30.0f, 120.0f}, {150.0f, 112.0f}, 2.0f, ui::TextTone::Secondary, 1.0f));
+
+        ui::DrawList appended = fontedList(theme);
+        addBefore(appended, theme);
+        appended.appendSection(outer);
+        c.check(samePrims(direct, appended) && nested.hash() == appended.hash(),
+                "An outer section appended reproduces both it and its inner section");
+        c.check(!inner.prims.empty() && inner.prims.size() < outer.prims.size(),
+                "The inner section is part of the outer one", std::to_string(inner.prims.size()) + " of " +
+                                                                  std::to_string(outer.prims.size()) + " prims");
+    }
+
+    // The draw cache's counts, or the verifier's check when VIBIN_VERIFY_CACHE is set
+    if (ui::DrawCache::verifying()) {
+        std::printf("SKIP  %-44s %s\n", "Draw cache counts", "VIBIN_VERIFY_CACHE is set, so every draw paints");
+        verifierChecks(c, theme);
+    } else {
+        cacheChecks(c, theme);
+        std::printf("SKIP  %-44s %s\n", "Draw cache verifier",
+                    "VIBIN_VERIFY_CACHE is not set; the verifier is checked by running the app");
+    }
+    std::printf("\n");
+}
+
+// The arrangement, settled, then one more frame: its ArrangementView's draw cache hits and the layout is skipped
+void arrangementCacheChecks(Checker &c)
+{
+    std::printf("Arrangement: its draw cache on a settled frame\n\n");
+    if (ui::DrawCache::verifying()) {
+        std::printf("SKIP  %-44s %s\n", "Arrangement draw cache", "VIBIN_VERIFY_CACHE is set, so every draw paints");
+        return;
+    }
+    ui::FrameStats after;
+    try {
+        renderArrangement(&after);
+    } catch (const std::exception &e) {
+        c.check(false, "The arrangement renders for its cache check", e.what());
+        return;
+    }
+    c.check(after.cacheHits >= 1, "The arrangement's cache hits on a settled frame",
+            std::to_string(after.cacheHits) + " hits");
+    c.check(after.layoutSkipped, "The arrangement's settled frame skips its layout");
+    std::printf("\n");
+}
+
 // ---- checking ----
 
 struct SceneEntry {
@@ -1608,6 +1880,7 @@ int runRenderSelfTest(int argc, char **argv)
     // The primitive checks need no window and run whatever scene is asked for
     Checker prims;
     primChecks(prims);
+    sectionChecks(prims);
     failures += prims.failures;
 
     bool found = only.empty();
@@ -1621,6 +1894,13 @@ int runRenderSelfTest(int argc, char **argv)
     if (!found) {
         std::printf("FAIL  unknown scene \"%s\"\n", only.c_str());
         ++failures;
+    }
+
+    // The arrangement's draw cache, on a frame after it has settled (a second render of the scene)
+    if (only.empty() || only == "arrangement") {
+        Checker arrangement;
+        arrangementCacheChecks(arrangement);
+        failures += arrangement.failures;
     }
 
     for (const auto &entry : rendered)

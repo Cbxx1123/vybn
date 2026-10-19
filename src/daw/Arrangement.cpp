@@ -223,6 +223,8 @@ void ArrangementView::rebuild()
     headers_.clear();
     for (size_t i = 0; i < project().tracks.size(); ++i)
         headers_.push_back(std::make_unique<TrackHeader>(store_, static_cast<int>(i), transport_));
+    // The headers are new components: a layout must see them
+    ui::Component::treeChanged();
 }
 
 void ArrangementView::renameTrack(int index)
@@ -601,7 +603,7 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
     const Track &t = project().tracks[static_cast<size_t>(track)];
     const Clip &clip = t.clips[static_cast<size_t>(index)];
     const Rect r = clipRect(track, clip);
-    if (r.x > well_.x + well_.w || r.x + r.w < well_.x || r.y > well_.y + well_.h || r.y + r.h < well_.y)
+    if (!clipShown(r))
         return;
 
     const bool selected = track == project().selectedTrack && index == project().selectedClip;
@@ -730,7 +732,68 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
     list.popClip();
 }
 
-void ArrangementView::draw(DrawList &list, const Theme &theme) const
+bool ArrangementView::clipShown(const Rect &r) const
+{
+    return !(r.x > well_.x + well_.w || r.x + r.w < well_.x || r.y > well_.y + well_.h || r.y + r.h < well_.y);
+}
+
+bool ArrangementView::anyRecording() const
+{
+    if (!transport_.isRecording)
+        return false;
+    for (size_t t = 0; t < project().tracks.size(); ++t) {
+        const size_t clips = project().tracks[t].clips.size();
+        for (size_t c = 0; c < clips; ++c) {
+            if (transport_.isRecording(static_cast<int>(t), static_cast<int>(c)))
+                return true;
+        }
+    }
+    return false;
+}
+
+uint64_t ArrangementView::contentKey(bool recording) const
+{
+    Fingerprint fp;
+    // The project (every edit moves revision) and the selection
+    fp.add(store_.revision());
+    fp.add(store_.selectionRevision());
+    // Layout and view
+    fp.add(rect_);
+    fp.add(headerArea_);
+    fp.add(ruler_);
+    fp.add(well_);
+    fp.add(lanes_);
+    fp.add(bar_);
+    fp.add(scrollX_);
+    fp.add(scrollY_);
+    fp.add(pixelsPerBeat_);
+    // Hover, trimming, the loop strip's drag and the scroll bar's drag
+    fp.add(hoveredTrack_);
+    fp.add(hoveredClip_);
+    fp.add(hoverEdge_);
+    fp.add(trimming_);
+    fp.add(loopDrag_);
+    fp.add(draggingBar_);
+    // A take grows every frame while recording (the cache doesn't reuse then); the flag also makes
+    // the first frame after a take repaint
+    fp.add(recording);
+    // The audio of the visible audio clips arrives later (loading) and can be let go: its address
+    for (size_t t = 0; t < project().tracks.size(); ++t) {
+        const Track &track = project().tracks[t];
+        if (track.kind != TrackKind::Audio)
+            continue;
+        for (size_t c = 0; c < track.clips.size(); ++c) {
+            if (!clipShown(clipRect(static_cast<int>(t), track.clips[c])))
+                continue;
+            const audio::AudioData *data =
+                transport_.audioFor ? transport_.audioFor(static_cast<int>(t), static_cast<int>(c)) : nullptr;
+            fp.add(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(data)));
+        }
+    }
+    return fp.value();
+}
+
+void ArrangementView::drawContent(DrawList &list, const Theme &theme) const
 {
     const int beatsPerBar = std::max(1, project().beatsPerBar);
     const float barPixels = pixelsPerBeat_ * static_cast<float>(beatsPerBar);
@@ -799,7 +862,23 @@ void ArrangementView::draw(DrawList &list, const Theme &theme) const
     }
     list.popClip();
 
-    // Playhead, across the ruler and the lanes
+    // Scroll bar for time (below the lanes, where nothing else is drawn)
+    list.add(theme.surface(bar_, Shape::Pill, Elevation::Inset, 0.4f));
+    if (contentWidth() > lanes_.w)
+        list.add(theme.surface(thumb().inset(1.0f), Shape::Pill, Elevation::Raised, draggingBar_ ? 0.7f : 0.45f,
+                               Finish::Convex));
+}
+
+void ArrangementView::draw(DrawList &list, const Theme &theme) const
+{
+    // Cached: the ruler, the lanes with their clips, and the scroll bar. Kept while the key says
+    // nothing they read has moved; a take growing while recording paints every frame.
+    const bool recording = anyRecording();
+    cache_.draw(list, theme, rect_, contentKey(recording), [&] { drawContent(list, theme); }, !recording);
+
+    // Overlay, every frame: the playhead across the ruler and the lanes. Its triangle starts past
+    // the headers' column (the ruler starts after the gap), so it covers nothing they draw.
+    const float rulerBottom = ruler_.y + ruler_.h;
     if (transport_.position) {
         const float x = beatX(transport_.position());
         if (x >= ruler_.x - 1.0f && x <= ruler_.x + ruler_.w + 1.0f) {
@@ -809,7 +888,8 @@ void ArrangementView::draw(DrawList &list, const Theme &theme) const
         }
     }
 
-    // Track headers, scrolled with the lanes
+    // Track headers, scrolled with the lanes. Their labels and toggles follow the input (live MIDI,
+    // hover), so they are never cached. They lie left of the ruler, clear of the playhead.
     list.pushClip(headerArea_);
     const size_t count = std::min(headers_.size(), project().tracks.size());
     for (size_t i = 0; i < count; ++i)
@@ -830,12 +910,6 @@ void ArrangementView::draw(DrawList &list, const Theme &theme) const
             list.add(theme.text(dropHint_, r, theme.fontSize(TextStyle::Body), TextAlign::Center, theme.textColor(TextTone::Accent)));
         list.popClip();
     }
-
-    // Scroll bar for time
-    list.add(theme.surface(bar_, Shape::Pill, Elevation::Inset, 0.4f));
-    if (contentWidth() > lanes_.w)
-        list.add(theme.surface(thumb().inset(1.0f), Shape::Pill, Elevation::Raised, draggingBar_ ? 0.7f : 0.45f,
-                               Finish::Convex));
 }
 
 Rect ArrangementView::loopBand() const

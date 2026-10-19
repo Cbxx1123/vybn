@@ -135,6 +135,10 @@ public:
     Theme &setRim(float amount);          // the fine lit edge on raised and inset surfaces, 0-1
     Theme &setControlScale(float scale);  // control heights: 0.8 compact to 1.2 roomy
 
+    // A hash of every value the theme holds (colours, every setting) and its font, so caches can
+    // tell when the look changed
+    uint64_t fingerprint() const;
+
     Color baseColor() const { return base_; }
     Color accentColor() const { return accent_; }
     Color lightShadow() const;

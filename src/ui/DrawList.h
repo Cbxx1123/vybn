@@ -13,6 +13,16 @@
 
 namespace ui {
 
+// What was added between DrawList::beginSection and endSection: its prims, its plot values (the
+// prims' first-value indices relative to the section's own data), whether it holds an image, and
+// its hash (the running hash of what it added, see DrawList::hash). DrawCache keeps one.
+struct DrawSection {
+    std::vector<Prim> prims;
+    std::vector<float> data;
+    bool hasImages = false;
+    uint64_t hash = 0;
+};
+
 // What one frame draws, as GPU-ready prims in drawing order (later on top, whatever their kind).
 // Surfaces become one prim each; text is laid out as it is added, one prim per glyph; images one
 // prim each, with the image itself in images(). Each prim carries the clip in effect when it was
@@ -75,6 +85,28 @@ public:
     };
     const Counts &counts() const { return counts_; }
 
+    // The clip prims added now would carry (x0, y0, x1, y1, see clipBounds) and the bounds set
+    // by setBounds (the whole plane if unset), for caches' keys
+    void clip(float out[4]) const;
+    void bounds(float out[4]) const;
+
+    // The running hash of everything added since clear: each prim's bytes and each plot's values
+    // are folded in as they are added (64-bit words, FNV-1a style), and a section, painted or
+    // appended, as one word, its own hash. So a frame drawn from cached sections hashes the same
+    // as one painted afresh with the same content.
+    uint64_t hash() const { return hash_; }
+
+    // Sections (they nest): beginSection starts one; endSection copies what was added since into
+    // `out` (prims, plot values rebased to the section's start, whether an image was added, and
+    // the section's hash) and folds its hash into the enclosing hash as one word. The prims stay
+    // in the list. appendSection adds a section's prims and values again (rebasing their plot
+    // indices to where its values land), counts them, and folds its hash as one word. Never
+    // append a section holding an image (its ImageRefs aren't kept). Unbalanced calls are
+    // programming errors.
+    void beginSection();
+    void endSection(DrawSection &out);
+    void appendSection(const DrawSection &section);
+
 private:
     // The clip in effect, as prims carry it (see clipBounds)
     const float *currentClip() const { return clipped_.empty() ? noClip_ : clipped_.back().bounds; }
@@ -96,6 +128,15 @@ private:
     float noClip_[4] = {-kNoClip, -kNoClip, kNoClip, kNoClip};
     // The window's area as x0, y0, x1, y1 (the whole plane until setBounds)
     float bounds_[4] = {-kNoClip, -kNoClip, kNoClip, kNoClip};
+    uint64_t hash_ = 14695981039346656037ULL; // FNV-1a's offset, as Fingerprint::kOffset
+    // Open sections: the enclosing hash and where the section's prims, values and images start
+    struct OpenSection {
+        uint64_t outerHash;
+        size_t prims;
+        size_t data;
+        size_t images;
+    };
+    std::vector<OpenSection> sections_;
 };
 
 // Hashes plain values one field at a time (64-bit FNV-1a), so no padding bytes take part
@@ -157,11 +198,10 @@ private:
     uint64_t hash_;
 };
 
-// What a frame draws: the number of prims, every prim's bytes in order, the plot data (Prim has no padding that
-// isn't zeroed: pad is always 0), then each image's id and version (its pixels stay the same until
-// its owner bumps the version). Two frames with the same fingerprint draw the same picture, so the
-// second need not be presented. `start` mixes in anything else the frame depends on (the clear
-// colour).
+// What a frame draws: the list's running hash (hash(), everything added in order), then each
+// image's id and version (its pixels stay the same until its owner bumps the version). Two frames
+// with the same fingerprint draw the same picture, so the second need not be presented. `start`
+// mixes in anything else the frame depends on (the clear colour).
 uint64_t fingerprint(const DrawList &list, uint64_t start = Fingerprint::kOffset);
 
 }

@@ -91,6 +91,7 @@ void drawTarget(DrawList &list, const Theme &theme, Vec2 c, float r, DockSide si
 template <typename Node>
 void moveContent(Node &to, Node &from)
 {
+    Component::treeChanged();
     to.first = std::move(from.first);
     to.second = std::move(from.second);
     if (to.first) {
@@ -209,6 +210,7 @@ void DockSpace::forgetPointers()
 void DockSpace::insert(DockPanel &panel, Node &node, DockSide side, float share)
 {
     forgetPointers();
+    Component::treeChanged();
     // Into an empty grid, or as another tab
     if (side == DockSide::Center || (!node.isSplit() && node.panels.empty())) {
         Node &leaf = *firstLeaf(node);
@@ -238,6 +240,7 @@ void DockSpace::remove(DockPanel &panel)
     if (!leaf)
         return;
     forgetPointers();
+    Component::treeChanged();
     leaf->panels.erase(std::find(leaf->panels.begin(), leaf->panels.end(), &panel));
     leaf->current = std::min(leaf->current, leaf->panels.empty() ? 0 : leaf->panels.size() - 1);
     if (leaf->panels.empty())
@@ -263,6 +266,8 @@ void DockSpace::releaseFloating(DockPanel &panel)
             continue;
         // Its window goes (at the next tick); the panel comes back here at once
         it->host->detach();
+        // The panel leaves its window and comes back into the grid: the next layout must see it
+        Component::treeChanged();
         system_.releaseToolWindow(it->id);
         floating_.erase(it);
         break;
@@ -285,7 +290,8 @@ void DockSpace::dockTab(DockPanel &panel, DockPanel &beside, bool after)
     if (!leaf || leafOf(panel))
         return;
     forgetPointers();
-    const size_t at = static_cast<size_t>(std::find(leaf->panels.begin(), leaf->panels.end(), &beside) - leaf->panels.begin());
+    Component::treeChanged();
+    const size_t at =static_cast<size_t>(std::find(leaf->panels.begin(), leaf->panels.end(), &beside) - leaf->panels.begin());
     const size_t index = at + (after ? 1 : 0);
     leaf->panels.insert(leaf->panels.begin() + static_cast<long>(index), &panel);
     leaf->current = index;
@@ -424,6 +430,7 @@ void DockSpace::windowGone(DockPanel &panel)
 void DockSpace::show(DockPanel &panel)
 {
     if (Node *leaf = leafOf(panel)) {
+        Component::treeChanged();
         leaf->current = static_cast<size_t>(std::find(leaf->panels.begin(), leaf->panels.end(), &panel) - leaf->panels.begin());
         return;
     }
@@ -484,6 +491,7 @@ void DockSpace::setShare(const DockPanel &panel, float share)
     if (!leaf || !leaf->parent)
         return;
     share = std::clamp(share, 0.0f, 1.0f);
+    Component::treeChanged();
     leaf->parent->ratio = leaf->parent->first.get() == leaf ? share : 1.0f - share;
 }
 

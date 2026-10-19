@@ -136,6 +136,18 @@ public:
         return {std::max(size.x, minSize_.x), std::max(size.y, minSize_.y)};
     }
 
+    // Counts changes to the shape of every tree: Container's add, adopt, release and clear,
+    // ScrollView's setContent and takeContent, overlays opening and closing, and components that
+    // own children of their own when they replace them (call treeChanged()). Context::update lays
+    // out again only when it moved since the last layout (or the window or theme changed), so a
+    // component added between frames is arranged before it gets input. Main thread only.
+    static uint64_t &treeVersion()
+    {
+        static uint64_t version = 1;
+        return version;
+    }
+    static void treeChanged() { ++treeVersion(); }
+
     // The layout pass under way (0 when none): Context::layout opens one with a LayoutPass. Sizes
     // measured in it are kept until it ends, so nothing may change what a component measures
     // while one is open (layout doesn't; input and posted actions run between passes).

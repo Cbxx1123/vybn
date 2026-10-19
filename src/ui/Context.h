@@ -70,6 +70,7 @@ public:
         auto overlay = std::make_unique<T>(std::forward<Args>(args)...);
         T &ref = *overlay;
         overlays_.push_back({std::move(overlay), std::move(options), false});
+        Component::treeChanged();
         return ref;
     }
     // Closes an overlay at the end of the current frame (safe to call from its own callbacks)
@@ -84,8 +85,10 @@ public:
     // between windows, or open and close windows
     void post(std::function<void()> action) { posted_.push_back(std::move(action)); }
 
-    // Lays out the tree, takes the window's input events and runs callbacks: mouse and wheel
-    // through the signals and then the tree, then keys and text through the signals
+    // Lays out the tree if its shape, the window's size or the theme changed since the last layout
+    // (otherwise input is hit-tested against the rects of the frame on screen, what the user is
+    // pointing at; buildFrame always lays out), takes the window's input events and runs
+    // callbacks: mouse and wheel through the signals and then the tree, then keys and text
     void update();
     // Records the UI into the current frame: buildFrame, then submit
     void render();
@@ -122,6 +125,9 @@ private:
 
     void layout();
     void removeClosedOverlays();
+    // Whether the tree was laid out for something other than now: no layout since the start,
+    // or the tree's version, the window's size or the theme's fingerprint moved since it
+    bool needsLayout() const;
 
     // The mouse state built from this frame's events
     void readMouse(std::vector<engine::InputEvent> &events, Input &input);
@@ -143,6 +149,11 @@ private:
     bool middleDown_ = false;
     float scaleX_ = 1.0f, scaleY_ = 1.0f; // window coordinates to framebuffer pixels
     double lastTime_ = -1.0;
+    // What the last layout was done for (see needsLayout)
+    bool laidOut_ = false;
+    uint64_t layoutTree_ = 0;
+    uint64_t layoutTheme_ = 0;
+    Rect layoutBounds_;
 };
 
 }

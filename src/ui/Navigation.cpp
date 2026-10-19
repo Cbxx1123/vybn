@@ -187,14 +187,17 @@ std::unique_ptr<Container> ScrollView::takeContent()
     std::unique_ptr<Container> taken = std::move(content_);
     content_ = std::make_unique<Container>(Direction::Column);
     content_->setAlign(Align::Stretch);
+    Component::treeChanged();
     scrollTo(0.0f);
     return taken;
 }
 
 void ScrollView::setContent(std::unique_ptr<Container> content)
 {
-    if (content)
+    if (content) {
         content_ = std::move(content);
+        Component::treeChanged();
+    }
     scrollTo(0.0f);
 }
 

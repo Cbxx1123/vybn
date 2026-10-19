@@ -15,6 +15,7 @@ std::unique_ptr<Component> Container::release(const Component &child)
         if (it->get() == &child) {
             std::unique_ptr<Component> released = std::move(*it);
             children_.erase(it);
+            treeChanged();
             return released;
         }
     }

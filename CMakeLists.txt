@@ -143,6 +143,7 @@ add_executable(main
     src/ui/UISystem.cpp
     src/ui/UIRenderer.cpp
     src/ui/DrawList.cpp
+    src/ui/DrawCache.cpp
     src/ui/Prim.cpp
     src/ui/Context.cpp
     src/ui/Keymap.cpp
