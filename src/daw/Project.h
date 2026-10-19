@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include <string>
 #include <utility>
 #include <vector>
@@ -45,6 +47,15 @@ bool controllerStepped(int controller);
 // Where a controller rests: the bend and pan in the middle, volume at 100, expression full, else 0
 float controllerDefault(int controller);
 
+// A track's or a clip's identity in its project: never 0 once Project::normalizeIds has run, unique
+// among the project's tracks (and among all its clips), kept through edits, undo, saving and
+// opening, and never reused within a session (ProjectStore keeps the high-water mark). Copies made
+// by editing (a duplicated or split clip) start as duplicates and get a fresh id from
+// normalizeIds, the first in the project keeping the old one. Ids are bookkeeping: they are saved,
+// but sameContent, sameSaved and the audio hashes ignore them.
+using ObjectId = uint32_t;
+constexpr ObjectId kNoId = 0;
+
 struct Clip {
     Clip() = default;
     Clip(std::string clipName, double clipStart, double clipLength, std::vector<Note> clipNotes = {})
@@ -52,6 +63,7 @@ struct Clip {
     {
     }
 
+    ObjectId id = kNoId;
     std::string name;
     double start = 0.0;
     double length = 4.0;
@@ -72,6 +84,7 @@ struct Clip {
 enum class TrackKind { Audio, Instrument };
 
 struct Track {
+    ObjectId id = kNoId;
     std::string name;
     TrackKind kind = TrackKind::Audio;
     std::vector<Clip> clips;
@@ -137,6 +150,15 @@ struct Project {
 
     Track *track(int index);
     const Track *track(int index) const;
+    // The track with this id: its index (-1 when none), or the track (nullptr when none)
+    int trackIndex(ObjectId id) const;
+    Track *findTrack(ObjectId id);
+    const Track *findTrack(ObjectId id) const;
+    // Gives every track and clip a usable id: 0, and every duplicate after the first (in project
+    // order: tracks first, then each track's clips in order; clip ids are unique across the whole
+    // project), get fresh ids from `next`, which is first raised above every id in use and is left
+    // above every id given. Returns whether any id changed. Ids already unique are never changed.
+    bool normalizeIds(ObjectId &next);
     // A chain's effects (the master's, or a track's; nullptr for no such track), and the device at a
     // place (nullptr when there is none: a track without an instrument, an index past the end)
     std::vector<audio::DeviceSetting> *effects(bool master, int track);

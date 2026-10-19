@@ -18,13 +18,18 @@
 namespace daw {
 
 // Keeps the audio engine in step with the project. Each track of the project has a TrackProcessor
-// in the AudioSystem's graph (made by sync, taken out by removeTrack or dropAll), and the players
+// in the AudioSystem's graph (made by sync, taken out by sync when its track is gone, or by
+// dropAll), and the players
 // behind it: an instrument track's NotePlayer, with a library instrument loaded in the background
 // and handed to its sampler, and an audio track's AudioClipPlayer. sync runs once a frame: it copies
 // each track's mix settings to its processor, sends notes and clips when they change, applies the
 // devices (the master's and the tracks') and writes the plugins' own changes back into the project,
-// and sets each track's delay compensation. The per-track state lives in one list, so it can't get
-// out of step when a track is removed or the project is replaced.
+// and sets each track's delay compensation. The per-track state lives in one list, matched to the
+// project's tracks by id (Track::id) at the start of every sync: a track whose id and kind are
+// still there keeps its processor, players, device chain (so its plugins keep running and a
+// reverb keeps its tail) and loaded instrument wherever it moved to; a track that is gone is taken
+// out of the graph; a new id, or a kind that changed, gets a new processor. After sync the list is
+// in the project's order, so the index queries below are by the project's track index.
 class AudioBridge {
 public:
     AudioBridge(audio::AudioSystem &audio, audio::MidiHub &midi, plugin::PluginManager *plugins,
@@ -36,14 +41,16 @@ public:
     struct SyncOptions {
         bool listen = true; // MIDI listening allowed (false while exporting)
     };
-    // Once a frame: adds a processor for each new track and brings every track in line with the
-    // project (see the class comment)
+    // Once a frame: normalizes the store's ids, matches the tracks by id (adding, keeping, moving
+    // and removing processors) and brings every track in line with the project (see the class comment)
     void sync(ProjectStore &store, const SyncOptions &options);
     // Takes every track's processor out of the audio graph and forgets the per-track state; sync
-    // adds them again for the project's tracks
+    // adds them again for the project's tracks (a project opened or made: nothing carries over)
     void dropAll();
-    // Takes a deleted track's processor out of the audio graph and forgets its state
-    void removeTrack(int index);
+    // How many processors the last sync made and removed (since this bridge was made), for tests
+    // and Metrics: an edit that keeps the tracks makes none
+    uint64_t processorsMade() const { return made_; }
+    uint64_t processorsRemoved() const { return removed_; }
     // Before saving: each plugin's state now, into the project
     void captureStates(ProjectStore &store);
     // Tracks that asked for the library instrument `name` ask again (it was just installed)
@@ -77,6 +84,8 @@ private:
     // Everything the bridge keeps for one track. Instrument tracks have a player, audio tracks a
     // clip player; the instrument fields are for instrument tracks with a library instrument.
     struct TrackAudio {
+        ObjectId id = kNoId;                        // the track it plays (Track::id)
+        TrackKind kind = TrackKind::Audio;          // the kind it was made for
         audio::TrackProcessor *processor = nullptr; // owned by the AudioSystem
         audio::NotePlayer *player = nullptr;        // instrument tracks
         audio::AudioClipPlayer *clips = nullptr;    // audio tracks
@@ -99,6 +108,12 @@ private:
     void syncDevice(ProjectStore &store, const DevicePlace &place, audio::Device *device);
     uint64_t hashClips(const Project &project, const Track &t) const;
     std::unique_ptr<audio::ClipSequence> clipSequenceFor(const Project &project, const Track &t);
+    // A new processor and players for a track (added to the graph)
+    TrackAudio makeTrack(const Track &t);
+    // Takes one track's processor out of the graph
+    void removeAudio(TrackAudio &state);
+    // Puts tracks_ in the project's order by id: keeps what matches, makes what is new, removes the rest
+    void reconcile(const Project &project);
 
     audio::AudioSystem &audio_;
     audio::MidiHub &midi_;
@@ -107,6 +122,7 @@ private:
     AudioPool &pool_;
     std::shared_ptr<audio::SoloGroup> solo_ = std::make_shared<audio::SoloGroup>();
     std::vector<TrackAudio> tracks_;
+    uint64_t made_ = 0, removed_ = 0;
     std::vector<float> levels_; // kept as its own vector: MixerView holds a reference to it
 };
 
