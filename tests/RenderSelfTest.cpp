@@ -1,6 +1,6 @@
 // Scenes, each described in RenderSelfTest.h: shapes, shapes-dark, text, clips, image, lines, plots,
-// controls, arrangement, pianoroll, steps, scroll (a 2000-row ScrollView, to show culling at work) and synth.
-// The synth scene is also timed over 50 settled frames (an INFO line after the scenes).
+// controls, arrangement, waveforms, pianoroll, steps, scroll (a 2000-row ScrollView, to show culling at work)
+// and synth. The synth and waveforms scenes are also timed over 50 settled frames (INFO lines after the scenes).
 #include "RenderSelfTest.h"
 
 #include <algorithm>
@@ -13,11 +13,13 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "audio/AudioFile.h"
 #include "audio/Synth.h"
 #include "daw/Appearance.h"
 #include "daw/Arrangement.h"
@@ -768,6 +770,73 @@ Picture sceneArrangement()
     });
 }
 
+// One track's sound for the waveforms scene: 30 seconds of stereo noise, a decaying burst every half
+// second, its decay and level set by the track so the eight waveforms differ
+std::shared_ptr<audio::AudioData> makeWaveform(int track)
+{
+    const double rate = 48000.0;
+    const uint32_t channels = 2;
+    const size_t frames = 30 * 48000;
+    const size_t period = 24000; // a burst every half second
+    const float decay = 6.0f + 3.0f * static_cast<float>(track);     // per second
+    const float level = 0.35f + 0.07f * static_cast<float>(track);
+
+    std::vector<float> samples(frames * channels);
+    uint32_t state = 0x9E3779B9u * static_cast<uint32_t>(track + 1); // seeds the noise per track
+    for (size_t i = 0; i < frames; ++i) {
+        const float t = static_cast<float>(i % period) / static_cast<float>(rate);
+        const float envelope = std::exp(-decay * t) * level;
+        for (uint32_t c = 0; c < channels; ++c) {
+            state = state * 1664525u + 1013904223u; // a linear congruential generator
+            const float noise = static_cast<float>(state >> 8) / 8388608.0f - 1.0f; // -1 to 1
+            samples[i * channels + c] = noise * envelope;
+        }
+    }
+    return audio::makeAudioData("waveform-" + std::to_string(track + 1), rate, channels, std::move(samples));
+}
+
+// Eight audio tracks, each with one long clip of its sound from beat 0, faded in and out
+daw::Project waveformProject()
+{
+    daw::Project project;
+    project.name = "Waveforms";
+    for (int t = 0; t < 8; ++t) {
+        daw::Clip clip("Take " + std::to_string(t + 1), 0.0, 48.0);
+        clip.audioFile = "waveform-" + std::to_string(t + 1);
+        clip.fadeIn = 0.5;
+        clip.fadeOut = 1.0;
+
+        daw::Track track;
+        track.name = "Audio " + std::to_string(t + 1);
+        track.clips.push_back(clip);
+        project.tracks.push_back(track);
+    }
+    return project;
+}
+
+// The arrangement over the eight long clips; with timedFrames, the settled view is timed (see renderPicture)
+Picture renderWaveforms(int timedFrames, Timing *timing)
+{
+    // The sounds outlive the scene: the hooks hand out pointers into them
+    std::vector<std::shared_ptr<audio::AudioData>> sounds;
+    for (int t = 0; t < 8; ++t)
+        sounds.push_back(makeWaveform(t));
+
+    daw::TransportHooks hooks = quietTransport();
+    hooks.audioFor = [&sounds](int track, int) -> const audio::AudioData * {
+        return track >= 0 && track < static_cast<int>(sounds.size()) ? sounds[track].get() : nullptr;
+    };
+    daw::ProjectStore store(waveformProject()); // outlives the context
+    return renderPicture(1200, 520, daw::studioTheme(true), [&store, &hooks](ui::Context &context) {
+        stretch(context.root().add<daw::ArrangementView>(store, hooks));
+    }, timedFrames, timing);
+}
+
+Picture sceneWaveforms()
+{
+    return renderWaveforms(0, nullptr);
+}
+
 Picture scenePianoRoll()
 {
     daw::ProjectStore store(daw::demoProject());
@@ -1424,11 +1493,30 @@ const SceneEntry kScenes[] = {
     {"plots", scenePlots},
     {"controls", sceneControls},
     {"arrangement", sceneArrangement},
+    {"waveforms", sceneWaveforms},
     {"pianoroll", scenePianoRoll},
     {"steps", sceneSteps},
     {"scroll", sceneScroll},
     {"synth", sceneSynth},
 };
+
+// Times a scene over kTimedFrames settled frames when it is the one asked for (or all are run) and
+// prints an INFO line; returns 1 when the timing throws, else 0
+int timeScene(const char *name, const std::string &only, const std::function<void(int, Timing *)> &render)
+{
+    if (!only.empty() && only != name)
+        return 0;
+    try {
+        Timing timing;
+        render(kTimedFrames, &timing);
+        std::printf("INFO render %s x%d: build %.2f ms, submit %.2f ms, %u prims, %zu KB\n", name, timing.frames,
+                    timing.buildMs, timing.submitMs, timing.prims, timing.uploadBytes / 1024);
+        return 0;
+    } catch (const std::exception &e) {
+        std::printf("FAIL  %s timing failed: %s\n", name, e.what());
+        return 1;
+    }
+}
 
 // Renders one scene and checks it; returns its failures and keeps its frame stats
 int checkScene(const std::string &name, Picture (*render)(), bool update, std::vector<std::pair<std::string, ui::FrameStats>> &rendered)
@@ -1538,18 +1626,9 @@ int runRenderSelfTest(int argc, char **argv)
     for (const auto &entry : rendered)
         printInfo(entry.first, entry.second);
 
-    // The heaviest scene, timed on its settled frames
-    if (only.empty() || only == "synth") {
-        try {
-            Timing timing;
-            renderSynth(kTimedFrames, &timing);
-            std::printf("INFO render synth x%d: build %.2f ms, submit %.2f ms, %u prims, %zu KB\n", timing.frames,
-                        timing.buildMs, timing.submitMs, timing.prims, timing.uploadBytes / 1024);
-        } catch (const std::exception &e) {
-            std::printf("FAIL  synth timing failed: %s\n", e.what());
-            ++failures;
-        }
-    }
+    // The heaviest scenes, timed on their settled frames
+    failures += timeScene("synth", only, [](int frames, Timing *timing) { renderSynth(frames, timing); });
+    failures += timeScene("waveforms", only, [](int frames, Timing *timing) { renderWaveforms(frames, timing); });
     return failures;
 }
 

@@ -663,16 +663,28 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
             // Fades, as a line from silence to full
             auto fade = [&](double from, double beats, bool in) {
                 const int steps = std::max(2, static_cast<int>(beats * pixelsPerBeat_ / 5.0));
-                std::vector<Vec2> points;
-                points.reserve(static_cast<size_t>(steps) + 1);
+                // The levels at evenly spaced x (the first at the fade's start, the last at its end)
+                std::vector<float> levels;
+                levels.reserve(static_cast<size_t>(steps) + 1);
+                float firstX = 0.0f, lastX = 0.0f;
                 for (int k = 0; k <= steps; ++k) {
                     const double f = static_cast<double>(k) / steps;
                     const double level = in ? std::sin(f * 1.5707963) : std::cos(f * 1.5707963);
                     const float x = r.x + static_cast<float>((from + f * beats) * pixelsPerBeat_);
-                    const float y = body.y + static_cast<float>(1.0 - level) * body.h;
-                    points.push_back({x, y});
+                    if (k == 0)
+                        firstX = x;
+                    lastX = x;
+                    levels.push_back(static_cast<float>(level));
                 }
-                list.addPolyline(points.data(), points.size(), theme.accentLine({}, {}, 1.5f, 0.7f));
+                if (levels.size() < 2)
+                    return;
+                ui::Plot curve = theme.accentPlot({firstX, body.y, lastX - firstX, body.h}, ui::PlotMode::Line, 0.7f);
+                curve.values = levels.data();
+                curve.count = static_cast<uint32_t>(levels.size());
+                curve.low = 0.0f;
+                curve.high = 1.0f;
+                curve.width = 1.5f;
+                list.add(curve);
             };
             if (clip.fadeIn > 0.0)
                 fade(0.0, clip.fadeIn / spb, true);

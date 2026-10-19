@@ -271,16 +271,29 @@ void AudioEditorView::draw(DrawList &list, const Theme &theme) const
     // Fades: a curve of dots, and a handle at the top
     auto fade = [&](double fromBeat, double beats, bool in) {
         const int steps = std::max(2, static_cast<int>(beats * pixelsPerBeat_ / 6.0));
-        std::vector<Vec2> points;
-        points.reserve(static_cast<size_t>(steps) + 1);
+        // The levels at evenly spaced x (the first at the fade's start, the last at its end)
+        std::vector<float> levels;
+        levels.reserve(static_cast<size_t>(steps) + 1);
+        float firstX = 0.0f, lastX = 0.0f;
         for (int k = 0; k <= steps; ++k) {
             const double f = static_cast<double>(k) / steps;
             const double level = in ? std::sin(f * kHalfPi) : std::cos(f * kHalfPi);
             const float x = beatX(fromBeat + f * beats);
-            const float y = r.y + 4.0f + static_cast<float>(1.0 - level) * (r.h - 8.0f);
-            points.push_back({x, y});
+            if (k == 0)
+                firstX = x;
+            lastX = x;
+            levels.push_back(static_cast<float>(level));
         }
-        list.addPolyline(points.data(), points.size(), theme.accentLine({}, {}, 1.5f, 0.8f));
+        if (levels.size() < 2)
+            return;
+        // Level 1 sits at the top inset (r.y + 4), level 0 at the bottom one (r.y + r.h - 4)
+        Plot curve = theme.accentPlot({firstX, r.y + 4.0f, lastX - firstX, r.h - 8.0f}, PlotMode::Line, 0.8f);
+        curve.values = levels.data();
+        curve.count = static_cast<uint32_t>(levels.size());
+        curve.low = 0.0f;
+        curve.high = 1.0f;
+        curve.width = 1.5f;
+        list.add(curve);
     };
     if (c->fadeIn > 0.0)
         fade(c->start, c->fadeIn / spb, true);

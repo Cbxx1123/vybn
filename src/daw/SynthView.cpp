@@ -388,20 +388,18 @@ public:
         const Envelope e = readEnvelope(access_, base_);
         const Marks m = marksOf(e);
         std::vector<float> levels;
-        std::vector<Vec2> points;
         levels.reserve(static_cast<size_t>(area.w / 2.0f) + 1);
-        points.reserve(static_cast<size_t>(area.w / 2.0f) + 1);
         for (float x = area.x; x < area.x + area.w; x += 2.0f) {
             const double level = levelAt(m, e.sustain, static_cast<double>((x - area.x) / area.w));
             if (level < 0.0)
                 break;
-            const float y = bottom - static_cast<float>(level) * area.h;
             levels.push_back(static_cast<float>(level));
-            points.push_back(Vec2{x + 1.0f, y});
         }
         // The soft fill from the curve down to the bottom (it ends where the envelope does), then the bright line
+        // through the same levels, one every 2 px from x = area.x + 1
         list.add(curvePlot(theme, {area.x, area.y, 0.0f, area.h}, PlotMode::Fill, levels, 0.0f, 1.0f, 0.0f, 0.12f));
-        list.addPolyline(points.data(), points.size(), theme.accentLine({}, {}, 2.0f, 0.9f));
+        if (levels.size() >= 2)
+            list.add(curvePlot(theme, {area.x + 1.0f, area.y, 0.0f, area.h}, PlotMode::Line, levels, 0.0f, 1.0f, 0.0f, 0.9f));
         const Vec2 handles[3] = {{area.x + static_cast<float>(m.attack) * area.w, area.y},
                                  {area.x + static_cast<float>(m.decay) * area.w, bottom - static_cast<float>(e.sustain) * area.h},
                                  {area.x + static_cast<float>(m.release) * area.w, bottom}};

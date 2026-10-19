@@ -31,6 +31,8 @@ namespace tests {
 //                          Stepper, Knob, ProgressBar, TextField, Chip, Badge, LevelMeter at a
 //                          level, ListItem selected and not, a Panel), studio dark
 //   arrangement   1200x520 daw::ArrangementView on daw::demoProject(), studio dark
+//   waveforms     1200x520 daw::ArrangementView on eight audio tracks, each a 48-beat clip of a generated
+//                          30-second sound (a decaying burst every half second), studio dark
 //   pianoroll     1200x520 daw::PianoRollView on the demo project's first instrument clip
 //   steps         1000x420 daw::StepSequencerView on a drum clip (a kick, snare and hat beat)
 //   synth         1180x860 daw::SynthView on the synthesizer's Init setting (no audio device)

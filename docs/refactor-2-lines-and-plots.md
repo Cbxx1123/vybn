@@ -187,3 +187,25 @@ whatever its length; build ms for the eight-clip project down by at least half; 
 ## Out of scope
 
 Bezier paths, filled polygons, gradients, dashed lines (each would be another kind later).
+
+## Results (19 October 2026)
+
+| | Before refactor 2 | After |
+|---|---|---|
+| synth panel (render self-test): prims | 4,688 | 1,574 |
+| synth panel: upload | 366 KB | 135 KB |
+| synth panel: build (50-frame average) | 1.92 ms | 1.32 ms |
+| eight 30 s audio clips in the arrangement: build | (one rect per 2 px) | 0.61 ms, 232 prims |
+
+The synth's remaining prims are mostly its knobs' rings of dots, which are not curves. No curve is
+drawn as columns of rects any more: waveforms are Range plots, every other curve a Line plot
+(with a Fill plot under it where it was filled), and straight guides Lines.
+
+Decisions in the Performance stage:
+- The waveform caches (agents AF and AG) were not built: eight long clips cost 0.61 ms to build
+  in all, and refactor 3 caches the arrangement's and audio editor's whole drawing anyway.
+- Joints: every translucent polyline in the app was a curve sampled at even x, so each became one
+  Line plot (no joints at all) instead of changing how polylines join. `addPolyline` stays for
+  opaque strokes and uneven points.
+- The plot data is copied once, from the DrawList's vector into the mapped buffer (agent AI's
+  item); a second path to skip that copy wasn't worth its complexity at these sizes.
