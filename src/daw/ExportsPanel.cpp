@@ -8,6 +8,7 @@
 #include "Format.h"
 #include "Widgets.h"
 #include "engine/Shell.h"
+#include "ui/DrawCache.h"
 
 namespace daw {
 
@@ -35,11 +36,27 @@ public:
     LoudnessGraph(std::vector<float> series, double target, bool hasTarget)
         : series_(std::move(series)), target_(target), hasTarget_(hasTarget)
     {
+        // The series never changes, so its values are hashed once here
+        Fingerprint fp;
+        fp.add(static_cast<uint64_t>(series_.size()));
+        for (const float v : series_)
+            fp.add(v);
+        seriesKey_ = fp.value();
     }
 
     Vec2 measure(const Theme &) const override { return {320.0f, 72.0f}; }
 
     void draw(DrawList &list, const Theme &theme) const override
+    {
+        // The whole graph is kept while the series and the target are what they were
+        Fingerprint fp(seriesKey_);
+        fp.add(target_);
+        fp.add(hasTarget_);
+        cache_.draw(list, theme, rect_, fp.value(), [&] { drawGraph(list, theme); });
+    }
+
+private:
+    void drawGraph(DrawList &list, const Theme &theme) const
     {
         list.add(theme.surface(rect_, Shape::Rounded, Elevation::Inset));
         const Rect plot = rect_.inset(8.0f);
@@ -85,10 +102,11 @@ public:
         }
     }
 
-private:
     std::vector<float> series_;
     double target_;
     bool hasTarget_;
+    uint64_t seriesKey_ = 0;
+    DrawCache cache_{"LoudnessGraph"};
 };
 
 // What a job is doing, for its card

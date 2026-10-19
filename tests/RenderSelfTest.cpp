@@ -830,7 +830,7 @@ daw::Project waveformProject()
 }
 
 // The arrangement over the eight long clips; with timedFrames, the settled view is timed (see renderPicture)
-Picture renderWaveforms(int timedFrames, Timing *timing)
+Picture renderWaveforms(int timedFrames, Timing *timing, ui::FrameStats *after = nullptr)
 {
     // The sounds outlive the scene: the hooks hand out pointers into them
     std::vector<std::shared_ptr<audio::AudioData>> sounds;
@@ -844,7 +844,7 @@ Picture renderWaveforms(int timedFrames, Timing *timing)
     daw::ProjectStore store(waveformProject()); // outlives the context
     return renderPicture(1200, 520, daw::studioTheme(true), [&store, &hooks](ui::Context &context) {
         stretch(context.root().add<daw::ArrangementView>(store, hooks));
-    }, timedFrames, timing);
+    }, timedFrames, timing, after);
 }
 
 Picture sceneWaveforms()
@@ -852,16 +852,23 @@ Picture sceneWaveforms()
     return renderWaveforms(0, nullptr);
 }
 
-Picture scenePianoRoll()
+// The piano roll on the demo project; with `after`, one more frame is run after the picture
+Picture renderPianoRoll(ui::FrameStats *after)
 {
     daw::ProjectStore store(daw::demoProject());
     selectFirstInstrumentClip(store);
     return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
         stretch(context.root().add<daw::PianoRollView>(store, quietPianoRoll()));
-    });
+    }, 0, nullptr, after);
 }
 
-Picture sceneSteps()
+Picture scenePianoRoll()
+{
+    return renderPianoRoll(nullptr);
+}
+
+// The step sequencer on a drum clip; with `after`, one more frame is run after the picture
+Picture renderSteps(ui::FrameStats *after)
 {
     // A drum clip: a kick on the beats 0, 2, 4 and 6, a snare on 1, 3, 5 and 7, hats every half beat
     daw::Project project;
@@ -895,7 +902,12 @@ Picture sceneSteps()
         daw::StepSequencerView &view = context.root().add<daw::StepSequencerView>(store, quietSteps());
         stretch(view);
         view.selectRow(36);
-    });
+    }, 0, nullptr, after);
+}
+
+Picture sceneSteps()
+{
+    return renderSteps(nullptr);
 }
 
 // A long list in a scroll view: 2000 rows, of which only the ones on screen should draw
@@ -912,7 +924,7 @@ Picture sceneScroll()
 }
 
 // The synthesizer's panel; with timedFrames, the settled panel is timed (see renderPicture)
-Picture renderSynth(int timedFrames, Timing *timing)
+Picture renderSynth(int timedFrames, Timing *timing, ui::FrameStats *after = nullptr)
 {
     audio::DeviceSetting setting = audio::SynthDevice::setting("Init"); // outlives the context
     daw::DeviceAccess access;
@@ -923,7 +935,7 @@ Picture renderSynth(int timedFrames, Timing *timing)
                          [&access](ui::Context &context) {
                              stretch(context.root().add<daw::SynthView>(context, access));
                          },
-                         timedFrames, timing);
+                         timedFrames, timing, after);
 }
 
 Picture sceneSynth()
@@ -1727,25 +1739,39 @@ void sectionChecks(Checker &c)
     std::printf("\n");
 }
 
-// The arrangement, settled, then one more frame: its ArrangementView's draw cache hits and the layout is skipped
-void arrangementCacheChecks(Checker &c)
+// A DAW view's scene, rendered again with one more frame after it has settled (see settledCacheChecks)
+struct CacheScene {
+    const char *name;
+    Picture (*render)(ui::FrameStats *after);
+};
+
+const CacheScene kCacheScenes[] = {
+    {"arrangement", [](ui::FrameStats *after) { return renderArrangement(after); }},
+    {"waveforms", [](ui::FrameStats *after) { return renderWaveforms(0, nullptr, after); }},
+    {"pianoroll", renderPianoRoll},
+    {"steps", renderSteps},
+    {"synth", [](ui::FrameStats *after) { return renderSynth(0, nullptr, after); }},
+};
+
+// A scene settled, then one more frame: its views' draw caches serve every draw (hits, no misses) and the layout is skipped
+void settledCacheChecks(Checker &c, const CacheScene &scene)
 {
-    std::printf("Arrangement: its draw cache on a settled frame\n\n");
+    const std::string title = std::string(scene.name) + ": a settled frame draws from its caches";
     if (ui::DrawCache::verifying()) {
-        std::printf("SKIP  %-44s %s\n", "Arrangement draw cache", "VIBIN_VERIFY_CACHE is set, so every draw paints");
+        std::printf("SKIP  %-44s %s\n", title.c_str(), "VIBIN_VERIFY_CACHE is set, so every draw paints");
         return;
     }
     ui::FrameStats after;
     try {
-        renderArrangement(&after);
+        scene.render(&after);
     } catch (const std::exception &e) {
-        c.check(false, "The arrangement renders for its cache check", e.what());
+        c.check(false, title, std::string("render failed: ") + e.what());
         return;
     }
-    c.check(after.cacheHits >= 1, "The arrangement's cache hits on a settled frame",
-            std::to_string(after.cacheHits) + " hits");
-    c.check(after.layoutSkipped, "The arrangement's settled frame skips its layout");
-    std::printf("\n");
+    const bool settled = after.cacheHits >= 1 && after.cacheMisses == 0 && after.layoutSkipped;
+    c.check(settled, title,
+            std::to_string(after.cacheHits) + " hits, " + std::to_string(after.cacheMisses) + " misses, layout " +
+                (after.layoutSkipped ? "skipped" : "run"));
 }
 
 // ---- checking ----
@@ -1896,12 +1922,21 @@ int runRenderSelfTest(int argc, char **argv)
         ++failures;
     }
 
-    // The arrangement's draw cache, on a frame after it has settled (a second render of the scene)
-    if (only.empty() || only == "arrangement") {
-        Checker arrangement;
-        arrangementCacheChecks(arrangement);
-        failures += arrangement.failures;
+    // The views' draw caches, on a frame after each scene has settled (a second render of the scene)
+    Checker caches;
+    bool cacheHeading = false;
+    for (const CacheScene &scene : kCacheScenes) {
+        if (!only.empty() && only != scene.name)
+            continue;
+        if (!cacheHeading) {
+            std::printf("Settled frames: their scenes draw from their draw caches\n\n");
+            cacheHeading = true;
+        }
+        settledCacheChecks(caches, scene);
     }
+    if (cacheHeading)
+        std::printf("\n");
+    failures += caches.failures;
 
     for (const auto &entry : rendered)
         printInfo(entry.first, entry.second);

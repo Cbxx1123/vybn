@@ -2025,19 +2025,9 @@ std::string PianoRollView::readout() const
     }
 }
 
-void PianoRollView::drawKeyboard(DrawList &list, const Theme &theme, const Clip *c) const
+void PianoRollView::drawKeyboard(DrawList &list, const Theme &theme, const bool (&playing)[128]) const
 {
     const Scale *s = scale();
-    // Keys sounding under the playhead light up while it plays
-    bool playing[128] = {};
-    if (c && hooks_.playing && hooks_.playing() && hooks_.position) {
-        const double at = hooks_.position() - c->start;
-        for (const Note &n : c->notes) {
-            if (!n.muted && at >= n.start && at < n.start + n.length && n.start < c->length)
-                playing[std::clamp(n.key, 0, 127)] = true;
-        }
-    }
-
     // A raised, domed strip; black keys pressed into it
     list.add(theme.surface(keys_, Shape::Soft, Elevation::Raised, 0.55f, Finish::Convex));
     list.pushClip(keys_);
@@ -2303,10 +2293,6 @@ void PianoRollView::drawLane(DrawList &list, const Theme &theme, const Clip &c) 
     list.add(theme.text(laneName(), name, TextStyle::Caption, menuHot ? TextTone::Accent : TextTone::Secondary, TextAlign::Center));
     list.add(theme.ink({laneKeys_.x + laneKeys_.w - 15.0f, laneKeys_.y + laneKeys_.h - 12.0f, 8.0f, 5.0f}, Shape::TriangleDown,
                        menuHot ? TextTone::Accent : TextTone::Muted));
-    const std::string value = shownVelocity_ >= 0.0f ? valueText(shownVelocity_) : std::string("");
-    if (lane_.h > 46.0f)
-        list.add(theme.text(value, {laneKeys_.x, laneKeys_.y + 22.0f, laneKeys_.w, laneKeys_.h - 26.0f}, TextStyle::Title,
-                            TextTone::Accent, TextAlign::Center));
     list.add(theme.surface(lane_, Shape::Soft, Elevation::Inset, 0.6f));
     list.pushClip(lane_.inset(2.0f));
     for (float g : {0.25f, 0.5f, 0.75f, 1.0f})
@@ -2388,23 +2374,155 @@ void PianoRollView::drawOverview(DrawList &list, const Theme &theme, const Clip 
         list.add(theme.scrim({mini_.x, mini_.y, thumb.x - mini_.x, mini_.h}, 0.55f));
     if (thumb.x + thumb.w < mini_.x + mini_.w)
         list.add(theme.scrim({thumb.x + thumb.w, mini_.y, mini_.x + mini_.w - thumb.x - thumb.w, mini_.h}, 0.55f));
-    // The loop and the playhead
+    // The loop
     if (hasLoop())
         list.add(theme.accent({beatToX(project().loopStart - c.start), mini_.y + mini_.h - 4.0f,
                                std::max(2.0f, beatToX(project().loopEnd - c.start) - beatToX(project().loopStart - c.start)), 2.0f},
                               Shape::Pill, project().looping ? 0.8f : 0.35f));
-    if (hooks_.position) {
-        const double at = hooks_.position() - c.start;
-        if (at >= -kLeadBeats && at <= c.length + kTailBeats)
-            list.add(theme.accent({beatToX(at) - 0.5f, mini_.y + 3.0f, 1.5f, mini_.h - 6.0f}, Shape::Rounded, 0.9f));
-    }
     list.popClip();
 }
 
-void PianoRollView::draw(DrawList &list, const Theme &theme) const
+void PianoRollView::drawOverviewPlayhead(DrawList &list, const Theme &theme, const Clip &c) const
 {
-    const Clip *c = clip();
+    // The playhead in the overview, over everything the overview draws
+    const double total = c.length + kTailBeats + kLeadBeats;
+    auto beatToX = [this, total](double beat) {
+        return mini_.x + 6.0f + static_cast<float>((beat + kLeadBeats) / total) * (mini_.w - 12.0f);
+    };
+    if (hooks_.position) {
+        const double at = hooks_.position() - c.start;
+        if (at >= -kLeadBeats && at <= c.length + kTailBeats) {
+            list.pushClip(mini_.inset(2.0f));
+            list.add(theme.accent({beatToX(at) - 0.5f, mini_.y + 3.0f, 1.5f, mini_.h - 6.0f}, Shape::Rounded, 0.9f));
+            list.popClip();
+        }
+    }
+}
 
+void PianoRollView::playingKeys(const Clip &c, bool (&playing)[128]) const
+{
+    // Keys sounding under the playhead light up while it plays
+    if (hooks_.playing && hooks_.playing() && hooks_.position) {
+        const double at = hooks_.position() - c.start;
+        for (const Note &n : c.notes) {
+            if (!n.muted && at >= n.start && at < n.start + n.length && n.start < c.length)
+                playing[std::clamp(n.key, 0, 127)] = true;
+        }
+    }
+}
+
+uint64_t PianoRollView::keysKey(bool hasClip, const bool (&playing)[128]) const
+{
+    // The corner and the keyboard: the layout, the rows, scale and grid name, the key under the
+    // mouse and the one sounding, and the keys lit under the playhead. The rect and theme are the
+    // cache's own.
+    Fingerprint fp;
+    fp.add(corner_);
+    fp.add(keys_);
+    fp.add(grid_);
+    fp.add(scrollY_);
+    fp.add(rowHeight_);
+    fp.add(static_cast<uint64_t>(rows_.size()));
+    for (int key : rows_)
+        fp.add(key);
+    fp.add(scale_);
+    fp.add(root_);
+    fp.add(snap());
+    fp.add(sounding_);
+    fp.add(hoverKey_);
+    fp.add(hasClip);
+    fp.bytes(playing, sizeof(bool) * 128);
+    return fp.value();
+}
+
+uint64_t PianoRollView::bodyKey(const Clip *c) const
+{
+    // The grid, notes, ruler, lane and overview: everything they read, bar the playheads and the
+    // readout (the overlay). The rect and theme are the cache's own.
+    Fingerprint fp;
+    // The project (every edit moves revision, note selection included) and the selection
+    fp.add(store_.revision());
+    fp.add(store_.selectionRevision());
+    fp.add(project().selectedTrack);
+    fp.add(project().selectedClip);
+    fp.add(c != nullptr);
+    // Layout
+    fp.add(grid_);
+    fp.add(ruler_);
+    fp.add(loopBand_);
+    fp.add(lane_);
+    fp.add(laneKeys_);
+    fp.add(divider_);
+    fp.add(mini_);
+    fp.add(gridLabel_);
+    fp.add(velocityLane_);
+    // Scroll and zoom as they are now, and where they glide to
+    fp.add(scrollX_);
+    fp.add(scrollY_);
+    fp.add(pixelsPerBeat_);
+    fp.add(targetX_);
+    fp.add(targetY_);
+    fp.add(targetZoom_);
+    fp.add(zooming_);
+    fp.add(zoomAtX_);
+    fp.add(zoomAtBeat_);
+    fp.add(rowHeight_);
+    // The rows shown, and each key's row
+    fp.add(static_cast<uint64_t>(rows_.size()));
+    for (int key : rows_)
+        fp.add(key);
+    fp.bytes(rowOf_, sizeof rowOf_);
+    // The scale, the grid and snapping
+    fp.add(scale_);
+    fp.add(root_);
+    fp.add(inKey_);
+    fp.add(gridChoice_);
+    fp.add(triplet_);
+    fp.add(snap());
+    fp.add(snapping_);
+    // Ghosts: their notes come from the store (its revision) and the selection; the setting here
+    fp.add(ghosts_);
+    fp.add(static_cast<uint64_t>(ghostNotes_.size()));
+    fp.add(hoverGhost_);
+    // The tool, and the hover states it reads
+    fp.add(tool_);
+    fp.add(ctrlHeld_);
+    fp.add(hovered_);
+    fp.add(hoverEdge_);
+    fp.add(hoverHandle_);
+    fp.add(hoverStretch_);
+    fp.add(hoverKey_);
+    fp.add(overGrid_);
+    fp.add(hoverPoint_);
+    fp.add(lastLength_);
+    // The draw tool's preview and the slice line fall on snapped beats, so the mouse can move
+    // within a cell without repainting
+    fp.add(hoverBeat_ >= 0.0 ? snapDown(hoverBeat_) : -1.0);
+    fp.add(hoverBeat_ >= 0.0 ? snapRound(hoverBeat_, snapping_ ? ctrlHeld_ : !ctrlHeld_) : -1.0);
+    // Drags (a drag isn't cached anyway; this makes the first frame after one repaint)
+    fp.add(drag_);
+    fp.add(anchor_);
+    fp.add(laneController_);
+    fp.add(hotBits(c));
+    return fp.value();
+}
+
+unsigned PianoRollView::hotBits(const Clip *c) const
+{
+    // The controls the mouse lights when nothing is dragged (the same tests as the draw code)
+    if (drag_ != Drag::None || !c)
+        return 0;
+    unsigned bits = 0;
+    bits |= clipHandle(-1).inset(-3.0f).contains(mouse_) ? 1u : 0u;
+    bits |= clipHandle(1).inset(-3.0f).contains(mouse_) ? 2u : 0u;
+    bits |= laneKeys_.contains(mouse_) ? 4u : 0u;
+    bits |= divider_.contains(mouse_) && !lane_.contains(mouse_) ? 8u : 0u;
+    bits |= gridLabel_.contains(mouse_) ? 16u : 0u;
+    return bits;
+}
+
+void PianoRollView::drawKeys(DrawList &list, const Theme &theme, const Clip *c, const bool (&playing)[128]) const
+{
     // The corner: the key under the mouse (or the one sounding)
     list.add(theme.surface(corner_, Shape::Soft, Elevation::Inset, 0.45f));
     const int shown = sounding_ >= 0 ? sounding_ : hoverKey_;
@@ -2413,8 +2531,11 @@ void PianoRollView::draw(DrawList &list, const Theme &theme) const
     else if (c)
         list.add(theme.text(gridText(), corner_, TextStyle::Caption, TextTone::Muted, TextAlign::Center));
 
-    drawKeyboard(list, theme, c);
+    drawKeyboard(list, theme, playing);
+}
 
+void PianoRollView::drawBody(DrawList &list, const Theme &theme, const Clip *c) const
+{
     list.add(theme.surface(grid_, Shape::Soft, Elevation::Inset, 0.6f));
     if (!c) {
         const Rect middle{grid_.x, grid_.y + grid_.h * 0.5f - 30.0f, grid_.w, 30.0f};
@@ -2435,6 +2556,19 @@ void PianoRollView::draw(DrawList &list, const Theme &theme) const
     if (velocityLane_ && lane_.h > 0.0f)
         drawLane(list, theme, *c);
     drawOverview(list, theme, *c);
+}
+
+void PianoRollView::drawOverlay(DrawList &list, const Theme &theme, const Clip *c) const
+{
+    if (!c)
+        return;
+    // The velocity or the controller's value under the mouse, in the lane's header
+    if (velocityLane_ && lane_.h > 46.0f) {
+        const std::string value = shownVelocity_ >= 0.0f ? valueText(shownVelocity_) : std::string("");
+        list.add(theme.text(value, {laneKeys_.x, laneKeys_.y + 22.0f, laneKeys_.w, laneKeys_.h - 26.0f}, TextStyle::Title,
+                            TextTone::Accent, TextAlign::Center));
+    }
+    drawOverviewPlayhead(list, theme, *c);
 
     // Playhead, from the ruler down through the lane
     if (hooks_.position) {
@@ -2458,6 +2592,26 @@ void PianoRollView::draw(DrawList &list, const Theme &theme) const
         list.add(theme.surface({x, y, w, h}, Shape::Pill, Elevation::Raised, 0.8f, Finish::Convex));
         list.add(theme.text(text, {x, y, w, h}, TextStyle::Caption, TextTone::Primary, TextAlign::Center));
     }
+}
+
+void PianoRollView::draw(DrawList &list, const Theme &theme) const
+{
+    const Clip *c = clip();
+
+    // Cached: the corner and the keyboard, with the keys lit under the playhead in their key
+    bool playing[128] = {};
+    if (c)
+        playingKeys(*c, playing);
+    keysCache_.draw(list, theme, rect_, keysKey(c != nullptr, playing), [&] { drawKeys(list, theme, c, playing); });
+
+    // Cached: the grid, the notes, the ruler, the lane and the overview. Not reused while a drag
+    // (its boxes, lassos and ramps are drawn from the drag) or a glide (the view is moving) is
+    // under way.
+    const bool gliding = zooming_ || scrollX_ != targetX_ || scrollY_ != targetY_;
+    cache_.draw(list, theme, rect_, bodyKey(c), [&] { drawBody(list, theme, c); }, drag_ == Drag::None && !gliding);
+
+    // Every frame, on top: the lane's value, the playheads and the readout
+    drawOverlay(list, theme, c);
 }
 
 }

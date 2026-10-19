@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -179,7 +180,48 @@ void AudioEditorView::handleInput(const Input &input)
     edited.fadeOut = std::min(edited.fadeOut, edited.length * spb - edited.fadeIn);
 }
 
+uint64_t AudioEditorView::contentKey(const Clip *c, const audio::AudioData *data) const
+{
+    Fingerprint fp;
+    // The project (every edit moves revision) and the selection (which clip is shown)
+    fp.add(store_.revision());
+    fp.add(store_.selectionRevision());
+    fp.add(project().selectedTrack);
+    fp.add(project().selectedClip);
+    // Layout and view
+    fp.add(rect_);
+    fp.add(ruler_);
+    fp.add(area_);
+    fp.add(pixelsPerBeat_);
+    fp.add(viewStart_);
+    // Hover and the drag in progress
+    fp.add(hover_);
+    fp.add(drag_);
+    // The clip's sound arrives later (loading) and can be let go: its address
+    fp.add(c != nullptr);
+    fp.add(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(data)));
+    return fp.value();
+}
+
 void AudioEditorView::draw(DrawList &list, const Theme &theme) const
+{
+    // Everything but the playhead is cached. A clip whose sound is still loading paints every frame
+    // (its picture says "Loading..." until the sound arrives, and it is only a frame or two).
+    const Clip *c = clip();
+    const audio::AudioData *data = c && hooks_.audioFor ? hooks_.audioFor(*c) : nullptr;
+    const bool loading = c && c->hasAudio() && !data;
+    cache_.draw(list, theme, rect_, contentKey(c, data), [&] { drawContent(list, theme); }, !loading);
+
+    // Playhead, every frame: it moves while playing. Nothing is drawn without a clip (as before).
+    if (!c || !hooks_.position)
+        return;
+    const float x = beatX(hooks_.position());
+    if (x >= area_.x && x <= area_.x + area_.w)
+        list.add(theme.accent({x - 1.0f, ruler_.y + ruler_.h - 6.0f, 2.0f, area_.y + area_.h - ruler_.y - ruler_.h + 6.0f},
+                              Shape::Rounded, 0.9f));
+}
+
+void AudioEditorView::drawContent(DrawList &list, const Theme &theme) const
 {
     const int beatsPerBar = std::max(1, project().beatsPerBar);
     // Ruler
@@ -314,14 +356,6 @@ void AudioEditorView::draw(DrawList &list, const Theme &theme) const
     if (hover_ == Drag::End || drag_ == Drag::End)
         list.add(theme.accent({r.x + r.w - 2.0f, r.y, 3.0f, r.h}, Shape::Pill));
     list.popClip();
-
-    // Playhead
-    if (hooks_.position) {
-        const float x = beatX(hooks_.position());
-        if (x >= area_.x && x <= area_.x + area_.w)
-            list.add(theme.accent({x - 1.0f, ruler_.y + ruler_.h - 6.0f, 2.0f, area_.y + area_.h - ruler_.y - ruler_.h + 6.0f},
-                                  Shape::Rounded, 0.9f));
-    }
 }
 
 }

@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "Dialogs.h"
+#include "DrawCache.h"
 #include "env/Scheduler.h"
 
 namespace ui {
@@ -587,6 +588,7 @@ public:
         const std::string cursorName = cursor_ >= 0 ? entries_[static_cast<size_t>(cursor_)].name : std::string();
         const bool sameFolder = !entries_.empty() || keepScroll_;
         entries_ = std::move(entries);
+        ++entriesVersion_;
         selected_.assign(entries_.size(), 0);
         cursor_ = anchor_ = -1;
         for (size_t i = 0; i < entries_.size(); ++i) {
@@ -606,6 +608,7 @@ public:
     void clear()
     {
         entries_.clear();
+        ++entriesVersion_;
         selected_.clear();
         cursor_ = anchor_ = -1;
         scroll_ = target_ = 0.0f;
@@ -811,6 +814,56 @@ public:
 
     void draw(DrawList &list, const Theme &theme) const override
     {
+        // The rows are kept while nothing they read has moved. A scroll glide changes the key every
+        // frame, so the rows repaint then.
+        cache_.draw(list, theme, rect_, contentKey(), [&] { drawRows(list, theme); });
+    }
+
+private:
+    // Everything drawRows reads (the cache adds rect_, the clip, the theme and the font)
+    uint64_t contentKey() const
+    {
+        Fingerprint fp;
+        // The listing as shown: its version (bumped each time it is replaced), its count, the time
+        // its dates are read against, and the message shown when it is empty
+        fp.add(entriesVersion_);
+        fp.add(static_cast<uint64_t>(entries_.size()));
+        fp.add(now_);
+        fp.add(message_);
+        // Sort, selection, cursor, hover and scroll
+        fp.add(sortBy_);
+        fp.add(descending_);
+        fp.add(static_cast<uint64_t>(selected_.size()));
+        for (size_t i = 0; i < selected_.size(); ++i) {
+            if (selected_[i])
+                fp.add(static_cast<uint64_t>(i));
+        }
+        fp.add(cursor_);
+        fp.add(hovered_);
+        fp.add(scroll_);
+        fp.add(maxScroll_);
+        fp.add(rowH_);
+        // Layout
+        fp.add(header_);
+        fp.add(body_);
+        fp.add(track_);
+        for (int i = 0; i < 3; ++i) {
+            fp.add(headerRects_[i]);
+            fp.add(headerClicks_[i].hovered);
+        }
+        fp.add(nameX_);
+        fp.add(dateX_);
+        fp.add(sizeX_);
+        fp.add(dateW_);
+        fp.add(sizeW_);
+        // The scroll bar
+        fp.add(thumbHovered_);
+        fp.add(dragging_);
+        return fp.value();
+    }
+
+    void drawRows(DrawList &list, const Theme &theme) const
+    {
         // The list sits in a well
         list.add(theme.surface(rect_, Shape::Rounded, Elevation::Inset, 0.7f));
 
@@ -878,7 +931,6 @@ public:
         }
     }
 
-private:
     float iconRoom() const { return rowH_ * 0.9f; }
     Rect thumb() const
     {
@@ -911,6 +963,8 @@ private:
     bool dragging_ = false;
     bool thumbHovered_ = false;
     float dragStart_ = 0.0f, dragOffset_ = 0.0f;
+    uint64_t entriesVersion_ = 0; // up each time the listing is replaced (setEntries, clear)
+    DrawCache cache_{"FileList"};
 };
 
 // A folder being read on a background job

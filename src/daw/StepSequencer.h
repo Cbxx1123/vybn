@@ -7,6 +7,7 @@
 #include "Project.h"
 #include "ProjectStore.h"
 #include "StepSequence.h"
+#include "ui/DrawCache.h"
 #include "ui/UI.h"
 
 namespace daw {
@@ -121,6 +122,17 @@ private:
     // The selected clip's notes to change, or null (no clip); one call per edit
     std::vector<Note> *editNotes();
     void say(std::string text);
+    // Everything the cached parts of draw read, except the playing step (which the header's key adds)
+    uint64_t contentKey() const;
+
+    // Drawing is cached in four parts, drawn in this order: the empty state (no clip); the header
+    // (its key adds the playing step, so it repaints on each step); the grid's well and beat shades
+    // (gridCache_); the playing step's column, drawn live; then the cells, names and velocity lane
+    // (cache_). Their order is the one draw always had, so nothing that overlaps moves.
+    ui::DrawCache emptyCache_{"StepSequencerEmpty"};
+    ui::DrawCache headerCache_{"StepSequencerHeader"};
+    ui::DrawCache gridCache_{"StepSequencerGrid"};
+    ui::DrawCache cache_{"StepSequencerView"};
 
     ProjectStore &store_;
     StepSequencerHooks hooks_;

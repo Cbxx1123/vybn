@@ -1,10 +1,12 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 
 #include "Project.h"
 #include "ProjectStore.h"
 #include "audio/AudioFile.h"
+#include "ui/DrawCache.h"
 #include "ui/UI.h"
 
 namespace daw {
@@ -49,6 +51,12 @@ private:
     ui::Rect clipRect(const Clip &c) const;
     Drag hitTestHandles(const Clip &c, ui::Vec2 p) const;
     void fitClip(const Clip &c);
+    // Everything drawContent reads, for the cache: the store's revisions, the clip shown and its
+    // sound's address (null while loading), the layout, the view and the hover and drag states
+    uint64_t contentKey(const Clip *c, const audio::AudioData *data) const;
+    // The ruler, the file's waveform, the clip and its fades, the handles and the grabbed edges:
+    // cached (see draw). The playhead is drawn after it, every frame.
+    void drawContent(ui::DrawList &list, const ui::Theme &theme) const;
 
     ProjectStore &store_;
     AudioEditorHooks hooks_;
@@ -60,6 +68,7 @@ private:
     Drag drag_ = Drag::None;
     Drag hover_ = Drag::None;
     double lastPress_ = -1.0;
+    ui::DrawCache cache_{"AudioEditorView"}; // drawContent, while nothing it reads has changed
 };
 
 }

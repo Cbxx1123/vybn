@@ -7,6 +7,7 @@
 #include "NoteTools.h"
 #include "Project.h"
 #include "ProjectStore.h"
+#include "ui/DrawCache.h"
 #include "ui/UI.h"
 
 namespace daw {
@@ -264,15 +265,29 @@ private:
     void addNotes(std::vector<Note> made, const std::string &what);
     // What a drag is doing, for the readout beside the mouse
     std::string readout() const;
-    void drawKeyboard(ui::DrawList &list, const ui::Theme &theme, const Clip *c) const;
+    // The draw, in three parts. The keys (the corner and the keyboard) are cached on what they
+    // read, the playing keys included; the body (the grid, notes, ruler, lane and overview) on
+    // everything else it reads; the overlay is drawn every frame on top: the lane's value under
+    // the mouse, the overview's and the main playhead, and the readout beside the mouse.
+    void playingKeys(const Clip &c, bool (&playing)[128]) const; // the keys under the playhead, while it plays
+    uint64_t keysKey(bool hasClip, const bool (&playing)[128]) const;
+    uint64_t bodyKey(const Clip *c) const;
+    unsigned hotBits(const Clip *c) const; // the mouse over the small controls it lights, when nothing is dragged
+    void drawKeys(ui::DrawList &list, const ui::Theme &theme, const Clip *c, const bool (&playing)[128]) const;
+    void drawBody(ui::DrawList &list, const ui::Theme &theme, const Clip *c) const;
+    void drawOverlay(ui::DrawList &list, const ui::Theme &theme, const Clip *c) const;
+    void drawKeyboard(ui::DrawList &list, const ui::Theme &theme, const bool (&playing)[128]) const;
     void drawGrid(ui::DrawList &list, const ui::Theme &theme, const Clip &c) const;
     void drawNotes(ui::DrawList &list, const ui::Theme &theme, const Clip &c) const;
     void drawRuler(ui::DrawList &list, const ui::Theme &theme, const Clip &c) const;
     void drawLane(ui::DrawList &list, const ui::Theme &theme, const Clip &c) const;
     void drawOverview(ui::DrawList &list, const ui::Theme &theme, const Clip &c) const;
+    void drawOverviewPlayhead(ui::DrawList &list, const ui::Theme &theme, const Clip &c) const;
 
     ProjectStore &store_;
     PianoRollHooks hooks_;
+    ui::DrawCache keysCache_{"PianoRollKeys"}; // the corner and the keyboard, while what they show stays
+    ui::DrawCache cache_{"PianoRollView"};     // the body, while nothing it reads has changed
     Tool tool_ = Tool::Draw;
     int gridChoice_ = 0;
     bool triplet_ = false;

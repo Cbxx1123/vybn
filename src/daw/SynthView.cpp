@@ -10,6 +10,7 @@
 #include "SynthUserPresets.h"
 #include "Widgets.h"
 #include "audio/Synth.h"
+#include "ui/DrawCache.h"
 
 namespace daw {
 
@@ -170,22 +171,33 @@ public:
 
     void draw(DrawList &list, const Theme &theme) const override
     {
-        list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, 0.6f));
-        const Rect area = rect_.inset(8.0f);
-        const int columns = std::max(1, static_cast<int>(area.w / 2.0f));
-        std::vector<float> cycle(static_cast<size_t>(columns));
-        const int wave = static_cast<int>(std::lround(paramValue(access_, paramOf(osc_ + sp::kOscWave))));
-        const float shape = static_cast<float>(paramValue(access_, paramOf(osc_ + sp::kOscShape)) / 100.0);
-        sp::previewCycle(wave, shape, cycle.data(), columns);
-        // An oscillator at no level shows its wave faintly
-        const float opacity = paramValue(access_, paramOf(osc_ + sp::kOscLevel)) > 0.0 ? 1.0f : 0.3f;
-        list.add(theme.ink({area.x, area.y + area.h * 0.5f, area.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.3f));
-        drawCycle(list, theme, area, cycle, opacity);
+        // What it reads: the wave, its shape and its level
+        const double waveValue = paramValue(access_, paramOf(osc_ + sp::kOscWave));
+        const double shapeValue = paramValue(access_, paramOf(osc_ + sp::kOscShape));
+        const double levelValue = paramValue(access_, paramOf(osc_ + sp::kOscLevel));
+        Fingerprint fp;
+        fp.add(waveValue);
+        fp.add(shapeValue);
+        fp.add(levelValue);
+        cache_.draw(list, theme, rect_, fp.value(), [&] {
+            list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, 0.6f));
+            const Rect area = rect_.inset(8.0f);
+            const int columns = std::max(1, static_cast<int>(area.w / 2.0f));
+            std::vector<float> cycle(static_cast<size_t>(columns));
+            const int wave = static_cast<int>(std::lround(waveValue));
+            const float shape = static_cast<float>(shapeValue / 100.0);
+            sp::previewCycle(wave, shape, cycle.data(), columns);
+            // An oscillator at no level shows its wave faintly
+            const float opacity = levelValue > 0.0 ? 1.0f : 0.3f;
+            list.add(theme.ink({area.x, area.y + area.h * 0.5f, area.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.3f));
+            drawCycle(list, theme, area, cycle, opacity);
+        });
     }
 
 private:
     DeviceAccess access_;
     uint32_t osc_;
+    ui::DrawCache cache_{"WaveDisplay"};
 };
 
 // The sub oscillator's wave (sine or square, an octave or two under) and the noise's colour as a
@@ -198,29 +210,42 @@ public:
 
     void draw(DrawList &list, const Theme &theme) const override
     {
-        list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, 0.6f));
-        const Rect area = rect_.inset(8.0f);
-        const int columns = std::max(1, static_cast<int>(area.w / 2.0f));
-        std::vector<float> cycle(static_cast<size_t>(columns));
-        const bool square = paramValue(access_, paramOf(sp::kSubWave)) >= 0.5;
-        sp::previewCycle(square ? sp::kSquare : sp::kSine, 0.5f, cycle.data(), columns);
-        const bool subOn = paramValue(access_, paramOf(sp::kSubLevel)) > 0.0;
-        const float middle = area.y + area.h * 0.5f;
-        list.add(theme.ink({area.x, middle, area.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.3f));
-        drawCycle(list, theme, area, cycle, subOn ? 1.0f : 0.3f);
-        // The noise: a line from its left to its right, by colour and level
-        const double colour = paramValue(access_, paramOf(sp::kNoiseColour)) / 100.0;
-        const double level = paramValue(access_, paramOf(sp::kNoiseLevel)) / 100.0;
-        const float noiseOpacity = level > 0.0 ? 0.25f + 0.5f * static_cast<float>(level) : 0.12f;
-        auto noiseY = [&](double t) {
-            return area.y + area.h * static_cast<float>(0.3 + 0.4 * (colour * t + (1.0 - colour) * 0.5));
-        };
-        list.add(theme.inkLine({area.x + 1.0f, noiseY(0.0)}, {area.x + area.w - 1.0f, noiseY(1.0)}, 2.0f,
-                               TextTone::Secondary, noiseOpacity));
+        // What it reads: the sub's wave and level, the noise's colour and level
+        const double subWave = paramValue(access_, paramOf(sp::kSubWave));
+        const double subLevel = paramValue(access_, paramOf(sp::kSubLevel));
+        const double noiseColour = paramValue(access_, paramOf(sp::kNoiseColour));
+        const double noiseLevel = paramValue(access_, paramOf(sp::kNoiseLevel));
+        Fingerprint fp;
+        fp.add(subWave);
+        fp.add(subLevel);
+        fp.add(noiseColour);
+        fp.add(noiseLevel);
+        cache_.draw(list, theme, rect_, fp.value(), [&] {
+            list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, 0.6f));
+            const Rect area = rect_.inset(8.0f);
+            const int columns = std::max(1, static_cast<int>(area.w / 2.0f));
+            std::vector<float> cycle(static_cast<size_t>(columns));
+            const bool square = subWave >= 0.5;
+            sp::previewCycle(square ? sp::kSquare : sp::kSine, 0.5f, cycle.data(), columns);
+            const bool subOn = subLevel > 0.0;
+            const float middle = area.y + area.h * 0.5f;
+            list.add(theme.ink({area.x, middle, area.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.3f));
+            drawCycle(list, theme, area, cycle, subOn ? 1.0f : 0.3f);
+            // The noise: a line from its left to its right, by colour and level
+            const double colour = noiseColour / 100.0;
+            const double level = noiseLevel / 100.0;
+            const float noiseOpacity = level > 0.0 ? 0.25f + 0.5f * static_cast<float>(level) : 0.12f;
+            auto noiseY = [&](double t) {
+                return area.y + area.h * static_cast<float>(0.3 + 0.4 * (colour * t + (1.0 - colour) * 0.5));
+            };
+            list.add(theme.inkLine({area.x + 1.0f, noiseY(0.0)}, {area.x + area.w - 1.0f, noiseY(1.0)}, 2.0f,
+                                   TextTone::Secondary, noiseOpacity));
+        });
     }
 
 private:
     DeviceAccess access_;
+    ui::DrawCache cache_{"SubDisplay"};
 };
 
 // The filter's magnitude response over 20 Hz to 20 kHz, from the analogue prototype of the TPT
@@ -289,30 +314,41 @@ public:
 
     void draw(DrawList &list, const Theme &theme) const override
     {
-        list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, 0.6f));
-        const Rect area = rect_.inset(8.0f);
-        const int type = static_cast<int>(std::lround(paramValue(access_, paramOf(sp::kFilterType))));
-        const double cutoff = paramValue(access_, paramOf(sp::kCutoff));
-        const double res = paramValue(access_, paramOf(sp::kResonance)) / 100.0;
-        const float zero = dbY(area, 0.0);
-        list.add(theme.ink({area.x, zero, area.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.3f));
-        // The response, one dB value per column: a soft fill down to the bottom, and a bright line three pixels thick
-        std::vector<float> response(columnsIn(area.w));
-        for (size_t c = 0; c < response.size(); ++c) {
-            const double hz = kFreqMin * std::pow(kFreqMax / kFreqMin, 2.0 * static_cast<double>(c) / static_cast<double>(area.w));
-            response[c] = static_cast<float>(filterDb(type, hz, cutoff, res));
-        }
-        const Rect box{area.x, area.y, 0.0f, area.h};
-        list.add(curvePlot(theme, box, PlotMode::Fill, response, static_cast<float>(kDbMin), static_cast<float>(kDbMax),
-                           static_cast<float>(kDbMin), 0.06f));
-        Plot line = curvePlot(theme, box, PlotMode::Line, response, static_cast<float>(kDbMin), static_cast<float>(kDbMax),
-                              static_cast<float>(kDbMin), 0.95f);
-        line.width = 3.0f;
-        list.add(line);
-        // The cutoff's line, and its raised handle on the curve (the drag target)
-        const float cx = freqX(area, cutoff);
-        list.add(theme.accentLine({cx + 0.5f, area.y}, {cx + 0.5f, area.y + area.h}, 1.0f, 0.3f));
-        knob(list, theme, {cx, dbY(area, filterDb(type, cutoff, cutoff, res))}, 12.0f, dragging_);
+        // What it reads: the filter's type, cutoff and resonance, and whether its handle is dragged
+        const double typeValue = paramValue(access_, paramOf(sp::kFilterType));
+        const double cutoffValue = paramValue(access_, paramOf(sp::kCutoff));
+        const double resValue = paramValue(access_, paramOf(sp::kResonance));
+        Fingerprint fp;
+        fp.add(typeValue);
+        fp.add(cutoffValue);
+        fp.add(resValue);
+        fp.add(dragging_);
+        cache_.draw(list, theme, rect_, fp.value(), [&] {
+            list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, 0.6f));
+            const Rect area = rect_.inset(8.0f);
+            const int type = static_cast<int>(std::lround(typeValue));
+            const double cutoff = cutoffValue;
+            const double res = resValue / 100.0;
+            const float zero = dbY(area, 0.0);
+            list.add(theme.ink({area.x, zero, area.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.3f));
+            // The response, one dB value per column: a soft fill down to the bottom, and a bright line three pixels thick
+            std::vector<float> response(columnsIn(area.w));
+            for (size_t c = 0; c < response.size(); ++c) {
+                const double hz = kFreqMin * std::pow(kFreqMax / kFreqMin, 2.0 * static_cast<double>(c) / static_cast<double>(area.w));
+                response[c] = static_cast<float>(filterDb(type, hz, cutoff, res));
+            }
+            const Rect box{area.x, area.y, 0.0f, area.h};
+            list.add(curvePlot(theme, box, PlotMode::Fill, response, static_cast<float>(kDbMin), static_cast<float>(kDbMax),
+                               static_cast<float>(kDbMin), 0.06f));
+            Plot line = curvePlot(theme, box, PlotMode::Line, response, static_cast<float>(kDbMin), static_cast<float>(kDbMax),
+                                  static_cast<float>(kDbMin), 0.95f);
+            line.width = 3.0f;
+            list.add(line);
+            // The cutoff's line, and its raised handle on the curve (the drag target)
+            const float cx = freqX(area, cutoff);
+            list.add(theme.accentLine({cx + 0.5f, area.y}, {cx + 0.5f, area.y + area.h}, 1.0f, 0.3f));
+            knob(list, theme, {cx, dbY(area, filterDb(type, cutoff, cutoff, res))}, 12.0f, dragging_);
+        });
     }
 
 private:
@@ -328,6 +364,7 @@ private:
     DeviceAccess access_;
     bool dragging_ = false;
     double lastClick_ = -1e9;
+    ui::DrawCache cache_{"FilterCurve"};
 };
 
 // The envelope's shape: attack, decay to the sustain, a plateau, then the release. Three knobs
@@ -382,46 +419,56 @@ public:
 
     void draw(DrawList &list, const Theme &theme) const override
     {
-        list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, 0.6f));
-        const Rect area = rect_.inset(8.0f);
-        const float bottom = area.y + area.h;
+        // What it reads: the envelope's four values and the handle being dragged
         const Envelope e = readEnvelope(access_, base_);
-        const Marks m = marksOf(e);
-        std::vector<float> levels;
-        levels.reserve(static_cast<size_t>(area.w / 2.0f) + 1);
-        for (float x = area.x; x < area.x + area.w; x += 2.0f) {
-            const double level = levelAt(m, e.sustain, static_cast<double>((x - area.x) / area.w));
-            if (level < 0.0)
-                break;
-            levels.push_back(static_cast<float>(level));
-        }
-        // The soft fill from the curve down to the bottom (it ends where the envelope does), then the bright line
-        // through the same levels, one every 2 px from x = area.x + 1
-        list.add(curvePlot(theme, {area.x, area.y, 0.0f, area.h}, PlotMode::Fill, levels, 0.0f, 1.0f, 0.0f, 0.12f));
-        if (levels.size() >= 2)
-            list.add(curvePlot(theme, {area.x + 1.0f, area.y, 0.0f, area.h}, PlotMode::Line, levels, 0.0f, 1.0f, 0.0f, 0.9f));
-        const Vec2 handles[3] = {{area.x + static_cast<float>(m.attack) * area.w, area.y},
-                                 {area.x + static_cast<float>(m.decay) * area.w, bottom - static_cast<float>(e.sustain) * area.h},
-                                 {area.x + static_cast<float>(m.release) * area.w, bottom}};
-        for (int i = 0; i < 3; ++i)
-            knob(list, theme, handles[i], 10.0f, drag_ == i);
-        if (drag_ >= 0) {
-            std::string text;
-            if (drag_ == 0)
-                text = "A " + format("%.1f", e.attack) + " ms";
-            else if (drag_ == 1)
-                text = "D " + format("%.1f", e.decay) + " ms, S " + format("%.0f", e.sustain * 100.0) + "%";
-            else
-                text = "R " + format("%.1f", e.release) + " ms";
-            list.add(theme.text(text, {rect_.x + 8.0f, rect_.y + 2.0f, rect_.w - 16.0f, 16.0f}, TextStyle::Caption, TextTone::Accent,
-                                TextAlign::Start));
-        }
+        Fingerprint fp;
+        fp.add(e.attack);
+        fp.add(e.decay);
+        fp.add(e.release);
+        fp.add(e.sustain);
+        fp.add(drag_);
+        cache_.draw(list, theme, rect_, fp.value(), [&] {
+            list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, 0.6f));
+            const Rect area = rect_.inset(8.0f);
+            const float bottom = area.y + area.h;
+            const Marks m = marksOf(e);
+            std::vector<float> levels;
+            levels.reserve(static_cast<size_t>(area.w / 2.0f) + 1);
+            for (float x = area.x; x < area.x + area.w; x += 2.0f) {
+                const double level = levelAt(m, e.sustain, static_cast<double>((x - area.x) / area.w));
+                if (level < 0.0)
+                    break;
+                levels.push_back(static_cast<float>(level));
+            }
+            // The soft fill from the curve down to the bottom (it ends where the envelope does), then the bright line
+            // through the same levels, one every 2 px from x = area.x + 1
+            list.add(curvePlot(theme, {area.x, area.y, 0.0f, area.h}, PlotMode::Fill, levels, 0.0f, 1.0f, 0.0f, 0.12f));
+            if (levels.size() >= 2)
+                list.add(curvePlot(theme, {area.x + 1.0f, area.y, 0.0f, area.h}, PlotMode::Line, levels, 0.0f, 1.0f, 0.0f, 0.9f));
+            const Vec2 handles[3] = {{area.x + static_cast<float>(m.attack) * area.w, area.y},
+                                     {area.x + static_cast<float>(m.decay) * area.w, bottom - static_cast<float>(e.sustain) * area.h},
+                                     {area.x + static_cast<float>(m.release) * area.w, bottom}};
+            for (int i = 0; i < 3; ++i)
+                knob(list, theme, handles[i], 10.0f, drag_ == i);
+            if (drag_ >= 0) {
+                std::string text;
+                if (drag_ == 0)
+                    text = "A " + format("%.1f", e.attack) + " ms";
+                else if (drag_ == 1)
+                    text = "D " + format("%.1f", e.decay) + " ms, S " + format("%.0f", e.sustain * 100.0) + "%";
+                else
+                    text = "R " + format("%.1f", e.release) + " ms";
+                list.add(theme.text(text, {rect_.x + 8.0f, rect_.y + 2.0f, rect_.w - 16.0f, 16.0f}, TextStyle::Caption, TextTone::Accent,
+                                    TextAlign::Start));
+            }
+        });
     }
 
 private:
     DeviceAccess access_;
     uint32_t base_;
     int drag_ = -1;
+    ui::DrawCache cache_{"EnvelopeDisplay"};
 };
 
 // The LFO's wave over two cycles, dimmed when no modulation slot uses it. Random is a fixed
@@ -434,22 +481,33 @@ public:
 
     void draw(DrawList &list, const Theme &theme) const override
     {
-        list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, 0.6f));
-        const Rect area = rect_.inset(8.0f);
-        bool used = false;
+        // What it reads: each modulation slot's source (which decides whether this LFO is used) and the wave
+        double slots[6];
         for (uint32_t slot = 0; slot < 6; ++slot)
-            used = used || std::lround(paramValue(access_, paramOf(sp::kModSlotBase + 3 * slot))) == 1 + lfo_;
-        const float opacity = used ? 1.0f : 0.3f;
-        const int wave = static_cast<int>(std::lround(paramValue(access_, paramOf(sp::kLfoBase[lfo_] + sp::kLfoWave))));
-        const float middle = area.y + area.h * 0.5f;
-        list.add(theme.ink({area.x, middle, area.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.3f));
-        // Two cycles across the well, one value per column
-        std::vector<float> values(columnsIn(area.w));
-        for (size_t c = 0; c < values.size(); ++c) {
-            const double t = 2.0 * (2.0 * static_cast<double>(c)) / static_cast<double>(area.w);
-            values[c] = static_cast<float>(value(wave, t));
-        }
-        drawCycle(list, theme, area, values, opacity);
+            slots[slot] = paramValue(access_, paramOf(sp::kModSlotBase + 3 * slot));
+        const double waveValue = paramValue(access_, paramOf(sp::kLfoBase[lfo_] + sp::kLfoWave));
+        Fingerprint fp;
+        for (double s : slots)
+            fp.add(s);
+        fp.add(waveValue);
+        cache_.draw(list, theme, rect_, fp.value(), [&] {
+            list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, 0.6f));
+            const Rect area = rect_.inset(8.0f);
+            bool used = false;
+            for (double s : slots)
+                used = used || std::lround(s) == 1 + lfo_;
+            const float opacity = used ? 1.0f : 0.3f;
+            const int wave = static_cast<int>(std::lround(waveValue));
+            const float middle = area.y + area.h * 0.5f;
+            list.add(theme.ink({area.x, middle, area.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.3f));
+            // Two cycles across the well, one value per column
+            std::vector<float> values(columnsIn(area.w));
+            for (size_t c = 0; c < values.size(); ++c) {
+                const double t = 2.0 * (2.0 * static_cast<double>(c)) / static_cast<double>(area.w);
+                values[c] = static_cast<float>(value(wave, t));
+            }
+            drawCycle(list, theme, area, values, opacity);
+        });
     }
 
 private:
@@ -475,6 +533,7 @@ private:
 
     DeviceAccess access_;
     int lfo_;
+    ui::DrawCache cache_{"LfoDisplay"};
 };
 
 }

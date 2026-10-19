@@ -487,19 +487,60 @@ void StepSequencerView::handleInput(const Input &input)
         input.setCursor(engine::Cursor::Hand);
 }
 
+uint64_t StepSequencerView::contentKey() const
+{
+    Fingerprint fp;
+    // The clip's notes and length (every edit moves revision), and the clip shown (the selection)
+    fp.add(store_.revision());
+    fp.add(store_.selectionRevision());
+    fp.add(project().selectedTrack);
+    fp.add(project().selectedClip);
+    const Clip *c = clip();
+    fp.add(c != nullptr);
+    fp.add(c ? c->length : 0.0);
+    // The view: the grid's step and swing, the new steps' gate and velocity, and hearing
+    fp.add(view_.step);
+    fp.add(view_.swing);
+    fp.add(view_.gate);
+    fp.add(view_.velocity);
+    fp.add(view_.audition);
+    // The rows: kit rows removed by hand, rows added by hand, and the selected row (its lane)
+    fp.add(static_cast<uint64_t>(hidden_.size()));
+    for (int key : hidden_)
+        fp.add(key);
+    fp.add(static_cast<uint64_t>(added_.size()));
+    for (int key : added_)
+        fp.add(key);
+    fp.add(selectedRow_);
+    // Hover over the "Add row" line
+    fp.add(addHot_);
+    // Layout and scroll
+    fp.add(names_);
+    fp.add(header_);
+    fp.add(grid_);
+    fp.add(lane_);
+    fp.add(addRow_);
+    fp.add(stepWidth_);
+    fp.add(scrollX_);
+    fp.add(scrollY_);
+    return fp.value();
+}
+
 void StepSequencerView::draw(DrawList &list, const Theme &theme) const
 {
     const Clip *c = clip();
     if (!c) {
-        list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, 0.6f));
-        list.add(theme.text("Select an instrument clip to edit its steps", rect_, TextStyle::Body, TextTone::Muted,
-                            TextAlign::Center));
+        // Depends on the rect and the theme only (the cache adds those)
+        emptyCache_.draw(list, theme, rect_, 0, [&] {
+            list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, 0.6f));
+            list.add(theme.text("Select an instrument clip to edit its steps", rect_, TextStyle::Body, TextTone::Muted,
+                                TextAlign::Center));
+        });
         return;
     }
 
+    const uint64_t base = contentKey();
     const StepGrid g = grid();
-    const std::vector<int> keys = rows();
-    const int n = static_cast<int>(keys.size());
     const int perBeat = std::max(1, static_cast<int>(std::lround(1.0 / g.step)));
     int playingStep = -1;
     if (hooks_.playing && hooks_.playing() && hooks_.position) {
@@ -512,96 +553,118 @@ void StepSequencerView::draw(DrawList &list, const Theme &theme) const
     const int firstStep = std::max(0, static_cast<int>(std::floor(scrollX_ / stepWidth_)));
     const int lastStep = std::min(g.count, static_cast<int>(std::ceil((scrollX_ + grid_.w) / stepWidth_)));
     const int firstRow = std::max(0, static_cast<int>(std::floor(scrollY_ / kRowHeight)));
-    const int lastRow = std::min(n, static_cast<int>(std::ceil((scrollY_ + grid_.h) / kRowHeight)));
     auto colX = [this](int s) { return grid_.x + static_cast<float>(s) * stepWidth_ - scrollX_; };
     auto rowY = [this](int i) { return grid_.y + static_cast<float>(i) * kRowHeight - scrollY_; };
 
-    // Header: a step number at each beat, and the playing step's
-    list.pushClip(header_);
-    for (int s = firstStep; s < lastStep; ++s) {
-        const bool groupStart = s % perBeat == 0;
-        if (!groupStart && s != playingStep)
-            continue;
-        const TextTone tone = s == playingStep ? TextTone::Accent : TextTone::Muted;
-        list.add(theme.text(std::to_string(s + 1), Rect{colX(s) + 3.0f, header_.y, stepWidth_ * static_cast<float>(perBeat), header_.h},
-                            TextStyle::Caption, tone, TextAlign::Start));
-    }
-    list.popClip();
-
-    // The grid: an inset well, beats in alternate shades, the playing step's column lit
-    list.add(theme.surface(grid_, Shape::Soft, Elevation::Inset, 0.6f));
-    list.pushClip(grid_);
-    for (int b = firstStep / perBeat; b * perBeat < lastStep; ++b) {
-        if (b % 2 == 0)
-            continue;
-        const int start = b * perBeat;
-        const int end = std::min(g.count, start + perBeat);
-        list.add(theme.ink(Rect{colX(start), grid_.y, static_cast<float>(end - start) * stepWidth_, grid_.h}, Shape::Rounded,
-                           TextTone::Primary, true, 0.04f));
-    }
-    if (playingStep >= 0)
-        list.add(theme.accent(Rect{colX(playingStep), grid_.y, stepWidth_, grid_.h}, Shape::Rounded, 0.08f));
-
-    auto ring = [&list, &theme](const Rect &r) {
-        list.add(theme.accent(Rect{r.x, r.y, r.w, kRing}, Shape::Rounded, 0.7f));
-        list.add(theme.accent(Rect{r.x, r.y + r.h - kRing, r.w, kRing}, Shape::Rounded, 0.7f));
-        list.add(theme.accent(Rect{r.x, r.y, kRing, r.h}, Shape::Rounded, 0.7f));
-        list.add(theme.accent(Rect{r.x + r.w - kRing, r.y, kRing, r.h}, Shape::Rounded, 0.7f));
-    };
-    for (int i = firstRow; i < lastRow; ++i) {
-        const int key = keys[static_cast<size_t>(i)];
-        const float y = rowY(i);
-        const bool muted = daw::rowMuted(c->notes, key, g);
+    // Header: a step number at each beat, and the playing step's. Its key adds the playing step, so
+    // it repaints as the playhead moves from step to step (it is only text).
+    Fingerprint headerFp(base);
+    headerFp.add(playingStep);
+    headerCache_.draw(list, theme, rect_, headerFp.value(), [&] {
+        list.pushClip(header_);
         for (int s = firstStep; s < lastStep; ++s) {
-            const Rect cell{colX(s) + kCellGap, y + kCellInset, stepWidth_ - 2.0f * kCellGap, kRowHeight - 2.0f * kCellInset};
-            const int at = daw::findStep(c->notes, key, g, s);
-            if (at < 0) {
-                list.add(theme.surface(cell, Shape::Soft, Elevation::Inset, 0.35f));
-            } else if (muted) {
-                list.add(theme.surface(cell, Shape::Pill, Elevation::Inset, 0.4f));
-                ring(cell);
-            } else {
-                const float velocity = c->notes[static_cast<size_t>(at)].velocity;
-                list.add(theme.surface(cell, Shape::Pill, Elevation::Raised, 0.5f, Finish::Convex));
-                list.add(theme.accent(cell, Shape::Pill, 0.35f + 0.65f * velocity));
-            }
-        }
-    }
-    list.popClip();
-
-    // Row names: the selected one raised, the others secondary
-    list.pushClip(names_);
-    for (int i = firstRow; i < lastRow; ++i) {
-        const float y = rowY(i);
-        const Rect box{names_.x + 4.0f, y + 2.0f, kNameWidth - 8.0f, kRowHeight - 4.0f};
-        const bool selected = keys[static_cast<size_t>(i)] == selectedRow_;
-        if (selected)
-            list.add(theme.surface(box, Shape::Soft, Elevation::Raised, 0.45f));
-        list.add(theme.text(drumName(keys[static_cast<size_t>(i)]), Rect{box.x + 6.0f, box.y, box.w - 10.0f, box.h},
-                            TextStyle::Caption, selected ? TextTone::Primary : TextTone::Secondary, TextAlign::Start));
-    }
-    const float addY = rowY(n);
-    if (addY < names_.y + names_.h && addY + kRowHeight > names_.y)
-        list.add(theme.text("+ Add row", Rect{names_.x + 10.0f, addY, kNameWidth - 14.0f, kRowHeight}, TextStyle::Caption,
-                            addHot_ ? TextTone::Accent : TextTone::Muted, TextAlign::Start));
-    list.popClip();
-
-    // The velocity lane of the selected row: a bar per step that is on
-    if (selectedRow_ >= 0 && lane_.h > 0.0f) {
-        list.add(theme.surface(lane_, Shape::Soft, Elevation::Inset, 0.5f));
-        list.pushClip(lane_.inset(2.0f));
-        for (int s = firstStep; s < lastStep; ++s) {
-            const int at = daw::findStep(c->notes, selectedRow_, g, s);
-            if (at < 0)
+            const bool groupStart = s % perBeat == 0;
+            if (!groupStart && s != playingStep)
                 continue;
-            const float h = std::max(2.0f, c->notes[static_cast<size_t>(at)].velocity * (lane_.h - 8.0f));
-            list.add(theme.accent(Rect{colX(s) + kCellGap, lane_.y + lane_.h - 4.0f - h, stepWidth_ - 2.0f * kCellGap, h},
-                                  Shape::Soft, 0.85f));
+            const TextTone tone = s == playingStep ? TextTone::Accent : TextTone::Muted;
+            list.add(theme.text(std::to_string(s + 1),
+                                Rect{colX(s) + 3.0f, header_.y, stepWidth_ * static_cast<float>(perBeat), header_.h},
+                                TextStyle::Caption, tone, TextAlign::Start));
         }
         list.popClip();
-        list.add(theme.text("Velocity", Rect{names_.x + 10.0f, lane_.y, kNameWidth - 14.0f, lane_.h}, TextStyle::Caption,
-                            TextTone::Muted, TextAlign::Start));
+    });
+
+    // The grid's well and its beats in alternate shades (under the playing step's column)
+    gridCache_.draw(list, theme, rect_, base, [&] {
+        list.add(theme.surface(grid_, Shape::Soft, Elevation::Inset, 0.6f));
+        list.pushClip(grid_);
+        for (int b = firstStep / perBeat; b * perBeat < lastStep; ++b) {
+            if (b % 2 == 0)
+                continue;
+            const int start = b * perBeat;
+            const int end = std::min(g.count, start + perBeat);
+            list.add(theme.ink(Rect{colX(start), grid_.y, static_cast<float>(end - start) * stepWidth_, grid_.h},
+                               Shape::Rounded, TextTone::Primary, true, 0.04f));
+        }
+        list.popClip();
+    });
+
+    // The playing step's column, live: over the beats, under the cells
+    if (playingStep >= 0) {
+        list.pushClip(grid_);
+        list.add(theme.accent(Rect{colX(playingStep), grid_.y, stepWidth_, grid_.h}, Shape::Rounded, 0.08f));
+        list.popClip();
     }
+
+    // The cells, the row names and the velocity lane (nothing here reads the playing step)
+    cache_.draw(list, theme, rect_, base, [&] {
+        const std::vector<int> keys = rows();
+        const int n = static_cast<int>(keys.size());
+        const int lastRow = std::min(n, static_cast<int>(std::ceil((scrollY_ + grid_.h) / kRowHeight)));
+        auto ring = [&list, &theme](const Rect &r) {
+            list.add(theme.accent(Rect{r.x, r.y, r.w, kRing}, Shape::Rounded, 0.7f));
+            list.add(theme.accent(Rect{r.x, r.y + r.h - kRing, r.w, kRing}, Shape::Rounded, 0.7f));
+            list.add(theme.accent(Rect{r.x, r.y, kRing, r.h}, Shape::Rounded, 0.7f));
+            list.add(theme.accent(Rect{r.x + r.w - kRing, r.y, kRing, r.h}, Shape::Rounded, 0.7f));
+        };
+
+        list.pushClip(grid_);
+        for (int i = firstRow; i < lastRow; ++i) {
+            const int key = keys[static_cast<size_t>(i)];
+            const float y = rowY(i);
+            const bool muted = daw::rowMuted(c->notes, key, g);
+            for (int s = firstStep; s < lastStep; ++s) {
+                const Rect cell{colX(s) + kCellGap, y + kCellInset, stepWidth_ - 2.0f * kCellGap,
+                                kRowHeight - 2.0f * kCellInset};
+                const int at = daw::findStep(c->notes, key, g, s);
+                if (at < 0) {
+                    list.add(theme.surface(cell, Shape::Soft, Elevation::Inset, 0.35f));
+                } else if (muted) {
+                    list.add(theme.surface(cell, Shape::Pill, Elevation::Inset, 0.4f));
+                    ring(cell);
+                } else {
+                    const float velocity = c->notes[static_cast<size_t>(at)].velocity;
+                    list.add(theme.surface(cell, Shape::Pill, Elevation::Raised, 0.5f, Finish::Convex));
+                    list.add(theme.accent(cell, Shape::Pill, 0.35f + 0.65f * velocity));
+                }
+            }
+        }
+        list.popClip();
+
+        // Row names: the selected one raised, the others secondary
+        list.pushClip(names_);
+        for (int i = firstRow; i < lastRow; ++i) {
+            const float y = rowY(i);
+            const Rect box{names_.x + 4.0f, y + 2.0f, kNameWidth - 8.0f, kRowHeight - 4.0f};
+            const bool selected = keys[static_cast<size_t>(i)] == selectedRow_;
+            if (selected)
+                list.add(theme.surface(box, Shape::Soft, Elevation::Raised, 0.45f));
+            list.add(theme.text(drumName(keys[static_cast<size_t>(i)]), Rect{box.x + 6.0f, box.y, box.w - 10.0f, box.h},
+                                TextStyle::Caption, selected ? TextTone::Primary : TextTone::Secondary, TextAlign::Start));
+        }
+        const float addY = rowY(n);
+        if (addY < names_.y + names_.h && addY + kRowHeight > names_.y)
+            list.add(theme.text("+ Add row", Rect{names_.x + 10.0f, addY, kNameWidth - 14.0f, kRowHeight}, TextStyle::Caption,
+                                addHot_ ? TextTone::Accent : TextTone::Muted, TextAlign::Start));
+        list.popClip();
+
+        // The velocity lane of the selected row: a bar per step that is on
+        if (selectedRow_ >= 0 && lane_.h > 0.0f) {
+            list.add(theme.surface(lane_, Shape::Soft, Elevation::Inset, 0.5f));
+            list.pushClip(lane_.inset(2.0f));
+            for (int s = firstStep; s < lastStep; ++s) {
+                const int at = daw::findStep(c->notes, selectedRow_, g, s);
+                if (at < 0)
+                    continue;
+                const float h = std::max(2.0f, c->notes[static_cast<size_t>(at)].velocity * (lane_.h - 8.0f));
+                list.add(theme.accent(Rect{colX(s) + kCellGap, lane_.y + lane_.h - 4.0f - h, stepWidth_ - 2.0f * kCellGap, h},
+                                      Shape::Soft, 0.85f));
+            }
+            list.popClip();
+            list.add(theme.text("Velocity", Rect{names_.x + 10.0f, lane_.y, kNameWidth - 14.0f, lane_.h}, TextStyle::Caption,
+                                TextTone::Muted, TextAlign::Start));
+        }
+    });
 }
 
 }
