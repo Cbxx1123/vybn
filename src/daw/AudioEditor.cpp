@@ -268,7 +268,7 @@ void AudioEditorView::draw(DrawList &list, const Theme &theme) const
     }
     list.add(theme.ink({area_.x, mid, area_.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.3f));
 
-    // Fades: a curve of dots, and a handle at the top
+    // Fades: a curve (a Line plot) from silence to full, and a handle at the top
     auto fade = [&](double fromBeat, double beats, bool in) {
         const int steps = std::max(2, static_cast<int>(beats * pixelsPerBeat_ / 6.0));
         // The levels at evenly spaced x (the first at the fade's start, the last at its end)

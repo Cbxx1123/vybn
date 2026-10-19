@@ -131,7 +131,7 @@ private:
     // With VIBIN_FRAME_STATS set (any value but 0), adds the main window's frame to a running
     // total and once a second prints its averages to stderr, one line:
     // "FRAME 60.0/s presented 59.0/s | update 0.41 ms (layout 0.30) build 1.20 ms submit 0.35 ms |
-    //  surfaces 640 texts 95 glyphs 480 images 0 batches 0 | draws 1 binds 1 upload 88 KB"
+    //  surfaces 640 texts 95 glyphs 480 images 0 lines 0 plots 0 (0 values) batches 0 | draws 1 binds 1 upload 88 KB"
     // (counts are per frame, averaged over the frames that had them: submit's over presented frames)
     void reportStats(double now);
     // Decides how long the loop may sleep after this tick (see tick), and tells the WindowSystem

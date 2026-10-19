@@ -748,9 +748,10 @@ void DawApp::buildMetrics(Container &body)
             submitMs = s.submitMs;
             bytes = s.uploadBytes;
         }
-        const uint32_t prims = s.surfaces + s.glyphs + s.images;
+        const uint32_t prims = s.surfaces + s.glyphs + s.images + s.lines + s.plots;
         return "UI drawing:  " + format("%.0f prims", static_cast<double>(prims)) +
-               format(" (%.0f glyphs)", static_cast<double>(s.glyphs)) +
+               format(" (%.0f glyphs", static_cast<double>(s.glyphs)) +
+               format(", %.0f plots)", static_cast<double>(s.plots)) +
                format(",  %.0f", static_cast<double>(draws)) + (draws == 1 ? " draw" : " draws") +
                format(",  %.0f KB", static_cast<double>(bytes) / 1024.0) +
                format(";  build %.2f ms", s.buildMs) + format(", submit %.2f ms", submitMs);
