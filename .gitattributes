@@ -1,0 +1,6 @@
+# Every text file is stored and checked out with LF line endings, on every platform, so tools that
+# rewrite files (and bash, for tools/*.sh) never meet a mix; binaries are left alone
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.ttf binary
