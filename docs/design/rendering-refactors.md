@@ -5,9 +5,9 @@ agents in waves. Each refactor has its own plan:
 
 | # | Refactor | Direction chosen | Plan |
 |---|---|---|---|
-| 1 | GPU renderer | One shared pipeline: surfaces, text and images as one instance type, clipped per instance | `docs/refactor-1-unified-pipeline.md` |
-| 2 | Lines, curves and waveforms | Shader-drawn lines, polylines and plots | `docs/refactor-2-lines-and-plots.md` |
-| 3 | Frame pipeline | Cached drawing for heavy views, and one layout per frame | `docs/refactor-3-draw-cache.md` |
+| 1 | GPU renderer | One shared pipeline: surfaces, text and images as one instance type, clipped per instance | `docs/design/refactor-1-unified-pipeline.md` |
+| 2 | Lines, curves and waveforms | Shader-drawn lines, polylines and plots | `docs/design/refactor-2-lines-and-plots.md` |
+| 3 | Frame pipeline | Cached drawing for heavy views, and one layout per frame | `docs/design/refactor-3-draw-cache.md` |
 
 They run in this order: 2 adds new kinds to the shared primitive stream from 1, and 3 caches
 sections of the draw list in its final format.

@@ -1,6 +1,6 @@
 # Refactor 1: one shared pipeline
 
-Part of `docs/rendering-refactors.md`. Comes after the baseline wave (R0): golden images, off-screen
+Part of `docs/design/rendering-refactors.md`. Comes after the baseline wave (R0): golden images, off-screen
 rendering and frame statistics must exist first.
 
 ## Problem
@@ -135,7 +135,7 @@ draws per frame of `--demo transport` falling from hundreds to under 10.
 |---|---|---|
 | H images | `src/ui/UIRenderer.cpp`, `shaders/prim.frag` | the prim pipeline layout gets set 1 (an image); each image prim is one draw with its set bound; the live image textures as today; the old image pipeline removed |
 | I engine | `src/engine/Pipeline.h/.cpp`, `src/engine/Renderer.h/.cpp` (`bindDescriptorSet` only) | `PipelineOptions::descriptorSetLayouts` (a list: set 0, set 1, ...) replacing the single pointer; `Renderer::bindDescriptorSet(pipeline, set, index = 0)` |
-| J metrics | `src/daw/DawAudio.cpp` (`buildMetrics` only) | a "UI drawing" line in Settings > Metrics: prims, glyphs, draws and bytes a frame, build and submit ms |
+| J metrics | `src/daw/app/DawAudio.cpp` (`buildMetrics` only) | a "UI drawing" line in Settings > Metrics: prims, glyphs, draws and bytes a frame, build and submit ms |
 | K cleanup | `shaders/ui.vert`, `ui.frag`, `text.vert`, `text.frag`, `image.frag` (deleted) | after H and I land; the orchestrator removes them from `SHADER_SOURCES` |
 
 The contract for I (the two engine signatures) is written by the orchestrator first so H can build

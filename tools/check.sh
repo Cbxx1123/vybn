@@ -1,6 +1,6 @@
 #!/bin/sh
 # Syntax-checks C++ files with the build's flags, without touching build/ or output/ (safe to run
-# from several agents at once). Usage: sh tools/check.sh src/daw/StepSequence.cpp [more files...]
+# from several agents at once). Usage: sh tools/check.sh src/daw/model/StepSequence.cpp [more files...]
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 status=0
 for f in "$@"; do

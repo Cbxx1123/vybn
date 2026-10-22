@@ -22,7 +22,7 @@ tracks' sound instead of making their own, and the paths into them:
   parameter id `sendParam(to)` (`0x40000000 + id`), so they are content like the volume's.
 - `Project::masterVolume` (linear 0-2) is the master's (`editMasterVolume`, `masterRevision`), undo
   step "Master volume".
-- `daw/Routing.h`: `reaches` (whether one track's sound gets to another), the outputs and returns a
+- `daw/model/Routing.h`: `reaches` (whether one track's sound gets to another), the outputs and returns a
   track may choose (none that would loop), `forgetTrack` (a deleted track's sends and the outputs
   into it go: `Project::deleteTrack` calls it), and `planRouting`, the pure function the bridge uses.
 - File: `kind = "return" | "group"`, `output = <id>`, `sends = [{ to = <id>, level, pre_fader }]`,
@@ -97,14 +97,14 @@ sends costs what it did. The bench's sends are all live; a send turned down cost
 
 Limits, each a possible next step:
 
-- ~~No sidechain (a compressor keyed by another track)~~: Done, a key is a read of the source's delay line, not a feed: see "Sidechain" and "Plugin sidechain" in docs/routing-next-plan.md.
+- ~~No sidechain (a compressor keyed by another track)~~: Done, a key is a read of the source's delay line, not a feed: see "Sidechain" and "Plugin sidechain" in docs/design/routing-next-plan.md.
 - ~~A send goes to a return, an output to a group~~: a send may now go to a return or a group (an output
-  still only to a group): see "Flexible routing" in docs/routing-next-plan.md.
+  still only to a group): see "Flexible routing" in docs/design/routing-next-plan.md.
 - ~~One output per track; 16 sends per track are played~~: one output still, but any number of sends into
   groups and returns, up to 64 per track (refused past that, not dropped).
-- ~~Groups don't fold their tracks in the arrangement; the output shows in the mixer and the header.~~ Done: see "Group folding" in docs/routing-next-plan.md.
+- ~~Groups don't fold their tracks in the arrangement; the output shows in the mixer and the header.~~ Done: see "Group folding" in docs/design/routing-next-plan.md.
 - ~~The master volume can't be automated~~: it can now (`Project::masterAutomation`, the arrangement's
-  master row, the mixer's master fader; see `docs/routing-next-plan.md`), and the master's devices are
+  master row, the mixer's master fader; see `docs/design/routing-next-plan.md`), and the master's devices are
   written when the master's writing is armed.
 
 ## Tests

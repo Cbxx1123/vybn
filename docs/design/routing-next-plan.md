@@ -1,6 +1,6 @@
 # Routing, part 2: master automation, group folding, sidechain, flexible routing
 
-The four limits left by `docs/routing-plan.md`, each built in three waves by one developer:
+The four limits left by `docs/design/routing-plan.md`, each built in three waves by one developer:
 
 1. **Prototype**: the model, the file, undo and the engine path working end to end, with tests that
    prove the core behaviour. No polish, the least UI that shows it works.
@@ -14,14 +14,14 @@ The features run one after another, in this order, since they share files (no gi
 
 ## Rules for every wave (read before starting)
 
-- Read `CLAUDE.md` first, then `docs/routing-plan.md` (how routing works), then the files named below.
+- Read `CLAUDE.md` first, then `docs/design/routing-plan.md` (how routing works), then the files named below.
 - Build: `cmake --build build -j 8` (from `UI-Engine/`). Tests: `bash tools/test.sh` (every suite,
   about 15 s); one suite: `./output/vybn --project-selftest` etc. Syntax-check one file without
   building: `bash tools/check.sh FILE`. Never use `C:/MinGW` (32-bit).
 - Line endings: files are a mix of CRLF and LF. Edit with the Edit tool. Never `sed -i` a CRLF file
   (it strips the CRs). Check with `file PATH` if unsure.
 - Match the code around you: its comment density, naming and voice (plain sentences, no marketing).
-- `Track` changes trip the `static_assert(sizeof(Track) == ...)` in `src/daw/History.cpp`: add the new
+- `Track` changes trip the `static_assert(sizeof(Track) == ...)` in `src/daw/model/History.cpp`: add the new
   field to `shellOf`, `sameTrackFields`, `sameSavedTrack` and `ProjectStore::restore` (or say why it is
   not part of the history), then update the size. Project-level fields go in `rootOf`, `sameContent`,
   `sameSaved` and the restore plan. Device fields go in `DeviceSetting::operator==` and

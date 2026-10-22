@@ -82,7 +82,7 @@ struct Clip {
 };
 
 // Audio and instrument tracks make sound; return and group tracks (buses) take other tracks' instead:
-// a return what the tracks send it, a group what the tracks whose output it is play (docs/routing-plan.md)
+// a return what the tracks send it, a group what the tracks whose output it is play (docs/design/routing-plan.md)
 enum class TrackKind { Audio, Instrument, Return, Group };
 inline bool isBus(TrackKind kind) { return kind == TrackKind::Return || kind == TrackKind::Group; }
 

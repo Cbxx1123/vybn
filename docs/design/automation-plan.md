@@ -87,11 +87,11 @@ Built as above, with these limits, each a possible next step:
   glides a sample at a time). Splitting blocks where curves move would make built-in effects
   sample-accurate; plugins take one event per block.
 - Recording latches by default; Touch mode (the Transport menu) stops writing when the control is let
-  go and glides back to the lane over a quarter beat (see docs/routing-next-plan.md, section 6). It writes once a frame (about 60 points a second, before thinning), so a fast knob
+  go and glides back to the lane over a quarter beat (see docs/design/routing-next-plan.md, section 6). It writes once a frame (about 60 points a second, before thinning), so a fast knob
   move is as smooth as the frame rate. The arming is a view setting, not saved. The master has an
   arming of its own (a flag, its header's W toggle): with it, the master fader and the master's
   devices' knobs write into `Project::masterAutomation` and the master effects' lanes (added after
-  this plan; see `docs/routing-next-plan.md`).
+  this plan; see `docs/design/routing-next-plan.md`).
 - The master volume has a lane too (`Project::masterAutomation`, the volume only; the arrangement's
   master row shows it with the master effects' lanes).
 - A plugin's parameters are listed for automation once it has loaded; its lanes play from then.

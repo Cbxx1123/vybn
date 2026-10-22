@@ -10,9 +10,9 @@ notes. No audio-thread code changes.
 
 | File | What |
 |---|---|
-| `src/daw/StepSequence.h` | Plain logic on `std::vector<Note>`: the grid, steps on/off, velocities, rows as patterns, shift, swing, mute, Euclidean/every/random patterns, the GM kit and drum names |
-| `src/daw/StepSequencer.h` | `StepSequencerView`, the `ui::Component`: grid, row names, velocity lane, painting, scrolling, playhead; its `ViewSettings` (step size, swing, gate, velocity, hearing) as a `key=value` line |
-| `src/daw/StepMenus.h` | The row menu, add-row menu, step-size menu and the Euclidean dialog |
+| `src/daw/model/StepSequence.h` | Plain logic on `std::vector<Note>`: the grid, steps on/off, velocities, rows as patterns, shift, swing, mute, Euclidean/every/random patterns, the GM kit and drum names |
+| `src/daw/views/StepSequencer.h` | `StepSequencerView`, the `ui::Component`: grid, row names, velocity lane, painting, scrolling, playhead; its `ViewSettings` (step size, swing, gate, velocity, hearing) as a `key=value` line |
+| `src/daw/views/StepMenus.h` | The row menu, add-row menu, step-size menu and the Euclidean dialog |
 
 `CMakeLists.txt` already lists `StepSequence.cpp`, `StepSequencer.cpp`, `StepMenus.cpp` and
 `tests/StepSelfTest.cpp`. `tools/check.sh FILE...` syntax-checks files with the build's flags.
@@ -21,10 +21,10 @@ notes. No audio-thread code changes.
 
 | Wave | Agent | Owns (only these files) | Done when |
 |---|---|---|---|
-| 1 | A: logic | `src/daw/StepSequence.cpp` | every function in the header, `tools/check.sh` OK |
+| 1 | A: logic | `src/daw/model/StepSequence.cpp` | every function in the header, `tools/check.sh` OK |
 | 1 | B: tests | `tests/StepSelfTest.h/.cpp`, `tests/NoteSelfTest.cpp` (one call) | checks for every function, run from `--notes-selftest` |
-| 1 | C: view | `src/daw/StepSequencer.cpp` | the view as documented in its header, `tools/check.sh` OK |
-| 2 | D: menus | `src/daw/StepMenus.cpp` | the menus and dialog as documented, `tools/check.sh` OK |
+| 1 | C: view | `src/daw/views/StepSequencer.cpp` | the view as documented in its header, `tools/check.sh` OK |
+| 2 | D: menus | `src/daw/views/StepMenus.cpp` | the menus and dialog as documented, `tools/check.sh` OK |
 | 2 | E: app | `DawApp.h/.cpp`, `Settings.h/.cpp`, `Actions.cpp`, `src/main.cpp` | Editor page 2, Piano roll/Steps switch, toolbar, persistence, `view.steps` action, `--demo steps` |
 | 3 | F: docs | `CLAUDE.md` | the new files, the editor's page, the demo and the self-test documented |
 

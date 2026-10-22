@@ -8,7 +8,7 @@ namespace audio {
 class AudioProcessor;
 class TrackProcessor;
 
-// Where tracks' sound goes, as the audio thread plays it (docs/routing-plan.md). Without one, the
+// Where tracks' sound goes, as the audio thread plays it (docs/design/routing-plan.md). Without one, the
 // AudioSystem adds every track straight into the master.
 
 // The most sends one track can have (each takes a level slot in its TrackProcessor, 12 bytes: the

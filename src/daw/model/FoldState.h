@@ -9,7 +9,7 @@
 
 namespace daw {
 
-// Which group tracks are folded in the arrangement and the mixer (docs/routing-next-plan.md, group
+// Which group tracks are folded in the arrangement and the mixer (docs/design/routing-next-plan.md, group
 // folding). The state is the project's own: `Track::folded` on a group, saved with the project and,
 // like record arming, not an undo step (folding goes through `editMix`, so it marks the project
 // modified). This is the view of it the arrangement and the mixer share: `set` writes through the

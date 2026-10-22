@@ -50,7 +50,7 @@ whole use of the switch (`tests::full()`, `tests::bench()` in `Harness.h`).
 Two output switches: `VYBN_TEST_TIMES=1` (the slowest checks) and `VYBN_TEST_QUIET=1` (only FAIL, SKIP
 and INFO lines and the summary).
 
-**Suites and what each covers** (see CLAUDE.md for the long form):
+**Suites and what each covers** (the long form is in docs/reference/commands.md):
 
 | Suite | Covers | Fast tier |
 |---|---|---|

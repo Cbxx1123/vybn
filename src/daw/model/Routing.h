@@ -13,7 +13,7 @@ namespace daw {
 
 class ProjectStore;
 
-// Routing between tracks (docs/routing-plan.md): each track's output (the master, or a group track)
+// Routing between tracks (docs/design/routing-plan.md): each track's output (the master, or a group track)
 // and its sends (into return or group tracks). These are the project-side rules and the plan the audio side
 // is built from; audio/Routing.h is what the audio thread plays.
 

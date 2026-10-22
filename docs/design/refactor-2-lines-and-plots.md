@@ -1,6 +1,6 @@
 # Refactor 2: lines, curves and waveforms
 
-Part of `docs/rendering-refactors.md`. Builds on refactor 1: new kinds in the `Prim` stream, drawn by
+Part of `docs/design/rendering-refactors.md`. Builds on refactor 1: new kinds in the `Prim` stream, drawn by
 `prim.vert`/`prim.frag`.
 
 ## Problem
@@ -121,7 +121,7 @@ The structs and helpers above in `Theme.h`, `DrawList.h` and `Prim.h`, the engin
 | S lines | `src/ui/Prim.cpp`, `src/ui/DrawList.cpp`, `src/ui/Theme.cpp` | `linePrim`, `DrawList::add(Line)`, `addPolyline`, culling a line like other prims, the theme's line helpers |
 | T shader | `shaders/prim.vert`, `shaders/prim.frag` | the Line kind: a quad over its bounds, clamped to the clip; the capsule's distance; coverage as surfaces anti-alias |
 | U tests | `tests/RenderSelfTest.cpp` | a lines scene (widths 1, 1.5, 2, 3 and 6 at 0, 15, 45 and 90 degrees, opacity 0.3 and 1, clipped) and its golden; checks of `addPolyline`'s segment count and culling |
-| V synth | `src/daw/SynthView.cpp` | `EnvelopeDisplay` (its stages as a polyline) and the cutoff line as `Line`s; nothing else in this wave |
+| V synth | `src/daw/views/SynthView.cpp` | `EnvelopeDisplay` (its stages as a polyline) and the cutoff line as `Line`s; nothing else in this wave |
 
 **Done when:** tests pass; the new golden looks right to the orchestrator (crisp, even width at every
 angle); the envelope reads as one smooth line in `--demo synth`.
@@ -143,11 +143,11 @@ Wave b, the users (each agent one file):
 
 | Agent | Owns | Task |
 |---|---|---|
-| AA arrangement | `src/daw/Arrangement.cpp` | audio clips as one Range plot each (one column per 2 px, bar 0.75, as today); fades as polylines |
-| AB audio editor | `src/daw/AudioEditor.cpp` | the waveform as two Range plots (inside the clip and the dimmed rest); the fade curves as polylines |
-| AC synth | `src/daw/SynthView.cpp` | `drawCycle`, `FilterCurve`, `LfoDisplay`, `SubDisplay` as Fill plus Line plots |
-| AD piano roll | `src/daw/PianoRoll.cpp` | the controller lane as a Fill plot and a Line plot (stepped controllers sampled so steps stay vertical) |
-| AE exports | `src/daw/ExportsPanel.cpp` | the loudness graph as a Line plot over a Fill plot |
+| AA arrangement | `src/daw/views/Arrangement.cpp` | audio clips as one Range plot each (one column per 2 px, bar 0.75, as today); fades as polylines |
+| AB audio editor | `src/daw/views/AudioEditor.cpp` | the waveform as two Range plots (inside the clip and the dimmed rest); the fade curves as polylines |
+| AC synth | `src/daw/views/SynthView.cpp` | `drawCycle`, `FilterCurve`, `LfoDisplay`, `SubDisplay` as Fill plus Line plots |
+| AD piano roll | `src/daw/views/PianoRoll.cpp` | the controller lane as a Fill plot and a Line plot (stepped controllers sampled so steps stay vertical) |
+| AE exports | `src/daw/views/ExportsPanel.cpp` | the loudness graph as a Line plot over a Fill plot |
 
 **Done when:** no column-of-rects curve is left (the `for (float x ...; x += 2.0f)` loops above are
 gone); tests pass; the DAW goldens' changes are reviewed by the orchestrator and updated; `--demo
@@ -160,8 +160,8 @@ eight long audio clips before and after.
 
 | Agent | Owns | Task |
 |---|---|---|
-| AF waveform cache | `src/daw/Arrangement.cpp`, `src/daw/Arrangement.h` (private members) | each audio clip's column values kept between frames, keyed by the clip's id, its data, zoom, scroll and gain, so `AudioData::range` runs only when one changes |
-| AG audio editor cache | `src/daw/AudioEditor.cpp`, `src/daw/AudioEditor.h` (private members) | the same for the editor's waveform |
+| AF waveform cache | `src/daw/views/Arrangement.cpp`, `src/daw/views/Arrangement.h` (private members) | each audio clip's column values kept between frames, keyed by the clip's id, its data, zoom, scroll and gain, so `AudioData::range` runs only when one changes |
+| AG audio editor cache | `src/daw/views/AudioEditor.cpp`, `src/daw/views/AudioEditor.h` (private members) | the same for the editor's waveform |
 | AH joints | `src/ui/DrawList.cpp` | `addPolyline` with translucent colours: no double blending where segments meet (each segment after the first starts its capsule at the joint with a flat cap, or the polyline becomes one prim with its points in the plot data; the agent picks one, the orchestrator reviews) |
 | AI data buffer | `src/ui/UIRenderer.cpp` | the plot data written straight into the mapped buffer (no copy through a vector); only the frame's used range |
 

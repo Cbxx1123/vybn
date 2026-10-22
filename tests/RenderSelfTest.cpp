@@ -68,7 +68,7 @@
 #define STB_IMAGE_WRITE_STATIC
 #include <stb_image_write.h>
 
-// stb's PNG reader: declarations only, the implementation is compiled in src/daw/Archive.cpp
+// stb's PNG reader: declarations only, the implementation is compiled in src/daw/library/Archive.cpp
 #define STBI_NO_STDIO
 #include <stb_image.h>
 

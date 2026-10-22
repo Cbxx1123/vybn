@@ -1,7 +1,7 @@
 // The executable's icon: the app's mark in the default look (Carbon, dark), as Explorer, the taskbar
 // before the window has made its own, and Alt-Tab show it. The file is assets/icon/vybn.ico, made by
 //   output/vybn --write-icon assets/icon/vybn.ico
-// from the same drawing as the loading screen (src/daw/AppIcon.cpp); once running, the window's icon
+// from the same drawing as the loading screen (src/daw/app/AppIcon.cpp); once running, the window's icon
 // follows the user's theme (DawApp::refreshWindowIcon).
 //
 // CMake fills in the path (configure_file) and compiles this with windres.

@@ -1,6 +1,6 @@
 # Refactor 3: cached drawing for heavy views
 
-Part of `docs/rendering-refactors.md`. Builds on refactors 1 and 2: the draw list holds GPU-ready
+Part of `docs/design/rendering-refactors.md`. Builds on refactors 1 and 2: the draw list holds GPU-ready
 prims (text already laid out) and plot data, so a section of it can be kept and appended again.
 
 ## Problem
@@ -113,7 +113,7 @@ order of what is drawn must stay the same as today (goldens check it).
 | AL sections | `src/ui/DrawList.cpp` | the running hash, sections (nesting, plot offsets rebased, images flagged), `fingerprint` from the running hash |
 | AM cache | `src/ui/DrawCache.cpp` (any non-template parts), `src/ui/Theme.cpp` (`fingerprint`) | the cache, the verifier, the stats counters |
 | AN layout | `src/ui/Layout.cpp`, `src/ui/Navigation.cpp` (`setContent`/`takeContent`), `src/ui/Context.cpp` | `treeVersion` bumps; `update` lays out only when needed; `layoutsSkipped` counted |
-| AO arrangement | `src/daw/Arrangement.h/.cpp` | the split and key from the table |
+| AO arrangement | `src/daw/views/Arrangement.h/.cpp` | the split and key from the table |
 | AP tests | `tests/RenderSelfTest.cpp` | a section appended equals the painted one (prims, data, hash); a changed key repaints; a nested section; plot offsets after appending; a section with an image not reused; the verifier catching a key missing an input; the arrangement scene painted twice gives one hit and the same prims |
 
 **Done when:** all self-tests and goldens pass; `--demo transport` with `VYBN_VERIFY_CACHE=1` for 30
@@ -140,7 +140,7 @@ update, build and submit ms, prims, cache hits and misses, layouts skipped.
 |---|---|---|
 | AX culling | `src/ui/Layout.cpp` (`Container::draw`), `src/ui/DrawList.h/.cpp` (a `clip()` getter) | a child whose rect, grown by 32 px, misses the list's clip isn't drawn at all (long settings pages, the browser's rows, the shortcuts list) |
 | AY keys | the view files the numbers point at | keys that miss too often (hover changes that don't change the picture, glides) tightened, measured |
-| AZ stats | `src/ui/UISystem.cpp`, `src/daw/DawAudio.cpp` (`buildMetrics`) | cache hits, misses and layouts skipped in the `VYBN_FRAME_STATS` line and the Metrics page |
+| AZ stats | `src/ui/UISystem.cpp`, `src/daw/app/DawAudio.cpp` (`buildMetrics`) | cache hits, misses and layouts skipped in the `VYBN_FRAME_STATS` line and the Metrics page |
 
 Targets: build ms during playback down by at least 40% in `--demo transport` and `--demo pianoroll`;
 `update` lays out on under 10% of frames when the mouse is still; no verifier output.
