@@ -117,6 +117,8 @@ Settings Settings::load()
             settings.autosaveMinutes = std::clamp(std::atoi(value.c_str()), 1, 30);
         else if (key == "autosaveVersions" && !value.empty())
             settings.autosaveVersions = std::clamp(std::atoi(value.c_str()), 1, 50);
+        else if (key == "automationTouch")
+            settings.automationTouch = value != "0";
         else if (key == "pianoRoll")
             settings.pianoRollView = value;
         else if (key == "stepSequencer")
@@ -162,6 +164,7 @@ bool Settings::save(std::string &error) const
     file << "autosave=" << (autosave ? 1 : 0) << "\n";
     file << "autosaveMinutes=" << autosaveMinutes << "\n";
     file << "autosaveVersions=" << autosaveVersions << "\n";
+    file << "automationTouch=" << (automationTouch ? 1 : 0) << "\n";
     if (!pianoRollView.empty())
         file << "pianoRoll=" << pianoRollView << "\n";
     if (!stepSequencerView.empty())

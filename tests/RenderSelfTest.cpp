@@ -3,36 +3,57 @@
 // and synth. The heavy scenes (synth, waveforms, scroll, controls, arrangement, pianoroll, steps) are also timed
 // over 50 settled frames (INFO lines after the scenes).
 #include "RenderSelfTest.h"
+#include "Harness.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+#include <thread>
 
 #include "audio/AudioFile.h"
+#include "audio/AudioSystem.h"
+#include "audio/Effects.h"
 #include "audio/Synth.h"
+#include "audio/DeviceChain.h"
+#include "audio/PluginEffect.h"
+#include "plugin/Manager.h"
+#include "plugin/Slot.h"
 #include "daw/Appearance.h"
 #include "daw/Arrangement.h"
+#include "daw/DeviceCatalogue.h"
 #include "daw/DeviceControls.h"
+#include "daw/DeviceView.h"
+#include "daw/DevicesPanel.h"
+#include "daw/FoldState.h"
+#include "daw/History.h"
+#include "daw/Library.h"
+#include "daw/Mixer.h"
 #include "daw/PianoRoll.h"
 #include "daw/Project.h"
 #include "daw/ProjectStore.h"
+#include "daw/Routing.h"
+#include "daw/Settings.h"
 #include "daw/StepSequencer.h"
 #include "daw/SynthView.h"
 #include "engine/Renderer.h"
 #include "engine/Window.h"
+#include "env/Environment.h"
+#include "env/Scheduler.h"
 #include "ui/Context.h"
 #include "ui/DrawCache.h"
 #include "ui/DrawList.h"
@@ -802,6 +823,1336 @@ Picture sceneArrangement()
     return renderArrangement(0, nullptr);
 }
 
+// Editing automation in the arrangement, by input handed to the view (laid out by a real context, so
+// its geometry is the app's): a click adds a point (snapped to the beat), a drag moves it, a
+// double-click and a right-click remove points, a lane's x removes it, and the add strip opens the
+// menu. Positions come from the view's layout: the header column (268) and a gap (10) before the
+// lanes, the ruler (30) above, a track's row (76) and then its lanes (56 each), 22 pixels a beat.
+void automationEditChecks(Checker &c)
+{
+    engine::Window window(1200, 520, "Vibin automation test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::Project project = daw::demoProject();
+    project.tracks[0].automation.push_back({audio::kVolumeParam, {}});
+    daw::ProjectStore store(project);
+    int menuTrack = -1;
+    daw::TransportHooks hooks = quietTransport();
+    hooks.automationMenu = [&menuTrack](int track, ui::Vec2) { menuTrack = track; };
+    ui::Context context(window, renderer, theme);
+    auto &view = context.root().add<daw::ArrangementView>(store, hooks);
+    stretch(view);
+    view.showAutomation(0, true);
+    for (int i = 0; i < 4; ++i) {
+        context.update();
+        context.buildFrame();
+    }
+
+    const ui::Rect r = view.rect();
+    const float wellX = r.x + 278.0f, laneTop = r.y + 30.0f + 76.0f;
+    auto beatX = [wellX](double beat) { return wellX + static_cast<float>(beat) * 22.0f; };
+    auto laneY = [laneTop](float position) { return laneTop + 7.0f + (1.0f - position) * (56.0f - 14.0f); };
+    double now = 10.0;
+    auto send = [&](ui::Vec2 at, bool down, bool pressed, bool secondary = false) {
+        ui::Input in;
+        in.mouse = at;
+        in.down = down;
+        in.pressed = pressed;
+        in.secondaryPressed = secondary;
+        in.time = now;
+        view.handleInput(in);
+        view.arrange(view.rect(), theme);
+        now += 0.5; // presses half a second apart aren't double-clicks
+    };
+    auto points = [&store]() -> std::vector<audio::AutomationPoint> {
+        const audio::AutomationLane *lane = audio::findAutomation(store.project().tracks[0].automation, audio::kVolumeParam);
+        return lane ? lane->points : std::vector<audio::AutomationPoint>{};
+    };
+
+    // A click at beat 4.3, halfway up: a point at beat 4 (snapped), halfway
+    send({beatX(4.3), laneY(0.5f)}, true, true);
+    send({beatX(4.3), laneY(0.5f)}, false, false);
+    std::vector<audio::AutomationPoint> p = points();
+    c.check(p.size() == 1 && p[0].beat == 4.0 && std::fabs(p[0].value - 0.5f) < 0.03f, "Automation lane: a click adds a point, snapped to the beat",
+            p.empty() ? "no point" : std::to_string(p[0].beat) + " @ " + std::to_string(p[0].value));
+
+    // Dragging it to beat 8, near the top; Shift lets it off the grid
+    send({beatX(4.0), laneY(0.5f)}, true, true);
+    send({beatX(8.2), laneY(0.9f)}, true, false);
+    send({beatX(8.2), laneY(0.9f)}, false, false);
+    p = points();
+    c.check(p.size() == 1 && p[0].beat == 8.0 && std::fabs(p[0].value - 0.9f) < 0.03f, "Automation lane: dragging a point moves it",
+            p.empty() ? "no point" : std::to_string(p[0].beat) + " @ " + std::to_string(p[0].value));
+
+    // A second point at beat 12; then the first can't be dragged past it
+    send({beatX(12.0), laneY(0.2f)}, true, true);
+    send({beatX(12.0), laneY(0.2f)}, false, false);
+    send({beatX(8.0), laneY(0.9f)}, true, true);
+    send({beatX(20.0), laneY(0.9f)}, true, false);
+    send({beatX(20.0), laneY(0.9f)}, false, false);
+    p = points();
+    c.check(p.size() == 2 && p[0].beat == 12.0 && p[1].beat == 12.0, "Automation lane: a point stops at its neighbour",
+            std::to_string(p.size()) + " points");
+
+    // A double-click on a point (the low one) removes it; a right-click removes the other
+    const double first = now;
+    send({beatX(12.0), laneY(0.2f)}, true, true);
+    send({beatX(12.0), laneY(0.2f)}, false, false);
+    now = first + 0.2;
+    send({beatX(12.0), laneY(0.2f)}, true, true);
+    send({beatX(12.0), laneY(0.2f)}, false, false);
+    const size_t afterDouble = points().size();
+    send({beatX(12.0), laneY(0.9f)}, false, false, true);
+    c.check(afterDouble == 1 && points().empty(), "Automation lane: a double-click or a right-click removes a point",
+            std::to_string(afterDouble) + " after the double-click, " + std::to_string(points().size()) + " after the right-click");
+
+    // The add strip under the lanes opens the menu; the lane's x removes it
+    send({r.x + 60.0f, laneTop + 56.0f + 15.0f}, true, true);
+    send({r.x + 60.0f, laneTop + 56.0f + 15.0f}, false, false);
+    c.check(menuTrack == 0, "Automation lane: the add strip opens the menu of what the track can automate");
+    send({r.x + 248.0f, laneTop + 28.0f}, true, true);
+    send({r.x + 248.0f, laneTop + 28.0f}, false, false);
+    c.check(store.project().tracks[0].automation.empty(), "Automation lane: its x removes the lane");
+}
+
+// The master's row, by input handed to the view as above: two tracks, then the master's header (name and
+// A toggle, 56 pixels) and, shown, its volume lane. A click in the lane adds a point to the project's
+// master lane; the add strip opens the master's menu (not a track's); the lane's x removes it; and the
+// row is never a track: trackAt reports it as the space below the tracks, and pressing and dragging its
+// header, or pressing in its lane area, selects, moves and adds nothing.
+void masterEditChecks(Checker &c)
+{
+    engine::Window window(1200, 520, "Vibin master automation test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::Project project = daw::demoProject();
+    project.tracks.resize(2);
+    project.masterAutomation.push_back({audio::kVolumeParam, {}});
+    daw::ProjectStore store(project);
+    bool masterMenu = false, trackMenu = false;
+    daw::TransportHooks hooks = quietTransport();
+    hooks.masterAutomationMenu = [&masterMenu](ui::Vec2) { masterMenu = true; };
+    hooks.automationMenu = [&trackMenu](int, ui::Vec2) { trackMenu = true; };
+    ui::Context context(window, renderer, theme);
+    auto &view = context.root().add<daw::ArrangementView>(store, hooks);
+    stretch(view);
+    view.showMasterAutomation(true);
+    for (int i = 0; i < 4; ++i) {
+        context.update();
+        context.buildFrame();
+    }
+    const ui::Rect r = view.rect();
+    const float wellX = r.x + 278.0f, masterTop = r.y + 30.0f + 2 * 76.0f, laneTop = masterTop + 56.0f;
+    auto beatX = [wellX](double beat) { return wellX + static_cast<float>(beat) * 22.0f; };
+    auto laneY = [laneTop](float position) { return laneTop + 7.0f + (1.0f - position) * (56.0f - 14.0f); };
+    double now = 10.0;
+    auto send = [&](ui::Vec2 at, bool down, bool pressed, bool secondary = false) {
+        ui::Input in;
+        in.mouse = at;
+        in.down = down;
+        in.pressed = pressed;
+        in.secondaryPressed = secondary;
+        in.time = now;
+        view.handleInput(in);
+        view.arrange(view.rect(), theme);
+        now += 0.5;
+    };
+    auto points = [&store]() -> std::vector<audio::AutomationPoint> {
+        const audio::AutomationLane *lane = audio::findAutomation(store.project().masterAutomation, audio::kVolumeParam);
+        return lane ? lane->points : std::vector<audio::AutomationPoint>{};
+    };
+
+    send({beatX(4.3), laneY(0.5f)}, true, true);
+    send({beatX(4.3), laneY(0.5f)}, false, false);
+    std::vector<audio::AutomationPoint> p = points();
+    c.check(p.size() == 1 && p[0].beat == 4.0 && std::fabs(p[0].value - 0.5f) < 0.03f,
+            "Master row: a click in the master's volume lane adds a point to the project's master lane",
+            p.empty() ? "no point" : std::to_string(p[0].beat) + " @ " + std::to_string(p[0].value));
+    send({beatX(4.0), laneY(0.5f)}, true, true);
+    send({beatX(8.2), laneY(0.9f)}, true, false);
+    send({beatX(8.2), laneY(0.9f)}, false, false);
+    p = points();
+    c.check(p.size() == 1 && p[0].beat == 8.0 && std::fabs(p[0].value - 0.9f) < 0.03f, "Master row: dragging a point moves it",
+            p.empty() ? "no point" : std::to_string(p[0].beat) + " @ " + std::to_string(p[0].value));
+    send({beatX(8.0), laneY(0.9f)}, false, false, true);
+    c.check(points().empty(), "Master row: a right-click removes a point");
+
+    // The master's row is not a track
+    const ui::Vec2 inHeader{r.x + 60.0f, masterTop + 28.0f};
+    const ui::Vec2 inLane{beatX(30.0), masterTop + 28.0f};
+    const int below = view.trackAt(inHeader), laneBelow = view.trackAt(inLane);
+    const std::vector<daw::ObjectId> order{store.project().tracks[0].id, store.project().tracks[1].id};
+    const int selected = store.project().selectedTrack;
+    const size_t clips0 = store.project().tracks[0].clips.size(), clips1 = store.project().tracks[1].clips.size();
+    send(inHeader, true, true);
+    send({inHeader.x, r.y + 60.0f}, true, false); // dragged up over the tracks
+    send({inHeader.x, r.y + 60.0f}, false, false);
+    send(inLane, true, true);
+    send(inLane, false, false);
+    send(inLane, true, true); // a double-click there adds no clip either
+    send(inLane, false, false);
+    send(inLane, false, false, true);
+    c.check(below == 2 && laneBelow == 2 && store.project().tracks.size() == 2 && store.project().tracks[0].id == order[0] &&
+                store.project().tracks[1].id == order[1] && store.project().selectedTrack == selected &&
+                store.project().tracks[0].clips.size() == clips0 && store.project().tracks[1].clips.size() == clips1,
+            "Master row: it is not a track (trackAt says the space below, nothing selected, moved or added)",
+            std::to_string(below) + ", " + std::to_string(laneBelow));
+
+    // The add strip opens the master's menu; the lane's x removes the lane
+    send({r.x + 60.0f, laneTop + 56.0f + 15.0f}, true, true);
+    send({r.x + 60.0f, laneTop + 56.0f + 15.0f}, false, false);
+    c.check(masterMenu && !trackMenu, "Master row: the add strip opens the master's menu, not a track's");
+    send({r.x + 248.0f, laneTop + 28.0f}, true, true);
+    send({r.x + 248.0f, laneTop + 28.0f}, false, false);
+    c.check(store.project().masterAutomation.empty(), "Master row: its x removes the master's lane");
+}
+
+// Folding a group in the arrangement, by the view's layout and lookups: tracks 0 and 4 outside, a group
+// at 1 holding the tracks at 2 and 3. Folding takes the two rows (76 pixels each) out of the layout,
+// so the row below moves up by 152 and trackAt finds the tracks that are left; unfolding puts them
+// back. Only a group folds, and a hidden track's open lanes take no room either.
+void foldChecks(Checker &c)
+{
+    engine::Window window(1200, 900, "Vibin fold test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::Project project = daw::demoProject();
+    project.tracks.resize(5);
+    project.addTrack(daw::TrackKind::Group);
+    std::rotate(project.tracks.begin() + 1, project.tracks.begin() + 5, project.tracks.begin() + 6);
+    daw::ObjectId nextId = 1;
+    project.normalizeIds(nextId);
+    const daw::ObjectId group = project.tracks[1].id;
+    project.tracks[2].output = group;
+    project.tracks[3].output = group;
+    daw::ProjectStore store(project);
+    ui::Context context(window, renderer, theme);
+    auto &view = context.root().add<daw::ArrangementView>(store, quietTransport());
+    stretch(view);
+    auto settle = [&] {
+        for (int i = 0; i < 3; ++i) {
+            context.update();
+            context.buildFrame();
+        }
+    };
+    settle();
+    const ui::Rect r = view.rect();
+    // A point in the header column in the middle of the unfolded layout's `rows`th row
+    auto at = [&r](float rows) { return ui::Vec2{r.x + 60.0f, r.y + 30.0f + 76.0f * rows + 30.0f}; };
+
+    const int before = view.trackAt(at(4.0f)), middle = view.trackAt(at(2.0f));
+    c.check(before == 4 && middle == 2 && !view.folded(1) && !view.hidden(2), "Fold: unfolded, every row is found (trackAt)",
+            std::to_string(before) + ", " + std::to_string(middle));
+
+    view.fold(0, true); // not a group
+    view.fold(2, true);
+    c.check(!view.folded(0) && !view.folded(2) && !view.folded(99), "Fold: only a group folds");
+
+    view.fold(1, true);
+    settle();
+    const int moved = view.trackAt(at(2.0f)), group1 = view.trackAt(at(1.0f));
+    c.check(view.folded(1) && view.hidden(2) && view.hidden(3) && !view.hidden(1) && !view.hidden(4),
+            "Fold: folding a group hides the tracks that go into it");
+    c.check(moved == 4 && group1 == 1, "Fold: the row below moves up by the hidden rows' heights, and the group stays",
+            std::to_string(moved) + ", " + std::to_string(group1));
+    bool found = false;
+    for (float y = 0.0f; y < 76.0f * 6.0f; y += 7.0f) {
+        const int t = view.trackAt({r.x + 60.0f, r.y + 30.0f + y});
+        found = found || t == 2 || t == 3;
+    }
+    c.check(!found, "Fold: no point on the timeline finds a hidden track");
+
+    // A press where the hidden header was reaches what is there now, never the hidden track
+    {
+        ui::Input in;
+        in.mouse = at(2.0f);
+        in.pressed = in.down = true;
+        in.time = 5.0;
+        view.handleInput(in);
+        c.check(store.project().selectedTrack != 2 && store.project().selectedTrack != 3,
+                "Fold: a press in the header column never selects a hidden track", std::to_string(store.project().selectedTrack));
+    }
+
+    view.fold(1, false);
+    settle();
+    c.check(!view.folded(1) && !view.hidden(2) && view.trackAt(at(2.0f)) == 2 && view.trackAt(at(4.0f)) == 4,
+            "Fold: unfolding brings the rows back where they were");
+
+    view.showAutomation(2, true);
+    view.fold(1, true);
+    settle();
+    c.check(view.trackAt(at(2.0f)) == 4, "Fold: a hidden track's open lanes take no room either",
+            std::to_string(view.trackAt(at(2.0f))));
+}
+
+// A project with a group nested in a group: A, Outer (holding Inner and C), Inner (holding B), B, C, D
+daw::Project nestedGroupsProject()
+{
+    daw::Project p = daw::demoProject();
+    p.tracks.resize(4);
+    p.addTrack(daw::TrackKind::Group);
+    p.addTrack(daw::TrackKind::Group);
+    p.tracks[4].name = "Outer";
+    p.tracks[5].name = "Inner";
+    std::vector<daw::Track> order;
+    for (size_t i : {0u, 4u, 5u, 1u, 2u, 3u})
+        order.push_back(p.tracks[i]);
+    p.tracks = order;
+    daw::ObjectId next = 1;
+    p.normalizeIds(next);
+    const daw::ObjectId outer = p.tracks[1].id, inner = p.tracks[2].id;
+    p.tracks[2].output = outer; // Inner into Outer
+    p.tracks[3].output = inner; // B into Inner
+    p.tracks[4].output = outer; // C into Outer
+    return p;
+}
+
+// The rest of the folding: the shared state's version, the chevron, indentation, the selection
+// unfolding, the folded counts, and the mixer following the same state
+void foldUiChecks(Checker &c)
+{
+    {
+        daw::ProjectStore base(nestedGroupsProject());
+        daw::FoldState state(base);
+        const daw::ObjectId outer = base.project().tracks[1].id, inner = base.project().tracks[2].id,
+                            plain = base.project().tracks[0].id;
+        const uint64_t v0 = state.version();
+        const bool a = state.set(outer, true);
+        const uint64_t v1 = state.version();
+        const bool b = state.set(outer, true); // no change
+        const uint64_t v2 = state.version();
+        state.set(outer, false);
+        state.set(outer, false); // no change
+        const uint64_t v3 = state.version();
+        const bool notGroup = state.set(plain, true); // only a group folds
+        state.set(inner, true);
+        state.set(outer, true);
+        const uint64_t v4 = state.version();
+        // Another way to fold (a project replaced by one with a different set folded) moves it too
+        daw::Project other = nestedGroupsProject();
+        other.tracks[2].folded = true;
+        base.replace(other);
+        const uint64_t v5 = state.version();
+        state.clear();
+        const uint64_t v6 = state.version();
+        state.clear(); // none left
+        c.check(a && !b && !notGroup && v1 > v0 && v2 == v1 && v3 > v2 && v4 > v3 && v5 > v4 && v6 > v5 &&
+                    state.version() == v6 && state.groups().empty(),
+                "Fold state: its version moves on every change of the folded set and only then");
+    }
+
+    engine::Window window(1200, 900, "Vibin fold ui test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::ProjectStore store(nestedGroupsProject());
+    daw::FoldState folds(store);
+    ui::Context context(window, renderer, theme);
+    auto &view = context.root().add<daw::ArrangementView>(store, quietTransport(), &folds);
+    stretch(view);
+    auto settle = [&] {
+        for (int i = 0; i < 3; ++i) {
+            context.update();
+            context.buildFrame();
+        }
+    };
+    settle();
+
+    // Nested tracks hang to the right of the ones above them
+    const daw::TrackHeader *top = view.header(0), *outer = view.header(1), *inner = view.header(2), *deep = view.header(3);
+    c.check(top && outer && inner && deep && view.depth(3) == 2 && view.depth(4) == 1 && view.depth(5) == 0 &&
+                outer->rect().x == top->rect().x && inner->rect().x > outer->rect().x && deep->rect().x > inner->rect().x &&
+                view.header(4)->rect().x > top->rect().x && view.header(4)->rect().x < deep->rect().x,
+            "Fold: a nested track's header is indented by its depth",
+            top && deep ? std::to_string(top->rect().x) + " .. " + std::to_string(deep->rect().x) : "no header");
+
+    // The chevron: a click folds the group, another unfolds it
+    auto click = [&](ui::Vec2 at) {
+        ui::Input in;
+        in.mouse = at;
+        in.down = in.pressed = true;
+        in.time = 3.0;
+        view.handleInput(in);
+        ui::Input up;
+        up.mouse = at;
+        up.released = true;
+        up.time = 3.1;
+        view.handleInput(up);
+        settle();
+    };
+    const ui::Rect chev = view.header(1)->chevronRect();
+    const bool hasChevron = chev.w > 0.0f && view.header(0)->chevronRect().w == 0.0f;
+    click({chev.x + chev.w * 0.5f, chev.y + chev.h * 0.5f});
+    c.check(hasChevron && view.folded(1) && view.hidden(2) && view.hidden(3) && view.hidden(4) && !view.hidden(5) && folds.folded(store.project().tracks[1].id),
+            "Fold: clicking a group's chevron folds it (a track has none), through the shared state");
+    c.check(view.foldedCount(1) == 3 && view.foldedCount(2) == 0 && view.foldedCount(0) == 0,
+            "Fold: a folded group counts the tracks inside it, nested ones included", std::to_string(view.foldedCount(1)));
+    const ui::Rect again = view.header(1)->chevronRect();
+    click({again.x + again.w * 0.5f, again.y + again.h * 0.5f});
+    c.check(!view.folded(1) && !view.hidden(3), "Fold: clicking it again unfolds");
+
+    // Selecting a hidden track unfolds the groups hiding it, once per selection change
+    view.fold(2, true);
+    view.fold(1, true);
+    settle();
+    const bool hiddenBefore = view.hidden(3);
+    store.select(3);
+    settle();
+    c.check(hiddenBefore && !view.hidden(3) && !view.folded(1) && !view.folded(2),
+            "Fold: selecting a hidden track unfolds the groups that hid it");
+    view.fold(1, true);
+    settle();
+    c.check(view.folded(1) && view.hidden(3), "Fold: the selection unfolds once, not every frame");
+    store.select(5);
+    settle();
+    c.check(view.folded(1), "Fold: selecting a track that isn't hidden leaves groups folded");
+    view.unfoldAll();
+    view.foldAll();
+    c.check(view.folded(1) && view.folded(2) && !view.folded(0), "Fold: Fold all folds every group");
+    view.unfoldAll();
+    c.check(!view.folded(1) && !view.folded(2) && folds.groups().empty(), "Fold: Unfold all unfolds them");
+}
+
+// Folding as part of the project, and dragging headers while groups are folded: a project opened with a
+// folded group hides its tracks (the arrangement's rows and the mixer's strips), dragging a folded group's
+// header moves the group with the tracks hidden in it, and a track dragged to a spot among hidden tracks
+// lands before the group or after them
+void foldDragChecks(Checker &c)
+{
+    engine::Window window(1200, 900, "Vibin fold drag test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+
+    // Opened folded: the layout starts with the group's tracks hidden
+    {
+        daw::Project project = nestedGroupsProject();
+        project.tracks[2].folded = true; // Inner: hides B
+        daw::ProjectStore store(project);
+        ui::Context context(window, renderer, theme);
+        auto &view = context.root().add<daw::ArrangementView>(store, quietTransport());
+        stretch(view);
+        for (int i = 0; i < 3; ++i) {
+            context.update();
+            context.buildFrame();
+        }
+        const ui::Rect r = view.rect();
+        // Rows: A, Outer, Inner (folded), C, D (B has no height)
+        const int at3 = view.trackAt({r.x + 60.0f, r.y + 30.0f + 76.0f * 3 + 30.0f});
+        c.check(view.folded(2) && !view.folded(1) && view.hidden(3) && view.header(3) == nullptr && at3 == 4,
+                "Fold: a project opened with a folded group has its tracks hidden", std::to_string(at3));
+    }
+
+    // Dragging a folded group's header moves it with its hidden tracks
+    {
+        daw::Project project = nestedGroupsProject();
+        project.tracks[1].folded = true; // Outer: hides Inner, B and C
+        daw::ProjectStore store(project);
+        std::vector<daw::ObjectId> ids;
+        for (const daw::Track &t : store.project().tracks)
+            ids.push_back(t.id);
+        ui::Context context(window, renderer, theme);
+        auto &view = context.root().add<daw::ArrangementView>(store, quietTransport());
+        stretch(view);
+        auto settle = [&] {
+            for (int i = 0; i < 3; ++i) {
+                context.update();
+                context.buildFrame();
+            }
+        };
+        settle();
+        const ui::Rect r = view.rect();
+        double now = 20.0;
+        auto send = [&](ui::Vec2 at, bool down, bool pressed) {
+            ui::Input in;
+            in.mouse = at;
+            in.down = down;
+            in.pressed = pressed;
+            in.released = !down;
+            in.time = now;
+            view.handleInput(in);
+            view.arrange(view.rect(), theme);
+            now += 0.5;
+        };
+        // Rows now: A (0), Outer (1, folded), D (5); drag Outer from its row to below D
+        const float x = r.x + 100.0f;
+        const float outerY = r.y + 30.0f + 76.0f + 38.0f, belowD = r.y + 30.0f + 200.0f;
+        send({x, outerY}, true, true);
+        send({x, outerY + 10.0f}, true, false);
+        send({x, belowD}, true, false);
+        send({x, belowD}, false, false);
+        settle();
+        const std::vector<daw::Track> &t = store.project().tracks;
+        const bool order = t.size() == 6 && t[0].id == ids[0] && t[1].id == ids[5] && t[2].id == ids[1] && t[3].id == ids[2] &&
+                           t[4].id == ids[3] && t[5].id == ids[4];
+        c.check(order && t[2].folded && view.hidden(3) && view.hidden(5) && !view.hidden(1),
+                "Fold: dragging a folded group's header moves it with the tracks hidden in it, in order");
+
+        // Dragging the first track (A) down to between the folded group and where its hidden tracks were
+        // lands it before the group (the nearer end), not among them
+        const float dY = r.y + 30.0f + 38.0f; // A's row
+        send({x, dY}, true, true);
+        send({x, dY + 10.0f}, true, false);
+        const float underOuter = r.y + 30.0f + 196.0f; // its middle falls past Outer, before where the hidden tracks were
+        send({x, underOuter}, true, false);
+        send({x, underOuter}, false, false);
+        settle();
+        const std::vector<daw::Track> &u = store.project().tracks;
+        c.check(u.size() == 6 && u[0].id == ids[5] && u[1].id == ids[0] && u[2].id == ids[1] && u[3].id == ids[2],
+                "Fold: a track dropped where a folded group's hidden tracks are never lands among them");
+    }
+}
+
+// The mixer following the shared fold state: a folded group's tracks have no strips, and its own has a chevron
+void foldMixerChecks(Checker &c)
+{
+    env::Environment environment;
+    audio::AudioSystem engine(environment, audio::Deviceless{});
+    engine::Window window(1200, 400, "Vibin fold mixer test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::ProjectStore store(nestedGroupsProject());
+    daw::FoldState folds(store);
+    const std::vector<float> levels(6, 0.0f);
+    const daw::StereoLevels stereo{};
+    ui::Context context(window, renderer, theme);
+    auto &mixer = context.root().add<daw::MixerView>(context, store, engine, stereo, levels, [](daw::TrackKind) {}, nullptr, &folds);
+    stretch(mixer);
+    auto settle = [&] {
+        for (int i = 0; i < 4; ++i) {
+            context.update();
+            context.buildFrame();
+        }
+    };
+    settle();
+    const size_t all = mixer.stripCount();
+    folds.set(store.project().tracks[2].id, true); // Inner: hides B
+    settle();
+    const size_t inner = mixer.stripCount();
+    folds.set(store.project().tracks[1].id, true); // Outer: hides Inner, B and C
+    settle();
+    const size_t outer = mixer.stripCount();
+    folds.clear();
+    settle();
+    c.check(all == 6 && inner == 5 && outer == 3 && mixer.stripCount() == 6,
+            "Fold: the mixer shows fewer strips while groups are folded, and all again after",
+            std::to_string(all) + ", " + std::to_string(inner) + ", " + std::to_string(outer) + ", " + std::to_string(mixer.stripCount()));
+
+    // With no arrangement at all, a selection that lands on a hidden track (B, inside Inner inside Outer)
+    // still unfolds the groups hiding it, and its strip comes back
+    folds.set(store.project().tracks[2].id, true);
+    folds.set(store.project().tracks[1].id, true);
+    settle();
+    const size_t folded = mixer.stripCount();
+    store.select(3);
+    settle();
+    c.check(folded == 3 && !folds.folded(store.project().tracks[1].id) && !folds.folded(store.project().tracks[2].id) &&
+                mixer.stripCount() == 6,
+            "Fold: the mixer alone unfolds the groups hiding a selected track",
+            std::to_string(folded) + " strips, then " + std::to_string(mixer.stripCount()));
+}
+
+// The arrangement with folding: a group (Outer) open round a folded group (Inner, its Bass clip shown as a
+// block in its row, "1 track folded" in its caption) and a track, one of Outer's tracks with its volume lane
+// open (so its lane header is indented too). Headers are indented by depth with a bar for each level, and
+// the chevrons point down (open) and right (folded). With `after`, one more frame is run after the picture.
+Picture renderFolding(ui::FrameStats *after)
+{
+    daw::Project project = nestedGroupsProject();
+    project.tracks[4].automation.push_back({audio::kVolumeParam, {{0.0, 0.5f}, {10.0, 0.8f}, {20.0, 0.3f}}});
+    daw::ProjectStore store(project); // outlives the context
+    daw::FoldState folds(store);      //   (and so does this)
+    return renderPicture(1200, 740, daw::studioTheme(true), [&store, &folds](ui::Context &context) {
+        auto &view = context.root().add<daw::ArrangementView>(store, quietTransport(), &folds);
+        stretch(view);
+        view.fold(2, true);
+        view.showAutomation(4, true);
+    }, 0, nullptr, after);
+}
+
+Picture sceneFolding()
+{
+    return renderFolding(nullptr);
+}
+
+// The first component of type T under `parent` (a scroll view's content included), or null
+template <typename T>
+T *findIn(ui::Component &parent)
+{
+    if (auto *hit = dynamic_cast<T *>(&parent))
+        return hit;
+    if (auto *scroll = dynamic_cast<ui::ScrollView *>(&parent))
+        return findIn<T>(scroll->content());
+    if (auto *container = dynamic_cast<ui::Container *>(&parent)) {
+        for (size_t i = 0; i < container->childCount(); ++i)
+            if (T *hit = findIn<T>(container->child(i)))
+                return hit;
+    }
+    return nullptr;
+}
+
+// Every label's text under `parent`, joined (to look for a caption)
+void labelsIn(ui::Component &parent, std::string &out)
+{
+    if (auto *label = dynamic_cast<ui::Label *>(&parent))
+        out += label->text() + "\n";
+    if (auto *scroll = dynamic_cast<ui::ScrollView *>(&parent))
+        labelsIn(scroll->content(), out);
+    else if (auto *container = dynamic_cast<ui::Container *>(&parent))
+        for (size_t i = 0; i < container->childCount(); ++i)
+            labelsIn(container->child(i), out);
+}
+
+// How many send bars the strips under `parent` hold (each is a child of a strip's ListView of sends)
+size_t sendBarsIn(ui::Component &parent)
+{
+    size_t n = 0;
+    if (auto *list = dynamic_cast<ui::ListView *>(&parent))
+        return list->childCount();
+    if (auto *scroll = dynamic_cast<ui::ScrollView *>(&parent))
+        return sendBarsIn(scroll->content());
+    if (auto *container = dynamic_cast<ui::Container *>(&parent)) {
+        for (size_t i = 0; i < container->childCount(); ++i)
+            n += sendBarsIn(container->child(i));
+    }
+    return n;
+}
+
+// Flexible routing in the mixer: a track sending to a group gets a send bar for it (only while the send exists),
+// and its output label counts the groups it also goes to
+void flexibleMixerChecks(Checker &c)
+{
+    env::Environment environment;
+    audio::AudioSystem engine(environment, audio::Deviceless{});
+    engine::Window window(1200, 400, "Vibin flexible mixer test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::Project p;
+    p.addTrack(daw::TrackKind::Audio);
+    p.addTrack(daw::TrackKind::Return);
+    p.addTrack(daw::TrackKind::Group);
+    p.addTrack(daw::TrackKind::Group);
+    daw::ObjectId next = 1;
+    p.normalizeIds(next);
+    const daw::ObjectId g1 = p.tracks[2].id, g2 = p.tracks[3].id;
+    daw::ProjectStore store(p);
+    const std::vector<float> levels(4, 0.0f);
+    const daw::StereoLevels stereo{};
+    ui::Context context(window, renderer, theme);
+    auto &mixer = context.root().add<daw::MixerView>(context, store, engine, stereo, levels, [](daw::TrackKind) {});
+    stretch(mixer);
+    auto settle = [&] {
+        for (int i = 0; i < 4; ++i) {
+            context.update();
+            context.buildFrame();
+        }
+    };
+    auto text = [&] {
+        std::string out;
+        labelsIn(mixer, out);
+        return out;
+    };
+    settle();
+    // The 3 other buses give a track a bar each for the return only: 1 (the return); the groups' strips have 1 too
+    const size_t before = sendBarsIn(mixer);
+    store.editMix(0).output = g1;
+    daw::setAlsoTo(store, 0, g2, true);
+    settle();
+    const size_t after = sendBarsIn(mixer);
+    const std::string shown = text();
+    c.check(after == before + 1 && shown.find("To Group 1 + 1") != std::string::npos,
+            "Flexible routing: a send into a group gets a bar in the strip, and the output label counts it",
+            std::to_string(before) + " -> " + std::to_string(after));
+    daw::setAlsoTo(store, 0, g2, false);
+    settle();
+    c.check(sendBarsIn(mixer) == before && text().find("To Group 1\n") != std::string::npos,
+            "Flexible routing: unticking takes the bar and the label's count away");
+}
+
+// A strip with many send bars keeps its toggles inside it: 12 returns are 11 bars (or 10 for a return), which scroll
+void tallStripChecks(Checker &c)
+{
+    env::Environment environment;
+    audio::AudioSystem engine(environment, audio::Deviceless{});
+    engine::Window window(1200, 400, "Vibin tall strip test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::Project p;
+    p.addTrack(daw::TrackKind::Audio);
+    for (int i = 0; i < 12; ++i)
+        p.addTrack(daw::TrackKind::Return);
+    daw::ObjectId next = 1;
+    p.normalizeIds(next);
+    daw::ProjectStore store(p);
+    const std::vector<float> levels(13, 0.0f);
+    const daw::StereoLevels stereo{};
+    ui::Context context(window, renderer, theme);
+    auto &mixer = context.root().add<daw::MixerView>(context, store, engine, stereo, levels, [](daw::TrackKind) {});
+    stretch(mixer);
+    for (int i = 0; i < 4; ++i) {
+        context.update();
+        context.buildFrame();
+    }
+    daw::ChannelStrip *strip = findIn<daw::ChannelStrip>(mixer);
+    daw::SmallToggle *toggle = strip ? findIn<daw::SmallToggle>(*strip) : nullptr;
+    const bool inside = strip && toggle && toggle->rect().y + toggle->rect().h <= strip->rect().y + strip->rect().h + 0.5f &&
+                        strip->rect().y + strip->rect().h <= 400.0f;
+    c.check(inside && sendBarsIn(mixer) >= 12,
+            "Flexible routing: a strip with 12 send bars keeps its M/S/R toggles inside the strip (the bars scroll)",
+            strip && toggle ? "toggle bottom " + std::to_string(toggle->rect().y + toggle->rect().h) + ", strip bottom " +
+                                  std::to_string(strip->rect().y + strip->rect().h)
+                            : "no strip");
+}
+
+// Dragging a fader in a 64-track project moves the store's revision every frame: the strips must not be made again
+// (the groups tracks send to are the same), and checking costs next to nothing
+void faderDragChecks(Checker &c)
+{
+    using Clock = std::chrono::steady_clock;
+    env::Environment environment;
+    audio::AudioSystem engine(environment, audio::Deviceless{});
+    engine::Window window(1500, 400, "Vibin fader drag test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::Project p;
+    for (int i = 0; i < 56; ++i)
+        p.addTrack(daw::TrackKind::Audio);
+    for (int i = 0; i < 4; ++i)
+        p.addTrack(daw::TrackKind::Return);
+    for (int i = 0; i < 4; ++i)
+        p.addTrack(daw::TrackKind::Group);
+    daw::ObjectId next = 1;
+    p.normalizeIds(next);
+    for (int i = 0; i < 56; ++i) {
+        p.tracks[static_cast<size_t>(i)].sends = {{p.tracks[56].id, 0.5f, false}, {p.tracks[60 + i % 4].id, 1.0f, false}};
+        p.tracks[static_cast<size_t>(i)].output = p.tracks[60 + (i + 1) % 4].id;
+    }
+    daw::ProjectStore store(p);
+    const std::vector<float> levels(64, 0.0f);
+    const daw::StereoLevels stereo{};
+    ui::Context context(window, renderer, theme);
+    auto &mixer = context.root().add<daw::MixerView>(context, store, engine, stereo, levels, [](daw::TrackKind) {});
+    stretch(mixer);
+    auto frame = [&] {
+        context.update();
+        context.buildFrame();
+    };
+    for (int i = 0; i < 4; ++i)
+        frame();
+    daw::ChannelStrip *before = findIn<daw::ChannelStrip>(mixer);
+    constexpr int kFrames = 100;
+    auto start = Clock::now();
+    for (int i = 0; i < kFrames; ++i)
+        frame();
+    const double still = std::chrono::duration<double, std::milli>(Clock::now() - start).count() / kFrames;
+    const uint64_t revision = store.revision();
+    start = Clock::now();
+    for (int i = 0; i < kFrames; ++i) {
+        store.editMix(5).gain = 0.5f + 0.004f * static_cast<float>(i);
+        frame();
+    }
+    const double dragging = std::chrono::duration<double, std::milli>(Clock::now() - start).count() / kFrames;
+    start = Clock::now();
+    size_t sink = 0;
+    for (int i = 0; i < 1000; ++i)
+        sink += daw::groupSendShape(store.project()).size();
+    const double shapeUs = std::chrono::duration<double, std::micro>(Clock::now() - start).count() / 1000.0;
+    c.check(findIn<daw::ChannelStrip>(mixer) == before && store.revision() >= revision + kFrames && sink > 0,
+            "Flexible routing: dragging a fader in a 64-track project (the revision moving every frame) doesn't make the strips again",
+            "");
+    std::printf("INFO fader drag, 64 tracks: %.2f ms a frame still, %.2f ms dragging; groupSendShape %.1f us (%zu sends into groups)\n",
+                still, dragging, shapeUs, sink / 1000);
+}
+
+// A project for the sidechain controls: a Pad audio track with a Compressor, a Kick, a Bus group
+daw::Project sidechainProject()
+{
+    daw::Project p;
+    p.tracks.resize(3);
+    p.tracks[0].name = "Pad";
+    p.tracks[1].name = "Kick";
+    p.tracks[2].name = "Bus";
+    p.tracks[2].kind = daw::TrackKind::Group;
+    p.tracks[0].effects = {audio::effectSetting(audio::EffectType::Compressor), audio::effectSetting(audio::EffectType::Equalizer)};
+    return p;
+}
+
+// The Sidechain control on a compressor's card in the Devices panel (and in a device's own view): the
+// choices (None and the tracks it may take, never itself), the one in use selected, a choice making
+// an edit (one undo step), renaming, adding and deleting tracks showing at once, the "keyed by"
+// caption, and the limit explained
+void sidechainUiChecks(Checker &c)
+{
+    env::Environment environment;
+    environment.add<env::Scheduler>(env::SchedulerConfig{});
+    daw::Settings settings;
+    settings.libraryPath = (std::filesystem::temp_directory_path() / "vibin-sidechain-ui").u8string();
+    std::filesystem::create_directories(std::filesystem::u8path(settings.libraryPath));
+    daw::InstrumentLibrary library(environment, settings);
+    daw::DeviceCatalogue catalogue(library, nullptr);
+
+    engine::Window window(1100, 500, "Vibin sidechain test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::ProjectStore store(sidechainProject());
+    store.select(0);
+    ui::Context context(window, renderer, theme);
+    // The audio side's devices, made on demand for whatever store a view shows
+    std::map<std::string, std::unique_ptr<audio::BuiltinEffect>> devices;
+    daw::ProjectStore *shown = &store;
+    daw::DevicesHooks hooks;
+    hooks.device = [&devices, &shown](const daw::DevicePlace &place) -> audio::Device * {
+        const audio::DeviceSetting *setting = shown->project().device(place);
+        audio::EffectType type;
+        if (!setting || setting->kind != audio::DeviceKind::Effect || !audio::effectFromKey(setting->id, type))
+            return nullptr;
+        auto &made = devices[place.key() + setting->id];
+        if (!made)
+            made = audio::makeEffect(type);
+        return made.get();
+    };
+    auto &view = context.root().add<daw::DevicesView>(context, store, catalogue, hooks);
+    stretch(view);
+    auto settle = [&] {
+        for (int i = 0; i < 8; ++i) {
+            context.update();
+            context.buildFrame();
+        }
+    };
+    settle();
+    auto dropdown = [&]() -> ui::Dropdown * { return findIn<ui::Dropdown>(view); };
+    auto captions = [&] {
+        std::string text;
+        labelsIn(view, text);
+        return text;
+    };
+    auto optionsText = [&](ui::Dropdown *d) {
+        std::string s;
+        for (const std::string &o : d->options())
+            s += (s.empty() ? "" : ", ") + o;
+        return s;
+    };
+    ui::Dropdown *d = dropdown();
+    c.check(d && d->options() == std::vector<std::string>{"None", "Kick", "Bus"} && d->selected() == 0 &&
+                captions().find("Sidechain") != std::string::npos && captions().find("Keyed by") == std::string::npos,
+            "Sidechain UI: a compressor's card offers None and the other tracks, nothing selected", d ? optionsText(d) : "(none)");
+
+    if (!d) {
+        std::string text;
+        labelsIn(view, text);
+        std::printf("INFO sidechain UI: no dropdown; %zu children in the view; labels: %s\n", view.childCount(), text.c_str());
+        return;
+    }
+    // The EQ has none: one dropdown only (the compressor's)
+    c.check(d && findIn<ui::Dropdown>(view) == d, "Sidechain UI: an EQ's card has no sidechain control");
+
+    // A choice edits the device: one undo step, "Sidechain"
+    daw::History history;
+    history.reset(store.project());
+    if (d)
+        d->choose(1);
+    history.update(store, true, false, 1.0);
+    const daw::ObjectId kick = store.project().tracks[1].id;
+    c.check(store.project().tracks[0].effects[0].sidechain == kick && history.undoLabel() == "Sidechain",
+            "Sidechain UI: choosing a track keys the effect, as one undo step named \"Sidechain\"", history.undoLabel());
+    settle();
+    d = dropdown();
+    c.check(d && d->selected() == 1 && captions().find("Keyed by Kick") != std::string::npos,
+            "Sidechain UI: the card says what keys it", captions());
+
+    // Renaming the source updates the choices and the caption
+    store.editTrack(1).name = "Bass";
+    settle();
+    d = dropdown();
+    c.check(d && d->options() == std::vector<std::string>{"None", "Bass", "Bus"} && d->selected() == 1 &&
+                captions().find("Keyed by Bass") != std::string::npos,
+            "Sidechain UI: renaming the source updates the dropdown and the caption", d ? optionsText(d) : "(none)");
+
+    // A new track appears in the choices; one the pad feeds doesn't (a loop)
+    store.edit().addTrack(daw::TrackKind::Audio);
+    store.normalizeIds(); // as the audio bridge does each frame
+    store.select(0);
+    settle();
+    d = dropdown();
+    c.check(d && d->options().size() == 4 && d->selected() == 1, "Sidechain UI: a track added shows in the choices", d ? optionsText(d) : "(none)");
+    store.editMix(0).output = store.project().tracks[2].id; // Pad into Bus
+    settle();
+    d = dropdown();
+    c.check(d && d->options().size() == 3 && d->options()[1] == "Bass" && d->options()[2] != "Bus",
+            "Sidechain UI: a track the pad feeds can't key it", d ? optionsText(d) : "(none)");
+
+    // None unkeys; deleting the source clears the key (and undo brings both back)
+    if (d)
+        d->choose(0);
+    settle();
+    c.check(store.project().tracks[0].effects[0].sidechain == daw::kNoId && captions().find("Keyed by") == std::string::npos,
+            "Sidechain UI: None removes the key and the caption");
+    d = dropdown();
+    store.editMix(0).output = daw::kNoId;
+    if (d)
+        d->choose(1);
+    settle();
+    c.check(store.project().tracks[0].effects[0].sidechain == kick, "Sidechain UI: and a track keys it again");
+    daw::History deleting;
+    deleting.reset(store.project());
+    store.edit().deleteTrack(1);
+    deleting.update(store, true, false, 1.0);
+    store.select(0);
+    settle();
+    d = dropdown();
+    c.check(store.project().tracks[0].effects[0].sidechain == daw::kNoId && d && d->selected() == 0 &&
+                captions().find("Keyed by") == std::string::npos && deleting.undoLabel() == "Delete track",
+            "Sidechain UI: deleting the source clears the key and the caption",
+            std::to_string(store.project().tracks[0].effects[0].sidechain) + ", selected " +
+                std::to_string(d ? d->selected() : -9) + " of " + (d ? optionsText(d) : std::string("-")) + ", captions [" + captions() + "], label " + deleting.undoLabel());
+    daw::HistoryRestore plan;
+    const bool undone = deleting.undo(store, 3.0, plan);
+    store.restore(std::move(plan));
+    store.select(0);
+    settle();
+    d = dropdown();
+    c.check(undone && store.project().tracks.size() == 4 && store.project().tracks[0].effects[0].sidechain == kick && d &&
+                d->selected() == 1 && captions().find("Keyed by Bass") != std::string::npos,
+            "Sidechain UI: one undo brings the track and the key back together");
+
+    // The master's effects may take any track
+    {
+        daw::Project p = sidechainProject();
+        p.masterEffects = {audio::effectSetting(audio::EffectType::Gate)};
+        daw::ProjectStore masterStore(p);
+        shown = &masterStore;
+        masterStore.select(0);
+        ui::Context masterContext(window, renderer, theme);
+        auto &master = masterContext.root().add<daw::DevicesView>(masterContext, masterStore, catalogue, hooks);
+        master.setMaster(true);
+        stretch(master);
+        for (int i = 0; i < 8; ++i) {
+            masterContext.update();
+            masterContext.buildFrame();
+        }
+        ui::Dropdown *m = findIn<ui::Dropdown>(master);
+        c.check(m && m->options() == std::vector<std::string>{"None", "Pad", "Kick", "Bus"},
+                "Sidechain UI: the master's gate may be keyed by any track", m ? optionsText(m) : "(none)");
+    }
+
+    // The limit: four keyed effects on a track, and the fifth explains why it offers none
+    {
+        daw::Project p = sidechainProject();
+        p.tracks[0].effects.clear();
+        for (int i = 0; i < 5; ++i)
+            p.tracks[0].effects.push_back(audio::effectSetting(audio::EffectType::Compressor));
+        daw::ProjectStore limitStore(p);
+        shown = &limitStore;
+        for (int i = 0; i < 4; ++i)
+            limitStore.editTrack(0).effects[static_cast<size_t>(i)].sidechain = limitStore.project().tracks[1].id;
+        limitStore.select(0);
+        ui::Context limitContext(window, renderer, theme);
+        auto &limited = limitContext.root().add<daw::DevicesView>(limitContext, limitStore, catalogue, hooks);
+        stretch(limited);
+        for (int i = 0; i < 8; ++i) {
+            limitContext.update();
+            limitContext.buildFrame();
+        }
+        std::string text;
+        labelsIn(limited, text);
+        const daw::SidechainOffer fifth = daw::sidechainOffer(limitStore.project(), daw::DevicePlace::effect(false, 0, 4));
+        const daw::SidechainOffer first = daw::sidechainOffer(limitStore.project(), daw::DevicePlace::effect(false, 0, 0));
+        c.check(fifth.available && fifth.sources.empty() && fifth.note == "4 sidechains per track at most" && !first.sources.empty() &&
+                    first.note.empty() && text.find("4 sidechains per track at most") != std::string::npos,
+                "Sidechain UI: with four keyed effects the fifth offers none and says why", fifth.note);
+    }
+}
+
+// The Devices panel on a pad: a compressor keyed by the Kick track (its card says "Keyed by Kick"), an EQ (no
+// sidechain row) and a gate with none
+Picture renderSidechain(ui::FrameStats *after)
+{
+    daw::Project project = sidechainProject();
+    project.tracks[0].effects.push_back(audio::effectSetting(audio::EffectType::Gate));
+    daw::ProjectStore store(project);
+    store.editTrack(0).effects[0].sidechain = store.project().tracks[1].id;
+    store.select(0);
+    std::map<std::string, std::unique_ptr<audio::BuiltinEffect>> devices;
+    daw::ProjectStore *shown = &store;
+    daw::DevicesHooks hooks;
+    hooks.device = [&devices, &shown](const daw::DevicePlace &place) -> audio::Device * {
+        const audio::DeviceSetting *setting = shown->project().device(place);
+        audio::EffectType type;
+        if (!setting || setting->kind != audio::DeviceKind::Effect || !audio::effectFromKey(setting->id, type))
+            return nullptr;
+        auto &made = devices[place.key() + setting->id];
+        if (!made)
+            made = audio::makeEffect(type);
+        return made.get();
+    };
+    env::Environment environment;
+    environment.add<env::Scheduler>(env::SchedulerConfig{});
+    daw::Settings settings;
+    settings.libraryPath = (std::filesystem::temp_directory_path() / "vibin-sidechain-ui").u8string();
+    daw::InstrumentLibrary library(environment, settings);
+    daw::DeviceCatalogue catalogue(library, nullptr);
+    return renderPicture(1760, 300, daw::studioTheme(true), [&](ui::Context &context) {
+        stretch(context.root().add<daw::DevicesView>(context, store, catalogue, hooks));
+    }, 0, nullptr, after);
+}
+
+Picture sceneSidechain()
+{
+    return renderSidechain(nullptr);
+}
+
+// The Devices panel on a pad with two of the project's test plugins loaded in their sandboxes: Test Duck
+// (a sidechain port, so a Sidechain row) keyed by the kick, and Test Gain (no port, no row). The plugins
+// are real: a manager scans output/plugins and a chain loads them, and the picture is taken only once both
+// are ready, so it waits on the hosts starting but never races them. Without the test plugins it fails.
+Picture renderPluginSidechain(ui::FrameStats *after)
+{
+    using Clock = std::chrono::steady_clock;
+    env::Environment environment;
+    environment.add<env::Scheduler>(env::SchedulerConfig{});
+    plugin::PluginConfig config;
+    config.folders = {std::filesystem::u8path(ENGINE_TEST_PLUGIN).parent_path().u8string()};
+    plugin::PluginManager manager(environment, config);
+    manager.rescan();
+    const auto scanned = Clock::now() + std::chrono::seconds(20);
+    while (manager.scanning() && Clock::now() < scanned)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    daw::setPluginSidechainLookup([&manager](const std::string &id) { return manager.sidechainChannels(id); });
+
+    daw::Project project = sidechainProject();
+    audio::DeviceSetting duck;
+    duck.kind = audio::DeviceKind::Plugin;
+    duck.id = "vibin.test.duck";
+    duck.name = "Test Duck";
+    audio::DeviceSetting gain = duck;
+    gain.id = "vibin.test.gain";
+    gain.name = "Test Gain";
+    project.tracks[0].effects = {duck, gain};
+    daw::ProjectStore store(project);
+    store.editTrack(0).effects[0].sidechain = store.project().tracks[1].id;
+    store.select(0);
+
+    // The pad's chain, loaded until both plugins are ready (or failed: the picture shows why)
+    audio::DeviceChain chain;
+    chain.setPlugins(&manager);
+    chain.prepare(48000.0, 512);
+    chain.apply(store.project().tracks[0].effects);
+    const auto loaded = Clock::now() + std::chrono::seconds(20);
+    auto loading = [&chain] {
+        for (size_t i = 0; i < chain.size(); ++i) {
+            plugin::Slot *slot = chain.effect(i) ? chain.effect(i)->slot() : nullptr;
+            if (!slot || slot->state() == plugin::Slot::State::Loading)
+                return true;
+        }
+        return false;
+    };
+    while (loading() && Clock::now() < loaded) {
+        chain.collect();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    daw::DevicesHooks hooks;
+    hooks.device = [&chain, &store](const daw::DevicePlace &place) -> audio::Device * {
+        const audio::DeviceSetting *setting = store.project().device(place);
+        audio::Device *device = !place.master && place.track == 0 && place.index >= 0 ? chain.effect(static_cast<size_t>(place.index)) : nullptr;
+        return device && setting && device->matches(*setting) ? device : nullptr;
+    };
+    daw::Settings settings;
+    settings.libraryPath = (std::filesystem::temp_directory_path() / "vibin-sidechain-ui").u8string();
+    daw::InstrumentLibrary library(environment, settings);
+    daw::DeviceCatalogue catalogue(library, &manager);
+    Picture picture = renderPicture(1000, 300, daw::studioTheme(true), [&](ui::Context &context) {
+        stretch(context.root().add<daw::DevicesView>(context, store, catalogue, hooks));
+    }, 0, nullptr, after);
+    daw::setPluginSidechainLookup(nullptr);
+    return picture;
+}
+
+Picture scenePluginSidechain()
+{
+    return renderPluginSidechain(nullptr);
+}
+
+// A benchmark (VIBIN_TEST_BENCH): what the Sidechain controls cost a still frame on a big project, 64 tracks
+// in 4 groups and a pad with 8 compressors (3 keyed): the offers of its 8 cards worked out afresh (done only when the project
+// changes now (22 ms a frame before: the controls worked them out every frame, and with the routes made afresh per
+// track), and settled frames of the Devices panel
+void sidechainBench()
+{
+    using Clock = std::chrono::steady_clock;
+    daw::Project project;
+    project.tracks.resize(64);
+    for (size_t i = 0; i < project.tracks.size(); ++i) {
+        project.tracks[i].name = "Track " + std::to_string(i + 1);
+        project.tracks[i].kind = i >= 60 ? daw::TrackKind::Group : daw::TrackKind::Audio;
+    }
+    project.tracks[0].effects.assign(8, audio::effectSetting(audio::EffectType::Compressor));
+    daw::ProjectStore store(project);
+    for (size_t i = 0; i < 60; ++i)
+        store.editMix(static_cast<int>(i)).output = store.project().tracks[60 + i % 4].id;
+    for (size_t i = 0; i < 3; ++i)
+        store.editTrack(0).effects[i].sidechain = store.project().tracks[1].id;
+    store.select(0);
+
+    constexpr int kFrames = 200;
+    size_t sources = 0;
+    auto start = Clock::now();
+    for (int frame = 0; frame < kFrames; ++frame)
+        for (int e = 0; e < 8; ++e)
+            sources += daw::sidechainOffer(store.project(), daw::DevicePlace::effect(false, 0, e)).sources.size();
+    const double offers = std::chrono::duration<double, std::milli>(Clock::now() - start).count() / kFrames;
+
+    env::Environment environment;
+    environment.add<env::Scheduler>(env::SchedulerConfig{});
+    daw::Settings settings;
+    settings.libraryPath = (std::filesystem::temp_directory_path() / "vibin-sidechain-ui").u8string();
+    daw::InstrumentLibrary library(environment, settings);
+    daw::DeviceCatalogue catalogue(library, nullptr);
+    std::map<std::string, std::unique_ptr<audio::BuiltinEffect>> devices;
+    daw::DevicesHooks hooks;
+    hooks.device = [&devices, &store](const daw::DevicePlace &place) -> audio::Device * {
+        const audio::DeviceSetting *setting = store.project().device(place);
+        audio::EffectType type;
+        if (!setting || setting->kind != audio::DeviceKind::Effect || !audio::effectFromKey(setting->id, type))
+            return nullptr;
+        auto &made = devices[place.key() + setting->id];
+        if (!made)
+            made = audio::makeEffect(type);
+        return made.get();
+    };
+    engine::Window window(1800, 400, "Vibin sidechain bench", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    ui::Context context(window, renderer, daw::studioTheme(true));
+    stretch(context.root().add<daw::DevicesView>(context, store, catalogue, hooks));
+    for (int i = 0; i < 20; ++i) {
+        context.update();
+        context.buildFrame();
+    }
+    start = Clock::now();
+    for (int frame = 0; frame < kFrames; ++frame) {
+        context.update();
+        context.buildFrame();
+    }
+    const double frames = std::chrono::duration<double, std::milli>(Clock::now() - start).count() / kFrames;
+    std::printf("INFO sidechain bench: 64 tracks, 8 cards on a pad (3 keyed): offers of the 8 cards worked out %.3f ms (%zu sources; only when the project changes); "
+                "a settled Devices frame %.3f ms\n",
+                offers, sources / (kFrames * 8), frames);
+}
+
+// A device's own view has the same row
+void sidechainDeviceViewChecks(Checker &c)
+{
+    engine::Window window(900, 500, "Vibin sidechain device view test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::ProjectStore store(sidechainProject());
+    ui::Context context(window, renderer, theme);
+    const daw::DevicePlace place = daw::DevicePlace::effect(false, 0, 0);
+    daw::DeviceAccess access;
+    access.setting = [&store, place] { return store.project().device(place); };
+    access.edit = [&store, place] { return store.editDevice(place); };
+    access.device = [] { return static_cast<audio::Device *>(nullptr); };
+    access.sidechain = [&store, place] { return daw::sidechainOffer(store.project(), place); };
+    auto &view = context.root().add<daw::DeviceView>(context, access, "Compressor", "Built-in effect", true);
+    stretch(view);
+    for (int i = 0; i < 8; ++i) {
+        context.update();
+        context.buildFrame();
+    }
+    ui::Dropdown *d = findIn<ui::Dropdown>(view);
+    c.check(d && d->options() == std::vector<std::string>{"None", "Kick", "Bus"}, "Sidechain UI: a device's own view has the sidechain row too");
+    if (d)
+        d->choose(2);
+    c.check(store.project().tracks[0].effects[0].sidechain == store.project().tracks[2].id,
+            "Sidechain UI: and choosing there edits the device");
+}
+
+// The track header's toggles as a radial menu (RadialToggles opening a RadialMenu), by input handed
+// to the open menu: dragging onto a button and letting go flips it and closes; letting go on the
+// middle keeps it open for clicks; the middle closes it; a press outside the disc isn't its own
+void radialToggleChecks(Checker &c)
+{
+    engine::Window window(800, 600, "Vibin radial test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    bool mute = false, solo = false, arm = false;
+    auto toggle = [](const char *label, const char *name, bool &value) {
+        return daw::RadialToggle{label, name, engine::Key::Unknown, [&value] { return value; }, [&value](bool on) { value = on; }};
+    };
+    ui::Context context(window, renderer, theme);
+    auto &hub = context.root().add<daw::RadialToggles>(
+        std::vector<daw::RadialToggle>{toggle("M", "Mute", mute), toggle("S", "Solo", solo), toggle("R", "Record arm", arm)});
+    for (int i = 0; i < 3; ++i) {
+        context.update();
+        context.buildFrame();
+    }
+    const ui::Vec2 centre = hub.rect().center();
+    auto buttonAt = [&centre](size_t i) {
+        const float a = daw::RadialToggles::angle(i, 3);
+        return ui::Vec2{centre.x + std::cos(a) * daw::RadialMenu::kRing, centre.y + std::sin(a) * daw::RadialMenu::kRing};
+    };
+    int fb = 0, fbH = 0;
+    window.framebufferSize(fb, fbH);
+    const ui::Rect whole{0.0f, 0.0f, static_cast<float>(fb), static_cast<float>(fbH)};
+    auto send = [&](daw::RadialMenu &menu, ui::Vec2 at, bool down, bool pressed, bool released) {
+        ui::Input in;
+        in.mouse = at;
+        in.down = down;
+        in.pressed = pressed;
+        in.released = released;
+        in.dt = 1.0f; // opens fully at once
+        menu.arrange(whole, theme);
+        menu.handleInput(in);
+    };
+    auto settle = [&] {
+        context.update();
+        context.buildFrame();
+    };
+
+    daw::RadialMenu &held = hub.openMenu(context, true);
+    send(held, centre, true, false, false);
+    send(held, buttonAt(1), true, false, false);
+    send(held, buttonAt(1), false, false, true);
+    settle();
+    c.check(solo && !mute && !arm && !hub.menuOpen(), "Radial toggles: dragging onto Solo and letting go turns it on and closes");
+
+    daw::RadialMenu &clicked = hub.openMenu(context, true);
+    send(clicked, centre, true, false, false);
+    send(clicked, centre, false, false, true); // let go on the middle: stays open
+    send(clicked, buttonAt(0), true, true, false);
+    send(clicked, buttonAt(0), false, false, true);
+    send(clicked, buttonAt(2), true, true, false);
+    send(clicked, buttonAt(2), false, false, true);
+    send(clicked, buttonAt(1), true, true, false);
+    send(clicked, buttonAt(1), false, false, true);
+    settle();
+    const bool stillOpen = hub.menuOpen();
+    const bool outside = clicked.hitTest({centre.x + 200.0f, centre.y});
+    send(clicked, centre, true, true, false); // the middle closes it
+    settle();
+    c.check(stillOpen && mute && arm && !solo && !outside && !hub.menuOpen(),
+            "Radial toggles: let go on the middle, clicks flip buttons until the middle closes it");
+}
+
+// Holds its children still: no input reaches them, so wherever the real mouse is it hovers nothing
+class StillContainer : public ui::Container {
+public:
+    StillContainer() : Container(ui::Direction::Column) {}
+    void handleInput(const ui::Input &) override {}
+};
+
+// A track header's toggles opened as a radial menu: Mute, Record arm and Write automation on, Solo
+// and the lanes off. The menu is in the tree under a StillContainer rather than an overlay (which
+// takes the window's real mouse), opened fully by one frame of input handed to it
+Picture sceneRadial()
+{
+    static bool values[5] = {true, false, true, false, true};
+    const char *labels[5] = {"M", "S", "R", "A", "W"};
+    const char *names[5] = {"Mute", "Solo", "Record arm", "Automation lanes", "Write automation"};
+    return renderPicture(360, 260, daw::studioTheme(true), [&](ui::Context &context) {
+        std::vector<daw::RadialToggle> toggles;
+        for (int i = 0; i < 5; ++i) {
+            bool *value = &values[i];
+            toggles.push_back({labels[i], names[i], engine::Key::Unknown, [value] { return *value; }, [value](bool on) { *value = on; }});
+        }
+        int w = 0, h = 0;
+        context.window().framebufferSize(w, h);
+        const ui::Vec2 centre{static_cast<float>(w) * 0.5f, static_cast<float>(h) * 0.5f};
+        auto &menu = context.root().add<StillContainer>().add<daw::RadialMenu>(context, std::move(toggles), centre, false);
+        menu.arrange({0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h)}, context.theme());
+        ui::Input in;
+        in.mouse = {-1000.0f, -1000.0f};
+        in.dt = 1.0f; // fully open
+        menu.handleInput(in);
+    }, 0, nullptr);
+}
+
+// The arrangement with the first track's automation shown: a volume lane with a curve, and an
+// empty pan lane (its resting value dashed, with a hint)
+Picture sceneAutomation()
+{
+    daw::Project project = daw::demoProject();
+    auto &lanes = project.tracks[0].automation;
+    lanes.push_back({audio::kVolumeParam, {{0.0, 0.2f}, {8.0, 0.8f}, {16.0, 0.8f}, {20.0, 0.4f}, {28.0, 0.9f}}});
+    lanes.push_back({audio::kPanParam, {}});
+    daw::ProjectStore store(project); // outlives the context
+    return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
+        auto &view = context.root().add<daw::ArrangementView>(store, quietTransport());
+        view.showAutomation(0, true);
+        stretch(view);
+    }, 0, nullptr);
+}
+
+// The arrangement with the master's lanes shown under the tracks: its volume lane with a dip, and a
+// Gain effect on the master with a lane for its level (read by name through a deviceParams hook, as the
+// app does). With `after`, one more frame is run after the picture (see settledCacheChecks).
+Picture renderMaster(ui::FrameStats *after)
+{
+    daw::Project project = daw::demoProject();
+    project.masterEffects.push_back(audio::effectSetting(audio::EffectType::Gain));
+    project.masterEffects[0].automation.push_back({0, {{0.0, 0.3f}, {12.0, 0.7f}, {24.0, 0.5f}}});
+    project.masterAutomation.push_back({audio::kVolumeParam, {{0.0, 0.79f}, {8.0, 0.79f}, {12.0, 0.4f}, {24.0, 0.79f}}});
+    daw::ProjectStore store(project); // outlives the context
+    daw::TransportHooks hooks = quietTransport();
+    hooks.deviceParams = [](const daw::DevicePlace &) {
+        std::vector<audio::DeviceParam> params;
+        const audio::EffectInfo &info = audio::effectInfo(audio::EffectType::Gain);
+        for (uint32_t i = 0; i < info.paramCount; ++i)
+            params.push_back(audio::effectParam(info.params[i], i));
+        return params;
+    };
+    return renderPicture(1200, 740, daw::studioTheme(true), [&store, &hooks](ui::Context &context) {
+        auto &view = context.root().add<daw::ArrangementView>(store, hooks);
+        view.showMasterAutomation(true);
+        stretch(view);
+    }, 0, nullptr, after);
+}
+
+Picture sceneMaster()
+{
+    return renderMaster(nullptr);
+}
+
+// The mixer with routing: the demo's tracks with two returns and a group added. The guitar sends to
+// the first return after its fader, the bass to it before its fader and to the second after; the drums and vocals go into the group; the master's
+// volume is down a little. Played by a deviceless engine (so the master strip says "No output").
+Picture sceneMixer()
+{
+    static env::Environment environment;
+    static audio::AudioSystem engine(environment, audio::Deviceless{});
+    daw::Project project = daw::demoProject();
+    project.addTrack(daw::TrackKind::Return);
+    project.addTrack(daw::TrackKind::Return);
+    project.addTrack(daw::TrackKind::Group);
+    project.addTrack(daw::TrackKind::Group);
+    daw::ObjectId next = 1;
+    project.normalizeIds(next);
+    const daw::ObjectId ret = project.tracks[6].id, ret2 = project.tracks[7].id, group = project.tracks[8].id;
+    project.tracks[0].sends = {{ret, 0.5f, false}, {project.tracks[9].id, 0.7f, false}}; // and also to Group 2
+    project.tracks[0].output = group;
+    project.tracks[1].sends = {{ret, 0.3f, true}, {ret2, 0.6f, false}};
+    project.tracks[3].output = group;
+    project.tracks[4].output = group;
+    project.masterVolume = 0.8f;
+    project.select(0);
+    daw::ProjectStore store(project); // outlives the context
+    static const std::vector<float> levels(10, 0.0f);
+    static const daw::StereoLevels stereo{};
+    return renderPicture(1500, 400, daw::studioTheme(true), [&store](ui::Context &context) {
+        stretch(context.root().add<daw::MixerView>(context, store, engine, stereo, levels, [](daw::TrackKind) {}));
+    }, 0, nullptr);
+}
+
 // One track's sound for the waveforms scene: 30 seconds of stereo noise, a decaying burst every half
 // second, its decay and level set by the track so the eight waveforms differ
 std::shared_ptr<audio::AudioData> makeWaveform(int track)
@@ -969,17 +2320,6 @@ Picture sceneSynth()
 }
 
 // ---- primitives (no window) ----
-
-struct Checker {
-    int failures = 0;
-
-    void check(bool ok, const std::string &what, const std::string &detail = {})
-    {
-        std::printf("%s  %-44s %s\n", ok ? "PASS" : "FAIL", what.c_str(), detail.c_str());
-        if (!ok)
-            ++failures;
-    }
-};
 
 // Numbers as text, for a check's detail
 std::string describe(const float *values, int count)
@@ -1772,27 +3112,30 @@ struct CacheScene {
 
 const CacheScene kCacheScenes[] = {
     {"arrangement", [](ui::FrameStats *after) { return renderArrangement(0, nullptr, after); }},
+    {"master", renderMaster},
+    {"folding", renderFolding},
     {"waveforms", [](ui::FrameStats *after) { return renderWaveforms(0, nullptr, after); }},
     {"pianoroll", [](ui::FrameStats *after) { return renderPianoRoll(0, nullptr, after); }},
     {"steps", [](ui::FrameStats *after) { return renderSteps(0, nullptr, after); }},
     {"synth", [](ui::FrameStats *after) { return renderSynth(0, nullptr, after); }},
+    {"sidechain", renderSidechain},
 };
 
-// A scene settled, then one more frame: its views' draw caches serve every draw (hits, no misses) and the layout is skipped
-void settledCacheChecks(Checker &c, const CacheScene &scene)
+// The cache scene of a scene, if its view has draw caches (null for the raw drawing scenes)
+const CacheScene *cacheSceneOf(const std::string &name)
 {
-    const std::string title = std::string(scene.name) + ": a settled frame draws from its caches";
-    if (ui::DrawCache::verifying()) {
-        std::printf("SKIP  %-44s %s\n", title.c_str(), "VIBIN_VERIFY_CACHE is set, so every draw paints");
-        return;
+    for (const CacheScene &scene : kCacheScenes) {
+        if (name == scene.name)
+            return &scene;
     }
-    ui::FrameStats after;
-    try {
-        scene.render(&after);
-    } catch (const std::exception &e) {
-        c.check(false, title, std::string("render failed: ") + e.what());
-        return;
-    }
+    return nullptr;
+}
+
+// A scene settled, then one more frame (`after`, from the same render as its picture): its views' draw
+// caches serve every draw (hits, no misses) and the layout is skipped
+void settledCacheChecks(Checker &c, const char *name, const ui::FrameStats &after)
+{
+    const std::string title = std::string(name) + ": a settled frame draws from its caches";
     const bool settled = after.cacheHits >= 1 && after.cacheMisses == 0 && after.layoutSkipped;
     c.check(settled, title,
             std::to_string(after.cacheHits) + " hits, " + std::to_string(after.cacheMisses) + " misses, layout " +
@@ -1816,11 +3159,18 @@ const SceneEntry kScenes[] = {
     {"plots", scenePlots},
     {"controls", sceneControls},
     {"arrangement", sceneArrangement},
+    {"automation", sceneAutomation},
+    {"master", sceneMaster},
+    {"folding", sceneFolding},
+    {"mixer", sceneMixer},
+    {"radial", sceneRadial},
     {"waveforms", sceneWaveforms},
     {"pianoroll", scenePianoRoll},
     {"steps", sceneSteps},
     {"scroll", sceneScroll},
     {"synth", sceneSynth},
+    {"sidechain", sceneSidechain},
+    {"pluginsidechain", scenePluginSidechain},
 };
 
 // Times a scene over kTimedFrames settled frames when it is the one asked for (or all are run) and
@@ -1844,7 +3194,7 @@ int timeScene(const char *name, const std::string &only, const std::function<voi
 }
 
 // Renders one scene and checks it; returns its failures and keeps its frame stats
-int checkScene(const std::string &name, Picture (*render)(), bool update, std::vector<std::pair<std::string, ui::FrameStats>> &rendered)
+int checkScene(const std::string &name, const std::function<Picture()> &render, bool update, std::vector<std::pair<std::string, ui::FrameStats>> &rendered)
 {
     try {
         const Picture actual = render();
@@ -1930,53 +3280,108 @@ int runRenderSelfTest(int argc, char **argv)
         }
     }
 
+    // What each part took, for VIBIN_TEST_TIMES (the runner's --times): each scene and each group of checks
+    std::vector<std::pair<double, std::string>> times;
+    auto timed = [&times](const std::string &name, const std::function<void()> &run) {
+        const auto begin = std::chrono::steady_clock::now();
+        run();
+        times.emplace_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count(), name);
+    };
+
+    // A hidden window open for the whole run: GLFW starts when the first window opens and stops when
+    // the last closes, and starting it enumerates the input devices (DirectInput on Windows), which can
+    // take most of a second; without this every scene's window would pay that again
+    engine::Window keeper(16, 16, "Vibin render test", false);
+
     // The primitive checks need no window and run whatever scene is asked for
     Checker prims;
     primChecks(prims);
     sectionChecks(prims);
     failures += prims.failures;
 
+    // Each scene is rendered once: a DAW view's render also runs the one more frame its draw cache check
+    // reads (after the picture is taken, so the picture is the same), instead of a second render
     bool found = only.empty();
     std::vector<std::pair<std::string, ui::FrameStats>> rendered;
+    std::vector<std::pair<const char *, ui::FrameStats>> settled;
+    std::vector<const char *> verifiedSkips; // cache scenes not checked because VIBIN_VERIFY_CACHE makes every draw paint
     for (const SceneEntry &scene : kScenes) {
         if (!only.empty() && only != scene.name)
             continue;
         found = true;
-        failures += checkScene(scene.name, scene.render, update, rendered);
+        const CacheScene *cache = cacheSceneOf(scene.name);
+        if (cache && !ui::DrawCache::verifying()) {
+            ui::FrameStats after;
+            timed(std::string("scene ") + scene.name, [&] { failures += checkScene(scene.name, [&] { return cache->render(&after); }, update, rendered); });
+            settled.emplace_back(scene.name, after);
+        } else {
+            timed(std::string("scene ") + scene.name, [&] { failures += checkScene(scene.name, scene.render, update, rendered); });
+            if (cache)
+                verifiedSkips.push_back(scene.name);
+        }
     }
     if (!found) {
         std::printf("FAIL  unknown scene \"%s\"\n", only.c_str());
         ++failures;
     }
 
-    // The views' draw caches, on a frame after each scene has settled (a second render of the scene)
+    // The views' draw caches, on a frame after each scene has settled
     Checker caches;
-    bool cacheHeading = false;
-    for (const CacheScene &scene : kCacheScenes) {
-        if (!only.empty() && only != scene.name)
-            continue;
-        if (!cacheHeading) {
-            std::printf("Settled frames: their scenes draw from their draw caches\n\n");
-            cacheHeading = true;
-        }
-        settledCacheChecks(caches, scene);
-    }
-    if (cacheHeading)
+    if (!settled.empty() || !verifiedSkips.empty())
+        std::printf("Settled frames: their scenes draw from their draw caches\n\n");
+    for (const auto &entry : settled)
+        settledCacheChecks(caches, entry.first, entry.second);
+    for (const char *name : verifiedSkips)
+        std::printf("SKIP  %-44s %s\n", (std::string(name) + ": a settled frame draws from its caches").c_str(),
+                    "VIBIN_VERIFY_CACHE is set, so every draw paints");
+    if (!settled.empty() || !verifiedSkips.empty())
         std::printf("\n");
     failures += caches.failures;
+
+    // Editing automation in the arrangement (input handed to a laid-out view)
+    if (only.empty()) {
+        Checker editing;
+        timed("automationEditChecks", [&] { automationEditChecks(editing); });
+        timed("masterEditChecks", [&] { masterEditChecks(editing); });
+        timed("foldChecks", [&] { foldChecks(editing); });
+        timed("foldUiChecks", [&] { foldUiChecks(editing); });
+        timed("foldMixerChecks", [&] { foldMixerChecks(editing); });
+        timed("foldDragChecks", [&] { foldDragChecks(editing); });
+        timed("flexibleMixerChecks", [&] { flexibleMixerChecks(editing); });
+        timed("tallStripChecks", [&] { tallStripChecks(editing); });
+        timed("faderDragChecks", [&] { faderDragChecks(editing); });
+        timed("sidechainUiChecks", [&] { sidechainUiChecks(editing); });
+        timed("sidechainDeviceViewChecks", [&] { sidechainDeviceViewChecks(editing); });
+        if (bench())
+            sidechainBench();
+        timed("radialToggleChecks", [&] { radialToggleChecks(editing); });
+        std::printf("\n");
+        failures += editing.failures;
+    }
 
     for (const auto &entry : rendered)
         printInfo(entry.first, entry.second);
 
-    // The scenes timed on their settled frames
-    failures += timeScene("synth", only, [](int frames, Timing *timing) { renderSynth(frames, timing); });
-    failures += timeScene("waveforms", only, [](int frames, Timing *timing) { renderWaveforms(frames, timing); });
-    failures += timeScene("scroll", only, [](int frames, Timing *timing) { renderScroll(frames, timing); });
-    failures += timeScene("controls", only, [](int frames, Timing *timing) { renderControls(frames, timing); });
-    failures += timeScene("arrangement", only, [](int frames, Timing *timing) { renderArrangement(frames, timing); });
-    failures += timeScene("pianoroll", only, [](int frames, Timing *timing) { renderPianoRoll(frames, timing); });
-    failures += timeScene("steps", only, [](int frames, Timing *timing) { renderSteps(frames, timing); });
-    return failures;
+    // The scenes timed on their settled frames: a benchmark (VIBIN_TEST_BENCH), each a scene built again
+    if (bench()) {
+        failures += timeScene("synth", only, [](int frames, Timing *timing) { renderSynth(frames, timing); });
+        failures += timeScene("waveforms", only, [](int frames, Timing *timing) { renderWaveforms(frames, timing); });
+        failures += timeScene("scroll", only, [](int frames, Timing *timing) { renderScroll(frames, timing); });
+        failures += timeScene("controls", only, [](int frames, Timing *timing) { renderControls(frames, timing); });
+        failures += timeScene("arrangement", only, [](int frames, Timing *timing) { renderArrangement(frames, timing); });
+        failures += timeScene("pianoroll", only, [](int frames, Timing *timing) { renderPianoRoll(frames, timing); });
+        failures += timeScene("steps", only, [](int frames, Timing *timing) { renderSteps(frames, timing); });
+    }
+    if (flag("VIBIN_TEST_TIMES")) {
+        std::sort(times.begin(), times.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+        for (size_t i = 0; i < times.size() && i < 10; ++i)
+            std::printf("TIME  %-7.0f ms  %s\n", times[i].first, times[i].second.c_str());
+    }
+    if (failures == 0)
+        std::printf("All passed: 0 failed (render)\n");
+    else
+        std::printf("%d FAILED (render)\n", failures);
+    return failures == 0 ? 0 : 1;
 }
 
 }

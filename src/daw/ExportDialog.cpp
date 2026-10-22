@@ -33,7 +33,8 @@ const std::vector<std::string> kSourceShort = {"Master", "Dry master", "Each tra
 const std::vector<ExportTap> kTaps = {ExportTap::PostFader, ExportTap::PreFader};
 const std::vector<ExportRangeKind> kRanges = {ExportRangeKind::Song, ExportRangeKind::Timeline, ExportRangeKind::Loop,
                                               ExportRangeKind::Bars};
-const std::vector<ExportFormat> kFormats = {ExportFormat::Wav, ExportFormat::Aiff, ExportFormat::Flac};
+const std::vector<ExportFormat> kFormats = {ExportFormat::Wav, ExportFormat::Aiff, ExportFormat::Flac, ExportFormat::Mp3};
+const std::vector<std::string> kFormatNames = {"WAV", "AIFF", "FLAC", "MP3"};
 const std::vector<int> kBits = {16, 24, 32};
 const std::vector<std::string> kRangeNames = {"Song", "Timeline", "Loop", "Bars"};
 const std::vector<NormalizeMode> kNormalize = {NormalizeMode::Off, NormalizeMode::Peak, NormalizeMode::Loudness};
@@ -42,6 +43,11 @@ const std::vector<DitherMode> kDithers = {DitherMode::None, DitherMode::Tpdf, Di
 const std::vector<std::string> kDitherNames = {"None", "TPDF", "Noise-shaped"};
 const std::vector<uint32_t> kRates = {22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000};
 const std::vector<std::string> kRateNames = {"22.05 kHz", "32 kHz", "44.1 kHz", "48 kHz", "88.2 kHz", "96 kHz", "176.4 kHz", "192 kHz"};
+// What an MP3 can be written at (audio::kMp3Rates, audio::kMp3Bitrates)
+const std::vector<uint32_t> kMp3RateChoices = {32000, 44100, 48000};
+const std::vector<std::string> kMp3RateNames = {"32 kHz", "44.1 kHz", "48 kHz"};
+const std::vector<int> kBitrates = {96, 112, 128, 160, 192, 224, 256, 320};
+const std::vector<std::string> kBitrateNames = {"96 kbps", "112 kbps", "128 kbps", "160 kbps", "192 kbps", "224 kbps", "256 kbps", "320 kbps"};
 const std::vector<double> kLoudnessValues = {-14.0, -16.0, -23.0, -9.0};
 // Short, so the choice doesn't widen the target's form (its figure is in the Loudness field beside it)
 const std::vector<std::string> kLoudnessNames = {"Custom", "Streaming (-14)", "Apple (-16)", "Broadcast (-23)", "Club (-9)"};
@@ -83,8 +89,11 @@ std::string summaryOf(const ExportTarget &t)
         text += " (" + std::to_string(t.tracks.size()) + ")";
     if (t.source == ExportSource::Midi)
         return text;
-    const char *container = t.format == ExportFormat::Wav ? "WAV" : t.format == ExportFormat::Aiff ? "AIFF" : "FLAC";
-    text += std::string("  ") + container + " " + (t.bits == 32 ? std::string("float") : std::to_string(t.bits) + "-bit");
+    text += "  " + kFormatNames[static_cast<size_t>(indexOf(kFormats, t.format))] + " ";
+    if (t.format == ExportFormat::Mp3)
+        text += std::to_string(t.bitrate) + " kbps";
+    else
+        text += t.bits == 32 ? std::string("float") : std::to_string(t.bits) + "-bit";
     if (t.normalize == NormalizeMode::Peak)
         text += "  peak " + format("%.1f dB", t.peakDb);
     else if (t.normalize == NormalizeMode::Loudness)
@@ -491,6 +500,7 @@ void ExportEditor::buildForm()
     const ExportTarget t = *current;
     const bool midi = t.source == ExportSource::Midi;
     const bool wav = t.format == ExportFormat::Wav;
+    const bool mp3 = t.format == ExportFormat::Mp3;
     ProjectStore *s = &store_;
 
     // Two grids side by side: the first holds the target and its audio, the second what is done to it
@@ -615,33 +625,59 @@ void ExportEditor::buildForm()
     // The file: format, bits, rate, channels, normalising, limiter, fades, dither (audio only)
     if (!midi) {
         labelled("Format");
-        segmented({"WAV", "AIFF", "FLAC"}, indexOf(kFormats, t.format), [s, pi, ti](int i) {
+        segmented(kFormatNames, indexOf(kFormats, t.format), [s, pi, ti](int i) {
             editTarget(*s, pi, ti, [i](ExportTarget &x) {
+                const ExportFormat was = x.format;
                 x.format = kFormats[static_cast<size_t>(i)];
                 if (x.format != ExportFormat::Wav && x.bits == 32)
                     x.bits = 24;
+                // An MP3 is encoded from 16 bits at 32, 44.1 or 48 kHz; leaving MP3 goes back to 24 bits
+                if (x.format == ExportFormat::Mp3) {
+                    x.bits = 16;
+                    x.sampleRate = mp3RateFor(x.sampleRate);
+                } else if (was == ExportFormat::Mp3) {
+                    x.bits = 24;
+                }
             });
         }).setAlignSelf(Align::Start);
 
-        labelled("Bits");
-        // 32-bit float is for WAV only
-        const std::vector<int> bitChoices = wav ? kBits : std::vector<int>{16, 24};
-        const std::vector<std::string> bitNames = wav ? std::vector<std::string>{"16", "24", "32 float"}
-                                                      : std::vector<std::string>{"16", "24"};
-        segmented(bitNames, indexOf(bitChoices, t.bits), [s, pi, ti, bitChoices](int i) {
-            const int bits = bitChoices[static_cast<size_t>(i)];
-            editTarget(*s, pi, ti, [bits](ExportTarget &x) { x.bits = bits; });
-        }).setAlignSelf(Align::Start);
+        if (mp3) {
+            labelled("Bitrate");
+            Dropdown &bitrate = grid->add<Dropdown>(context_, kBitrateNames, indexOf(kBitrates, t.bitrate), [s, pi, ti](int i) {
+                editTarget(*s, pi, ti, [i](ExportTarget &x) { x.bitrate = kBitrates[static_cast<size_t>(i)]; });
+            });
+            bitrate.setAlignSelf(Align::Start);
+            keep([&bitrate, s, pi, ti] {
+                const ExportTarget *x = targetAt(*s, pi, ti);
+                if (x && bitrate.selected() != indexOf(kBitrates, x->bitrate))
+                    bitrate.setSelected(indexOf(kBitrates, x->bitrate));
+            });
+        } else {
+            labelled("Bits");
+            // 32-bit float is for WAV only
+            const std::vector<int> bitChoices = wav ? kBits : std::vector<int>{16, 24};
+            const std::vector<std::string> bitNames = wav ? std::vector<std::string>{"16", "24", "32 float"}
+                                                          : std::vector<std::string>{"16", "24"};
+            segmented(bitNames, indexOf(bitChoices, t.bits), [s, pi, ti, bitChoices](int i) {
+                const int bits = bitChoices[static_cast<size_t>(i)];
+                editTarget(*s, pi, ti, [bits](ExportTarget &x) { x.bits = bits; });
+            }).setAlignSelf(Align::Start);
+        }
 
         labelled("Sample rate");
-        Dropdown &rate = grid->add<Dropdown>(context_, kRateNames, indexOf(kRates, t.sampleRate), [s, pi, ti](int i) {
-            editTarget(*s, pi, ti, [i](ExportTarget &x) { x.sampleRate = kRates[static_cast<size_t>(i)]; });
-        });
+        // An MP3 offers only the rates it can be written at
+        const std::vector<uint32_t> *rates = mp3 ? &kMp3RateChoices : &kRates;
+        Dropdown &rate = grid->add<Dropdown>(context_, mp3 ? kMp3RateNames : kRateNames, indexOf(*rates, t.sampleRate),
+                                             [s, pi, ti, rates](int i) {
+                                                 editTarget(*s, pi, ti, [i, rates](ExportTarget &x) {
+                                                     x.sampleRate = (*rates)[static_cast<size_t>(i)];
+                                                 });
+                                             });
         rate.setAlignSelf(Align::Start);
-        keep([&rate, s, pi, ti] {
+        keep([&rate, s, pi, ti, rates] {
             const ExportTarget *x = targetAt(*s, pi, ti);
-            if (x && rate.selected() != indexOf(kRates, x->sampleRate))
-                rate.setSelected(indexOf(kRates, x->sampleRate));
+            if (x && rate.selected() != indexOf(*rates, x->sampleRate))
+                rate.setSelected(indexOf(*rates, x->sampleRate));
         });
 
         labelled("Channels");

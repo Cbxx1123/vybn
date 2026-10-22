@@ -6,7 +6,9 @@
 #include <string>
 #include <vector>
 
+#include "AutomationLanes.h"
 #include "Format.h"
+#include "Routing.h"
 #include "audio/DeviceChain.h"
 #include "audio/PluginInstrument.h"
 #include "plugin/Slot.h"
@@ -119,7 +121,8 @@ AudioBridge::TrackAudio AudioBridge::makeTrack(const Track &t)
         notes->setMidiSource(&midi_);
         fresh.player = notes.get();
         source = std::move(notes);
-    } else {
+    } else if (!isBus(t.kind)) {
+        // (buses make no sound of their own: they play what they are given)
         auto audioClips = std::make_unique<audio::AudioClipPlayer>();
         fresh.clips = audioClips.get();
         source = std::move(audioClips);
@@ -172,7 +175,7 @@ void AudioBridge::reconcile(const Project &project)
     }
     for (size_t j = 0; j < tracks_.size(); ++j) {
         if (!taken[j])
-            removeAudio(tracks_[j]);
+            retiring_.push_back(std::move(tracks_[j]));
     }
     tracks_ = std::move(next);
 }
@@ -188,8 +191,14 @@ void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
     audio::DeviceChain &master = audio_.masterEffects();
     master.apply(project.masterEffects);
     master.collect();
+    const uint64_t masterKey = automationKey(master, store.masterRevision());
+    if (masterKey != masterAutomationKey_) {
+        syncAutomation(master, nullptr, project.masterEffects, &project.masterAutomation);
+        masterAutomationKey_ = masterKey;
+    }
     for (size_t j = 0; j < project.masterEffects.size(); ++j)
         syncDevice(store, DevicePlace::effect(true, 0, static_cast<int>(j)), master.effect(j));
+    audio_.masterVolume().set(project.masterVolume);
     // MIDI keyboards play the armed instrument tracks, or the selected one when none is armed
     bool instrumentArmed = false;
     for (const Track &t : project.tracks)
@@ -201,12 +210,20 @@ void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
         p.gain.set(t.gain);
         p.pan.set(t.pan);
         p.mute = t.mute;
-        p.setSolo(t.solo);
+        // (its solo comes from the routing: what a soloed track feeds, or is fed by, is heard too)
+        for (size_t k = 0; k < t.sends.size() && k < audio::TrackProcessor::kMaxSends; ++k)
+            p.setSendLevel(static_cast<uint32_t>(k), t.sends[k].level);
         // Its devices: the instrument (instrument tracks) and the effects, and the plugins' own
         // changes back into the project
         static const audio::DeviceSetting kNone;
         p.chain.apply(t.kind == TrackKind::Instrument ? t.instrument : kNone, t.effects);
         p.chain.collect();
+        // Its automation: the curves made again when the track's content or its devices moved
+        const uint64_t key = automationKey(p.chain, store.trackRevision(static_cast<int>(i)));
+        if (key != state.automationKey) {
+            syncAutomation(p.chain, t.kind == TrackKind::Instrument ? &t.instrument : nullptr, t.effects, &t.automation);
+            state.automationKey = key;
+        }
         if (t.kind == TrackKind::Instrument && t.hasInstrument())
             syncDevice(store, DevicePlace::instrumentOf(static_cast<int>(i)), p.chain.instrument());
         for (size_t j = 0; j < t.effects.size(); ++j)
@@ -244,7 +261,9 @@ void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
         const uint64_t trackRevision = store.trackRevision(static_cast<int>(i));
         if (trackRevision != state.notesRevision) {
             const uint64_t hash = hashNotes(t);
-            if (hash == state.noteHash || player->setSequence(sequenceFor(t))) {
+            const bool unchanged = hash == state.noteHash;
+            if (unchanged || player->setSequence(sequenceFor(t))) {
+                sequences_ += unchanged ? 0 : 1;
                 state.noteHash = hash;
                 state.notesRevision = trackRevision;
             }
@@ -285,15 +304,84 @@ void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
         player->collect();
     }
 
-    // Delay compensation: every track held back to line up with the one its plugins delay most
+    // The routing and delay compensation: every path held back to line up with the one its plugins
+    // delay most
     for (size_t i = 0; i < tracks_.size(); ++i)
         tracks_[i].latency = trackLatency(i);
+    syncRouting(project);
+}
+
+void AudioBridge::syncRouting(const Project &project)
+{
+    // What the routing is made from: the processors, the kinds, outputs, sends, solos and latencies
+    uint64_t key = 1469598103934665603ull;
+    const size_t count = tracks_.size();
+    mix(key, &count, sizeof count);
+    for (size_t i = 0; i < count; ++i) {
+        const Track &t = project.tracks[i];
+        const uintptr_t address = reinterpret_cast<uintptr_t>(tracks_[i].processor);
+        mix(key, &address, sizeof address);
+        mix(key, &t.kind, sizeof t.kind);
+        mix(key, &t.output, sizeof t.output);
+        mix(key, &t.solo, sizeof t.solo);
+        mix(key, &tracks_[i].latency, sizeof tracks_[i].latency);
+        for (const Send &s : t.sends) {
+            mix(key, &s.to, sizeof s.to);
+            mix(key, &s.preFader, sizeof s.preFader);
+        }
+        for (const audio::DeviceSetting &d : t.effects)
+            mix(key, &d.sidechain, sizeof d.sidechain);
+    }
+    for (const audio::DeviceSetting &d : project.masterEffects)
+        mix(key, &d.sidechain, sizeof d.sidechain);
+    if (key == routingKey_ && retiring_.empty())
+        return;
+    routingKey_ = key;
+
     std::vector<uint32_t> latencies;
+    latencies.reserve(count);
     for (const TrackAudio &t : tracks_)
         latencies.push_back(t.latency);
-    const std::vector<uint32_t> delays = audio::compensations(latencies);
-    for (size_t i = 0; i < tracks_.size(); ++i)
-        tracks_[i].processor->compensation = delays[i];
+    const RoutingPlan plan = planRouting(project, latencies, audio::TrackProcessor::kMaxCompensation);
+    auto routing = std::make_unique<audio::Routing>();
+    for (int stage = 0; stage < plan.stages; ++stage) {
+        routing->beginStage();
+        for (size_t i = 0; i < count; ++i) {
+            const RoutingPlan::Node &node = plan.nodes[i];
+            if (node.stage != stage)
+                continue;
+            const Track &t = project.tracks[i];
+            audio::Route route;
+            route.track = tracks_[i].processor;
+            route.output = node.output.to >= 0 ? tracks_[static_cast<size_t>(node.output.to)].processor : nullptr;
+            for (size_t k = 0; k < node.sends.size() && k < audio::TrackProcessor::kMaxSends; ++k) {
+                const RoutingPlan::Path &path = node.sends[k];
+                if (path.to < 0)
+                    continue;
+                route.sends.push_back({tracks_[static_cast<size_t>(path.to)].processor, static_cast<uint32_t>(k),
+                                       sendParam(t.sends[k].to), path.delay, t.sends[k].preFader});
+            }
+            for (const RoutingPlan::Node::Key &k : node.keys) {
+                if (route.keys.size() >= audio::TrackProcessor::kMaxKeys)
+                    break;
+                route.keys.push_back({tracks_[static_cast<size_t>(k.from)].processor, static_cast<uint32_t>(k.effect), k.delay});
+            }
+            routing->add(std::move(route));
+        }
+    }
+    for (const RoutingPlan::Node::Key &k : plan.masterKeys)
+        routing->masterKeys.push_back({tracks_[static_cast<size_t>(k.from)].processor, static_cast<uint32_t>(k.effect), k.delay});
+    for (size_t i = 0; i < count; ++i) {
+        tracks_[i].processor->compensation = plan.nodes[i].output.delay;
+        tracks_[i].processor->setSolo(plan.nodes[i].soloed);
+    }
+    masterTime_ = plan.masterTime;
+    audio_.setRouting(std::move(routing));
+
+    // Nothing the audio thread plays names them now
+    for (TrackAudio &t : retiring_)
+        removeAudio(t);
+    retiring_.clear();
 }
 
 audio::TrackProcessor *AudioBridge::processor(int track) const
@@ -308,9 +396,14 @@ void AudioBridge::dropAll()
     // The tracks leave the graph; sync adds the project's. Loads still under way for the old
     // tracks find no entry with their id and kind waiting for them, or one that asked for the same
     // instrument, which gets the same samples, and are dropped otherwise.
+    audio_.setRouting(nullptr);
+    routingKey_ = 0;
     for (TrackAudio &t : tracks_)
         removeAudio(t);
+    for (TrackAudio &t : retiring_)
+        removeAudio(t);
     tracks_.clear();
+    retiring_.clear();
     levels_.clear();
 }
 
@@ -442,16 +535,13 @@ std::string AudioBridge::latencyText(int track) const
 {
     if (track < 0 || static_cast<size_t>(track) >= tracks_.size())
         return {};
-    const uint32_t mine = tracks_[static_cast<size_t>(track)].latency;
-    uint32_t most = 0;
-    for (const TrackAudio &t : tracks_)
-        most = std::max(most, t.latency);
-    if (most == 0)
+    const TrackAudio &state = tracks_[static_cast<size_t>(track)];
+    if (masterTime_ == 0)
         return {};
     const double rate = audio_.sampleRate() > 0 ? audio_.sampleRate() : 48000.0;
-    if (mine == most)
-        return format("Plugin latency %.1f ms", mine * 1000.0 / rate);
-    return format("Plugin latency %.1f ms", mine * 1000.0 / rate) + format(", held %.1f ms to line up", (most - mine) * 1000.0 / rate);
+    const uint32_t held = state.processor->compensation.load(std::memory_order_relaxed);
+    const std::string text = format("Plugin latency %.1f ms", state.latency * 1000.0 / rate);
+    return held == 0 ? text : text + format(", held %.1f ms to line up", held * 1000.0 / rate);
 }
 
 audio::NotePlayer *AudioBridge::player(int track) const
@@ -468,13 +558,83 @@ void AudioBridge::releaseKey(int key)
     }
 }
 
+uint64_t AudioBridge::automationKey(audio::DeviceChain &chain, uint64_t revision)
+{
+    uint64_t h = 1469598103934665603ull;
+    mix(h, &revision, sizeof revision);
+    auto device = [&h](audio::Device *d) {
+        const uintptr_t address = reinterpret_cast<uintptr_t>(d);
+        mix(h, &address, sizeof address);
+        if (plugin::Slot *slot = d ? d->slot() : nullptr) {
+            const uint64_t version = slot->paramsVersion();
+            mix(h, &version, sizeof version);
+        }
+    };
+    device(chain.instrument());
+    for (size_t i = 0; i < chain.size(); ++i)
+        device(chain.effect(i));
+    return h;
+}
+
+void AudioBridge::syncAutomation(audio::DeviceChain &chain, const audio::DeviceSetting *instrument,
+                                 const std::vector<audio::DeviceSetting> &effects,
+                                 const std::vector<audio::AutomationLane> *mixLanes)
+{
+    std::vector<std::pair<const audio::Device *, audio::AutomationCurves>> devices;
+    // A device's lanes with points, each with its parameter's range and curve (a plugin's parameters
+    // are known once it has loaded: until then its lanes wait)
+    auto add = [&devices](audio::Device *device, const audio::DeviceSetting &setting) {
+        if (!device || !device->automatable() || !device->matches(setting) || setting.automation.empty())
+            return;
+        audio::AutomationCurves curves;
+        std::vector<audio::DeviceParam> params;
+        for (const audio::AutomationLane &lane : setting.automation) {
+            if (lane.points.empty())
+                continue;
+            if (params.empty())
+                params = device->params();
+            const auto param = std::find_if(params.begin(), params.end(),
+                                            [&lane](const audio::DeviceParam &p) { return p.id == lane.param; });
+            if (param == params.end() || param->readOnly)
+                continue;
+            audio::AutomationCurve curve;
+            curve.param = lane.param;
+            curve.curve = automationCurve(*param);
+            curve.points = lane.points;
+            curves.push_back(std::move(curve));
+        }
+        devices.emplace_back(device, std::move(curves));
+    };
+    if (instrument && !instrument->empty())
+        add(chain.instrument(), *instrument);
+    for (size_t j = 0; j < effects.size(); ++j)
+        add(chain.effect(j), effects[j]);
+    // The track's own: its volume on its fader's taper, its pan
+    audio::AutomationCurves mixCurves;
+    for (size_t k = 0; mixLanes && k < mixLanes->size(); ++k) {
+        const audio::AutomationLane &lane = (*mixLanes)[k];
+        if (lane.points.empty() || (lane.param != audio::kVolumeParam && lane.param != audio::kPanParam && !isSendParam(lane.param)))
+            continue;
+        audio::AutomationCurve curve;
+        curve.param = lane.param;
+        curve.curve = automationCurve(lane.param);
+        curve.points = lane.points;
+        mixCurves.push_back(std::move(curve));
+    }
+    chain.setAutomation(devices, std::move(mixCurves));
+}
+
 void AudioBridge::syncDevice(ProjectStore &store, const DevicePlace &place, audio::Device *device)
 {
     const audio::DeviceSetting *now = store.project().device(place);
     plugin::Slot *slot = device && now && device->matches(*now) ? device->slot() : nullptr;
     if (!slot)
         return;
-    const plugin::ParamValues changes = slot->takeChanges();
+    plugin::ParamValues changes = slot->takeChanges();
+    // An automated parameter's value is the automation's, not a change of the project's own
+    changes.erase(std::remove_if(changes.begin(), changes.end(),
+                                 [now](const auto &v) { return audio::automated(now->automation, v.first); }),
+                  changes.end());
     const bool renamed = slot->state() == plugin::Slot::State::Ready && now->name != slot->name();
     // Only a change the project doesn't have yet is written (this runs every frame)
     bool differs = renamed;

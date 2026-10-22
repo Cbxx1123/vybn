@@ -12,9 +12,11 @@
 
 #include "Arrangement.h"
 #include "AudioEditor.h"
+#include "AutomationLanes.h"
 #include "Format.h"
 #include "Mixer.h"
 #include "PianoRoll.h"
+#include "Routing.h"
 #include "TransportBar.h"
 #include "audio/AudioFile.h"
 #include "audio/Memory.h"
@@ -154,6 +156,8 @@ std::string DawApp::trackInputText(int index) const
     if (t->kind == TrackKind::Instrument) { // "MIDI in" has its own line above it in the header
         return t->hasInstrument() ? t->instrument.name : std::string("No instrument  (click to choose)");
     }
+    if (t->bus()) // a bus: what it is and where it goes
+        return std::string(kindName(t->kind)) + "  /  to " + outputName(project(), index) + extraDestinations(project(), index);
     if (t->inputChannel < 0)
         return "Audio  /  no input";
     std::string in = "In " + std::to_string(t->inputChannel + 1);
@@ -457,14 +461,125 @@ void DawApp::openClipDialog()
     dialog.addButton("Done", {}, true);
 }
 
+void DawApp::openAutomationMenu(int track, Vec2 at)
+{
+    const Track *t = project().track(track);
+    if (!t)
+        return;
+    // Picking a parameter adds its lane (once) and shows the track's lanes; it is ticked once it has one
+    auto add = [this, track](AutomationPlace place, uint32_t param) {
+        return [this, track, place, param] {
+            if (std::vector<audio::AutomationLane> *lanes = editLanesAt(session_.store(), track, place)) {
+                if (!audio::findAutomation(*lanes, param))
+                    lanes->push_back({param, {}});
+            }
+            arrangement_->showAutomation(track, true);
+        };
+    };
+    auto has = [this, track](AutomationPlace place, uint32_t param) {
+        return [this, track, place, param] {
+            const std::vector<audio::AutomationLane> *lanes = lanesAt(project(), track, place);
+            return lanes && audio::findAutomation(*lanes, param) != nullptr;
+        };
+    };
+    std::vector<MenuItem> items;
+    for (uint32_t param : {audio::kVolumeParam, audio::kPanParam})
+        items.push_back(MenuItem::toggle(trackParam(param).name, has(AutomationPlace{}, param), add(AutomationPlace{}, param)));
+    // Each send's level: the returns and groups it sends to or may (choosing one with no send makes it, at nothing)
+    for (size_t r = 0; r < project().tracks.size(); ++r) {
+        const Track &ret = project().tracks[r];
+        if (!isBus(ret.kind) || (!findSend(*t, ret.id) && !canSendTo(project(), track, static_cast<int>(r))))
+            continue;
+        const ObjectId to = ret.id;
+        auto addLane = add(AutomationPlace{}, sendParam(to));
+        items.push_back(MenuItem::toggle("Send to " + ret.name, has(AutomationPlace{}, sendParam(to)), [this, track, to, addLane] {
+            const Track *tr = project().track(track);
+            if (tr && !findSend(*tr, to))
+                session_.store().editMix(track).sends.push_back({to, 0.0f, false});
+            addLane();
+        }));
+    }
+    // Each device's parameters, in a submenu of its own (a plugin's once it has loaded)
+    auto deviceMenu = [&](const DevicePlace &place, const audio::DeviceSetting &setting) {
+        audio::Device *device = bridge_->deviceAt(project(), place);
+        const AutomationPlace where{false, place};
+        std::vector<MenuItem> params;
+        if (device && device->automatable()) {
+            for (const audio::DeviceParam &p : device->params()) {
+                if (p.hidden || p.readOnly)
+                    continue;
+                const std::string label = p.module.empty() ? p.name : p.module + ": " + p.name;
+                params.push_back(MenuItem::toggle(label, has(where, p.id), add(where, p.id)));
+            }
+        }
+        if (params.empty()) {
+            const std::string why = !device ? "Starting..." : device->automatable() ? "Loading..." : "Can't be automated";
+            params.push_back(MenuItem::item(why, [] {}).when([] { return false; }));
+        }
+        items.push_back(MenuItem::sub(setting.name, std::move(params)));
+    };
+    if ((t->kind == TrackKind::Instrument && t->hasInstrument()) || !t->effects.empty())
+        items.push_back(MenuItem::divider());
+    if (t->kind == TrackKind::Instrument && t->hasInstrument())
+        deviceMenu(DevicePlace::instrumentOf(track), t->instrument);
+    for (size_t i = 0; i < t->effects.size(); ++i)
+        deviceMenu(DevicePlace::effect(false, track, static_cast<int>(i)), t->effects[i]);
+    openContextMenu(gui_, items, at);
+}
+
+void DawApp::openMasterAutomationMenu(Vec2 at)
+{
+    // Picking a parameter adds its lane (once) and shows the master's lanes; it is ticked once it has one
+    auto add = [this](AutomationPlace place, uint32_t param) {
+        return [this, place, param] {
+            if (std::vector<audio::AutomationLane> *lanes = editLanesAt(session_.store(), -1, place)) {
+                if (!audio::findAutomation(*lanes, param))
+                    lanes->push_back({param, {}});
+            }
+            arrangement_->showMasterAutomation(true);
+        };
+    };
+    auto has = [this](AutomationPlace place, uint32_t param) {
+        return [this, place, param] {
+            const std::vector<audio::AutomationLane> *lanes = lanesAt(project(), -1, place);
+            return lanes && audio::findAutomation(*lanes, param) != nullptr;
+        };
+    };
+    const AutomationPlace volume = AutomationPlace::masterVolume();
+    std::vector<MenuItem> items{
+        MenuItem::toggle(trackParam(audio::kVolumeParam).name, has(volume, audio::kVolumeParam), add(volume, audio::kVolumeParam))};
+    if (!project().masterEffects.empty())
+        items.push_back(MenuItem::divider());
+    for (size_t i = 0; i < project().masterEffects.size(); ++i) {
+        const DevicePlace place = DevicePlace::effect(true, 0, static_cast<int>(i));
+        const AutomationPlace where = AutomationPlace::masterEffect(static_cast<int>(i));
+        audio::Device *device = bridge_->deviceAt(project(), place);
+        std::vector<MenuItem> params;
+        if (device && device->automatable()) {
+            for (const audio::DeviceParam &p : device->params()) {
+                if (p.hidden || p.readOnly)
+                    continue;
+                const std::string label = p.module.empty() ? p.name : p.module + ": " + p.name;
+                params.push_back(MenuItem::toggle(label, has(where, p.id), add(where, p.id)));
+            }
+        }
+        if (params.empty()) {
+            const std::string why = !device ? "Starting..." : device->automatable() ? "Loading..." : "Can't be automated";
+            params.push_back(MenuItem::item(why, [] {}).when([] { return false; }));
+        }
+        items.push_back(MenuItem::sub(project().masterEffects[i].name, std::move(params)));
+    }
+    openContextMenu(gui_, items, at);
+}
+
 void DawApp::openTrackMenu(int track, Vec2 at)
 {
     const Track *t = project().track(track);
     if (!t)
         return;
-    std::vector<MenuItem> items{
-        MenuItem::item("Rename", [this, track] { arrangement_->renameTrack(track); }),
-        MenuItem::toggle("Armed for recording", [this, track] {
+    std::vector<MenuItem> items{MenuItem::item("Rename", [this, track] { arrangement_->renameTrack(track); })};
+    if (!t->bus()) { // buses record nothing
+        items.push_back(MenuItem::toggle("Armed for recording", [this, track] {
             const Track *tr = project().track(track);
             return tr && tr->armed;
         }, [this, track] {
@@ -472,8 +587,8 @@ void DawApp::openTrackMenu(int track, Vec2 at)
                 Track &tr = session_.store().editMix(track);
                 tr.armed = !tr.armed;
             }
-        }),
-    };
+        }));
+    }
     if (t->kind == TrackKind::Instrument) {
         // Its instrument: chosen in the device picker, opened (every control, and a plugin's own
         // interface), or removed
@@ -529,6 +644,46 @@ void DawApp::openTrackMenu(int track, Vec2 at)
         }));
         items.push_back(MenuItem::item("Import audio file here...", [this, track] { importAudio(track); }));
     }
+    if (t->bus()) {
+        items.push_back(MenuItem::item("Add effect...", [this, track, at] {
+            session_.store().select(track);
+            pickDevice(false, false, track, {at.x, at.y, 1.0f, 1.0f});
+        }));
+    }
+    // Where it goes: the master or a group (none that would loop), and a new group around it
+    std::vector<MenuItem> outputs;
+    auto output = [this, track](const std::string &label, ObjectId id) {
+        return MenuItem::toggle(label, [this, track, id] {
+            const Track *tr = project().track(track);
+            return tr && tr->output == id;
+        }, [this, track, id] {
+            const Track *tr = project().track(track);
+            if (tr && tr->output != id)
+                session_.store().editMix(track).output = id;
+        });
+    };
+    outputs.push_back(output("Master", kNoId));
+    for (int g : outputChoices(project(), track))
+        outputs.push_back(output(project().tracks[static_cast<size_t>(g)].name, project().tracks[static_cast<size_t>(g)].id));
+    items.push_back(MenuItem::divider());
+    // Also to: a send at 0 dB into each other group it may feed (not its output group; that would play twice)
+    const std::vector<int> also = alsoToChoices(project(), track);
+    if (!also.empty()) {
+        outputs.push_back(MenuItem::divider());
+        outputs.push_back(MenuItem::item("Also to", [] {}).when([] { return false; }));
+        for (int g : also) {
+            const ObjectId id = project().tracks[static_cast<size_t>(g)].id;
+            outputs.push_back(MenuItem::toggle(project().tracks[static_cast<size_t>(g)].name, [this, track, id] {
+                const Track *tr = project().track(track);
+                return tr && findSend(*tr, id) != nullptr;
+            }, [this, track, id] {
+                const Track *tr = project().track(track);
+                setAlsoTo(session_.store(), track, id, tr && !findSend(*tr, id));
+            }));
+        }
+    }
+    items.push_back(MenuItem::sub("Output", outputs));
+    items.push_back(MenuItem::item("Group the track", [this, track] { groupTrack(track); }, "track.group"));
     items.push_back(MenuItem::divider());
     items.push_back(MenuItem::item("Delete track", [this, track] { deleteTrack(track); }));
     openContextMenu(gui_, items, at);

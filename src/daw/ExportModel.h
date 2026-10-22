@@ -25,7 +25,7 @@ enum class ExportSource {
 enum class ExportTap { PostFader, PreFader };
 // Which part of the song: to the last clip's end, the whole timeline, the project's loop, or bars
 enum class ExportRangeKind { Song, Timeline, Loop, Bars };
-enum class ExportFormat { Wav, Aiff, Flac };
+enum class ExportFormat { Wav, Aiff, Flac, Mp3 };
 enum class NormalizeMode { Off, Peak, Loudness };
 enum class DitherMode { None, Tpdf, NoiseShaped };
 
@@ -41,7 +41,8 @@ struct ExportTarget {
     double fromBar = 1, toBar = 9; // Bars: 1-based, toBar is exclusive
     double tailSeconds = 4.0;      // how long after the range notes may ring on
     ExportFormat format = ExportFormat::Wav;
-    int bits = 24;
+    int bits = 24;           // WAV, AIFF and FLAC (an MP3 is encoded from 16 bits)
+    int bitrate = 320;       // MP3 only, in kbps: one of audio::kMp3Bitrates
     uint32_t sampleRate = 48000;
     bool mono = false;
     NormalizeMode normalize = NormalizeMode::Off;
@@ -51,7 +52,8 @@ struct ExportTarget {
     double ceilingDbtp = -1.0;
     double fadeInMs = 0, fadeOutMs = 0;
     DitherMode dither = DitherMode::Tpdf; // used for 16 and 24 bits
-    // Template: {project} {target} {track} {date} {time} {rate} {bits} {format} {preset}
+    // Template: {project} {target} {track} {date} {time} {rate} {bits} {format} {preset} ({bits} is
+    // an MP3's bitrate, as "320kbps")
     std::string fileName = "{project}";
     std::string folder; // empty: beside the project (else the library's Exports folder)
 
@@ -101,6 +103,10 @@ bool fromName(const std::string &name, DitherMode &out);
 // is the track of an EachTrack output (empty for the others); `presetName` is the preset's name.
 std::string resolveFileName(const ExportTarget &target, const Project &project, const std::string &presetName,
                             const std::string &trackName, std::time_t now);
+
+// The sample rate an MP3 is written at for a target set to `rate`: 32, 44.1 or 48 kHz, keeping the
+// family (44.1 kHz and its multiples become 44.1 kHz, the others 48 kHz unless it is 32 kHz)
+uint32_t mp3RateFor(uint32_t rate);
 
 // The part of the song a target covers, in beats: Song is 0 to the last clip's end (at least one
 // bar), Timeline the whole timeline, Loop the project's loop (false when there is none), Bars the

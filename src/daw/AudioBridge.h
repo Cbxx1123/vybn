@@ -19,7 +19,8 @@ namespace daw {
 
 // Keeps the audio engine in step with the project. Each track of the project has a TrackProcessor
 // in the AudioSystem's graph (made by sync, taken out by sync when its track is gone, or by
-// dropAll), and the players
+// dropAll), joined by the routing sync hands the audio system (outputs into groups, sends into
+// returns; buses have no player), and the players
 // behind it: an instrument track's NotePlayer, with a library instrument loaded in the background
 // and handed to its sampler, and an audio track's AudioClipPlayer. sync runs once a frame: it copies
 // each track's mix settings to its processor, sends notes and clips when they change, applies the
@@ -51,6 +52,9 @@ public:
     // and Metrics: an edit that keeps the tracks makes none
     uint64_t processorsMade() const { return made_; }
     uint64_t processorsRemoved() const { return removed_; }
+    // How many note sequences sync has sent to the instrument tracks' players (since this bridge was
+    // made), for tests: an edit that changes one track's notes sends one
+    uint64_t sequencesSent() const { return sequences_; }
     // Before saving: each plugin's state now, into the project
     void captureStates(ProjectStore &store);
     // Tracks that asked for the library instrument `name` ask again (it was just installed)
@@ -69,7 +73,8 @@ public:
     std::vector<plugin::Slot *> pluginSlots();
     // Frames a track's plugins (its instrument and the effects not bypassed) delay its sound
     uint32_t trackLatency(size_t track) const;
-    // "Plugin latency 5.3 ms, held 2.1 ms to line up", or empty when no plugin delays anything
+    // "Plugin latency 5.3 ms, held 2.1 ms to line up" (its output's hold), or empty when no plugin
+    // delays anything
     std::string latencyText(int track) const;
     // The track's processor in the graph (nullptr until sync has added it, or out of range)
     audio::TrackProcessor *processor(int track) const;
@@ -102,8 +107,16 @@ private:
         std::shared_ptr<const audio::SampleSet> pendingSet; // loaded, waiting for the sampler
         std::string error;                          // why loading failed
         uint32_t latency = 0;                       // its plugins' latency at the last sync
+        uint64_t automationKey = 0;                 // what its chain's automation was made from (automationKey)
     };
 
+    // Automation: a key for what a chain's curves are made from (the part's revision, the devices
+    // and their parameter lists, which a plugin's loading changes), and the curves made again and
+    // handed to the chain when it moved. `mix` is the track's own lanes (null for the master).
+    static uint64_t automationKey(audio::DeviceChain &chain, uint64_t revision);
+    static void syncAutomation(audio::DeviceChain &chain, const audio::DeviceSetting *instrument,
+                               const std::vector<audio::DeviceSetting> &effects,
+                               const std::vector<audio::AutomationLane> *mix);
     // The plugin's own changes (and name) into the project, when they really differ from it
     void syncDevice(ProjectStore &store, const DevicePlace &place, audio::Device *device);
     uint64_t hashClips(const Project &project, const Track &t) const;
@@ -112,8 +125,12 @@ private:
     TrackAudio makeTrack(const Track &t);
     // Takes one track's processor out of the graph
     void removeAudio(TrackAudio &state);
-    // Puts tracks_ in the project's order by id: keeps what matches, makes what is new, removes the rest
+    // Puts tracks_ in the project's order by id: keeps what matches, makes what is new, and sets the
+    // rest aside in retiring_ (taken out of the graph by syncRouting, once no routing names them)
     void reconcile(const Project &project);
+    // The routing (Routing.h's plan: stages, outputs, sends, delay compensation and solo) made again and
+    // handed to the audio system when what it is made from changed, then the retiring tracks removed
+    void syncRouting(const Project &project);
 
     audio::AudioSystem &audio_;
     audio::MidiHub &midi_;
@@ -122,7 +139,11 @@ private:
     AudioPool &pool_;
     std::shared_ptr<audio::SoloGroup> solo_ = std::make_shared<audio::SoloGroup>();
     std::vector<TrackAudio> tracks_;
-    uint64_t made_ = 0, removed_ = 0;
+    std::vector<TrackAudio> retiring_; // gone from the project; removed after the next routing
+    uint64_t routingKey_ = 0;          // what the routing was last made from
+    uint32_t masterTime_ = 0;          // the latest path's latency to the master, from the last plan
+    uint64_t made_ = 0, removed_ = 0, sequences_ = 0;
+    uint64_t masterAutomationKey_ = 0;
     std::vector<float> levels_; // kept as its own vector: MixerView holds a reference to it
 };
 

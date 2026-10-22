@@ -37,6 +37,11 @@ DeviceAccess DevicesView::access(const DevicePlace &place)
     a.setting = [this, place] { return project().device(place); };
     a.edit = [this, place] { return store_.editDevice(place); };
     a.device = [this, place]() -> audio::Device * { return hooks_.device ? hooks_.device(place) : nullptr; };
+    a.playhead = hooks_.playhead;
+    a.sidechain = [this, place] { return sidechainOffer(project(), place); };
+    a.revision = [this] { return store_.revision(); };
+    if (hooks_.write)
+        a.write = [this, place](const audio::DeviceParam &param, double value) { return hooks_.write(place, param, value); };
     return a;
 }
 
@@ -49,7 +54,12 @@ std::string DevicesView::signature()
 {
     std::string s = master_ ? "M" : "T" + std::to_string(project().selectedTrack);
     auto describe = [&](const DevicePlace &place, const audio::DeviceSetting &d) {
-        s += "," + d.key();
+        s += "," + d.key() + (takesSidechain(d) ? "~" : "");
+        // A keyed effect says who keys it in its header: rebuilt when the key or the source's name changes
+        if (d.sidechain != kNoId) {
+            const Track *source = project().findTrack(d.sidechain);
+            s += "@" + std::to_string(d.sidechain) + (source ? source->name : std::string());
+        }
         audio::Device *device = hooks_.device ? hooks_.device(place) : nullptr;
         s += device ? ":" + std::to_string(device->params().size()) : ":-";
         if (plugin::Slot *slot = device ? device->slot() : nullptr)
@@ -164,9 +174,27 @@ void DevicesView::buildCard(Container &row, const DevicePlace &place)
     head.setAlign(Align::Center);
     auto &titles = head.add<Container>(Direction::Column);
     titles.setAlign(Align::Start);
-    titles.add<Label>(setting->name.empty() ? setting->id : setting->name, TextStyle::Subtitle).setMaxWidth(230.0f);
+    const std::string title = setting->name.empty() ? setting->id : setting->name;
+    if (instrument) {
+        // The instrument's name opens the picker, with the instrument in use at its top
+        Button &name = titles.add<Button>();
+        Button *raw = &name;
+        name.setLabel(title).setVariant(ButtonVariant::Flat).setSize(Size::Medium).setAlignSelf(Align::Start);
+        name.onClick([this, raw, place] {
+            if (hooks_.pick)
+                hooks_.pick(true, false, place.track, raw->rect());
+        });
+    } else {
+        titles.add<Label>(title, TextStyle::Subtitle).setMaxWidth(230.0f);
+    }
     titles.add<Label>(sourceText(*setting, instrument), TextStyle::Caption, instrument ? TextTone::Accent : TextTone::Muted)
         .setMaxWidth(230.0f);
+    // A keyed effect listens elsewhere: say so at a glance
+    if (!instrument && setting->sidechain != kNoId && takesSidechain(*setting)) {
+        const Track *source = project().findTrack(setting->sidechain);
+        if (source)
+            titles.add<Label>("Keyed by " + source->name, TextStyle::Caption, TextTone::Accent).setMaxWidth(230.0f);
+    }
     head.add<Spacer>();
     auto icon = [&head](Icon i, std::function<void()> action) -> Button & {
         return head.add<Button>(std::move(action)).setIcon(i).setVariant(ButtonVariant::Flat).setShape(Shape::Circle).setSize(Size::Small);
@@ -262,6 +290,10 @@ void DevicesView::buildBody(Container &card, const DevicePlace &place)
     } else if (device) {
         card.add<Label>("No parameters to show", TextStyle::Caption, TextTone::Muted);
     }
+
+    // A compressor or gate: the track whose sound it listens to
+    if (setting && takesSidechain(*setting))
+        addSidechainControl(context_, card, a);
 
     // A library instrument's state: loading, its memory, or why it is silent
     if (setting && setting->kind == audio::DeviceKind::Sampler && hooks_.instrumentStatus) {

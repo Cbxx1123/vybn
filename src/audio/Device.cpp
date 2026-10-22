@@ -13,7 +13,8 @@ std::string DeviceSetting::key() const
 
 bool DeviceSetting::operator==(const DeviceSetting &other) const
 {
-    return kind == other.kind && id == other.id && bypass == other.bypass && values == other.values;
+    return kind == other.kind && id == other.id && bypass == other.bypass && sidechain == other.sidechain &&
+           values == other.values && automation == other.automation;
 }
 
 const char *deviceKindKey(DeviceKind kind)

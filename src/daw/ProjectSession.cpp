@@ -41,11 +41,12 @@ bool sameClipContent(const Clip &a, const Clip &b)
     return true;
 }
 
-// A track's content as the store's track revision counts it: clips, notes, controllers, devices and
-// kind, but not the mix fields (name, gain, pan, mute, solo, armed, monitor, input)
+// A track's content as the store's track revision counts it: clips, notes, controllers, devices, automation and
+// kind, but not the mix fields (name, gain, pan, mute, solo, armed, folded, monitor, input)
 bool sameTrackContent(const Track &a, const Track &b)
 {
-    if (a.kind != b.kind || a.instrument != b.instrument || a.effects != b.effects || a.clips.size() != b.clips.size())
+    if (a.kind != b.kind || a.instrument != b.instrument || a.effects != b.effects || a.automation != b.automation ||
+        a.clips.size() != b.clips.size())
         return false;
     for (size_t i = 0; i < a.clips.size(); ++i) {
         if (!sameClipContent(a.clips[i], b.clips[i]))
@@ -84,11 +85,35 @@ bool ProjectSession::recordHistory(bool settled, bool canMerge, double now)
     }
     if (!dirty_)
         return false;
-    const bool recorded = history_.update(store_.project(), settled, canMerge, now);
+    const bool recorded = history_.update(store_, settled, canMerge, now);
     // A change still waiting for the edit to settle stays dirty, so the next settled frame looks again
     if (settled)
         dirty_ = false;
     return recorded;
+}
+
+void ProjectSession::restoreState(HistoryRestore plan)
+{
+    // The plan was made against the project as it was; if something has changed it since, the history
+    // can't take the result as its own and looks again next frame
+    const bool untouched = plan.revision != 0 && store_.revision() == plan.revision;
+    store_.restore(std::move(plan));
+    if (untouched) {
+        history_.adopt(store_);
+        seenRevision_ = store_.revision();
+        seenSelection_ = store_.selectionRevision();
+        dirty_ = false;
+    } else {
+        dirty_ = true;
+    }
+}
+
+void ProjectSession::restoreState(Project state)
+{
+    HistoryRestore plan;
+    plan.structural = true;
+    plan.project = std::move(state);
+    restoreState(std::move(plan));
 }
 
 void ProjectSession::verify()

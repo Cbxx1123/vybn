@@ -27,6 +27,10 @@ struct DevicesHooks {
     std::function<std::string(int track)> latencyText;
     // A library instrument's state: loading, its memory, or why it isn't playing
     std::function<std::string(int track)> instrumentStatus;
+    // The playhead in beats: automated knobs show the value they play there
+    std::function<double()> playhead;
+    // Recording automation: a knob's value written into its lane instead (DeviceAccess::write)
+    std::function<bool(const DevicePlace &place, const audio::DeviceParam &param, double value)> write;
 };
 
 // The Devices panel: the chain being edited as a row of cards. For a track, its instrument comes

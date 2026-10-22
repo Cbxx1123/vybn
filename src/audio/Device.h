@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "Automation.h"
 #include "plugin/Slot.h"
 
 namespace audio {
@@ -27,12 +28,18 @@ struct DeviceSetting {
     std::string id;
     std::string name; // shown: the effect's, the instrument's, or the plugin's as it last named itself
     bool bypass = false;
+    // The track whose sound an effect that takes a sidechain (EffectInfo::sidechain) listens to in
+    // place of its own input: a track's id (daw::ObjectId, which this layer doesn't know), 0 for none
+    uint32_t sidechain = 0;
     // Parameter values by id. A built-in effect has every one of its parameters (ids 0, 1, ...), a
     // sampler its own, a plugin those set on top of its state.
     plugin::ParamValues values;
     // A plugin's state (opaque, shared since it can be large): what its values started from,
     // refreshed when the project is saved. Not compared: a new state alone isn't a change.
     std::shared_ptr<const std::string> state;
+    // Its parameters' automation, by parameter id (see Automation.h): it moves, copies and goes
+    // with the device
+    std::vector<AutomationLane> automation;
 
     bool empty() const { return kind == DeviceKind::None; }
     double value(uint32_t paramId, double fallback) const { return plugin::valueOf(values, paramId, fallback); }
@@ -102,6 +109,11 @@ public:
     virtual std::string valueText(const DeviceParam &param, double value) const { return formatParam(param, value); }
     // A plugin device's slot (its state, editor and status), else nullptr
     virtual plugin::Slot *slot() { return nullptr; }
+    // Automation: whether its parameters can follow lanes, and, on the audio thread before it runs
+    // a block, a parameter's value for the block (plain, in the parameter's range). It must not
+    // lock or allocate. Devices that can't be automated ignore it.
+    virtual bool automatable() const { return false; }
+    virtual void automate(uint32_t /*paramId*/, double /*value*/) {}
     // Frames it delays the sound by (a plugin's latency while it plays)
     virtual uint32_t latency() const { return 0; }
     // Gain reduction in decibels over the last block, for effects that have a meter

@@ -1,6 +1,7 @@
 #include "RealtimePool.h"
 
 #include <algorithm>
+#include <chrono>
 
 #if defined(__SSE__) || defined(_M_X64) || defined(__x86_64__)
 #include <xmmintrin.h>
@@ -23,6 +24,11 @@ void pause()
 #endif
 }
 
+int64_t nowNs()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 }
 
 void RealtimePool::start(uint32_t workers)
@@ -31,8 +37,10 @@ void RealtimePool::start(uint32_t workers)
     stopping_ = false;
     workers = std::min<uint32_t>(workers, 63);
     active_ = workers;
+    gapNs_ = INT64_MAX;
+    lastRunNs_ = 0;
     for (uint32_t i = 0; i < workers; ++i)
-        threads_.emplace_back([this] { loop(); });
+        threads_.emplace_back([this, i] { loop(i); });
 }
 
 void RealtimePool::stop()
@@ -44,6 +52,11 @@ void RealtimePool::stop()
     for (std::thread &t : threads_)
         t.join();
     threads_.clear();
+    // Wakes nobody took (workers that were spinning, not asleep) would wake the next start's
+    // workers without being counted
+    while (wake_.waitFor(0)) {
+    }
+    sleeping_ = 0;
 }
 
 uint32_t RealtimePool::active() const
@@ -51,7 +64,20 @@ uint32_t RealtimePool::active() const
     return std::min(active_.load(std::memory_order_relaxed), workers());
 }
 
-void RealtimePool::loop()
+bool RealtimePool::spinForBatch() const
+{
+    const int64_t begin = nowNs();
+    for (uint32_t i = 1;; ++i) {
+        const uint64_t ticket = ticket_.load(std::memory_order_acquire);
+        if ((ticket & kMask) < ((ticket >> kIndexBits) & kMask) || stopping_.load(std::memory_order_relaxed))
+            return true;
+        if ((i & 63) == 0 && nowNs() - begin > kSpinWindowNs)
+            return false;
+        pause();
+    }
+}
+
+void RealtimePool::loop(uint32_t index)
 {
 #ifdef ENV_HAS_SSE
     _mm_setcsr(_mm_getcsr() | 0x8040); // flush-to-zero and denormals-are-zero, as on the audio thread
@@ -63,7 +89,16 @@ void RealtimePool::loop()
     if (workerStart_)
         workerStart_();
     for (;;) {
-        wake_.wait();
+        // Batches coming quickly: spin for the next one rather than sleep (workers beyond the
+        // active count never do; they only run when woken)
+        const bool quick = index < active() && gapNs_.load(std::memory_order_relaxed) < kSpinWindowNs;
+        if (!quick || !spinForBatch()) {
+            // Counted before waiting: run() reads the count after publishing its batch, so either
+            // it sees this worker and wakes it, or this worker went to sleep after the batch was
+            // out and sleeps through it (the caller takes its jobs). No batch waits for it.
+            sleeping_.fetch_add(1, std::memory_order_seq_cst);
+            wake_.wait();
+        }
         if (stopping_.load(std::memory_order_relaxed))
             return;
         stolen_.fetch_add(work(), std::memory_order_relaxed);
@@ -93,6 +128,9 @@ void RealtimePool::run(uint32_t count, JobFn fn, void *context)
 {
     if (count == 0)
         return;
+    const int64_t now = nowNs();
+    gapNs_.store(lastRunNs_ ? now - lastRunNs_ : INT64_MAX, std::memory_order_relaxed);
+    lastRunNs_ = now;
     const uint32_t helpers = std::min(active(), count - 1);
     if (helpers == 0 || count > kMask) {
         for (uint32_t i = 0; i < count; ++i)
@@ -104,8 +142,14 @@ void RealtimePool::run(uint32_t count, JobFn fn, void *context)
     done_.store(0, std::memory_order_relaxed);
     ++batch_;
     ticket_.store((batch_ << (kIndexBits + kCountBits)) | (static_cast<uint64_t>(count) << kIndexBits),
-                  std::memory_order_release);
-    wake_.release(helpers);
+                  std::memory_order_seq_cst);
+    // Wake only workers that are asleep, taking them off the count; spinning ones see the ticket
+    uint32_t asleep = sleeping_.load(std::memory_order_seq_cst);
+    uint32_t wake = 0;
+    do {
+        wake = std::min(asleep, helpers);
+    } while (wake > 0 && !sleeping_.compare_exchange_weak(asleep, asleep - wake, std::memory_order_seq_cst));
+    wake_.release(wake);
     work();
     // Only jobs a worker has already started are left: wait for them
     while (done_.load(std::memory_order_acquire) < count)

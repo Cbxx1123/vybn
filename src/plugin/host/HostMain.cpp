@@ -155,6 +155,8 @@ struct Port {
     std::vector<std::vector<float>> scratch; // for ports that aren't the main one, and extra channels
 };
 
+constexpr int kNoPort = -1;
+
 struct Loaded {
     HMODULE module = nullptr;
     const clap_plugin_entry *entry = nullptr;
@@ -162,6 +164,7 @@ struct Loaded {
     const clap_plugin *plugin = nullptr;
     const clap_plugin_params *params = nullptr;
     const clap_plugin_audio_ports *audioPorts = nullptr;
+    int sidechainInput = -1; // the first input port that isn't the main one, with 1 or 2 channels: the key's
     const clap_plugin_note_ports *notePorts = nullptr;
     const clap_plugin_state *state = nullptr;
     const clap_plugin_latency *latency = nullptr;
@@ -488,6 +491,14 @@ void runBlock()
         for (uint32_t c = 0; c < in.channels.size() && c < kMaxChannels; ++c)
             in.channels[c] = given > 0 ? shared->input[c < given ? c : given - 1] : in.scratch[c].data();
     }
+    // The sidechain port: the app's key when there is one, else its own silent buffers (a port must
+    // always have buffers)
+    if (l.sidechainInput >= 0) {
+        Port &side = l.inputs[static_cast<size_t>(l.sidechainInput)];
+        const uint32_t given = shared->keyChannels <= kMaxChannels ? shared->keyChannels : kMaxChannels;
+        for (uint32_t c = 0; c < side.channels.size() && c < kMaxChannels; ++c)
+            side.channels[c] = given > 0 ? shared->key[c < given ? c : given - 1] : side.scratch[c].data();
+    }
     Port &out = l.outputs[static_cast<size_t>(l.mainOutput)];
     for (uint32_t c = 0; c < out.channels.size() && c < kMaxChannels; ++c)
         out.channels[c] = shared->output[c];
@@ -608,6 +619,33 @@ std::string joinFeatures(const char *const *features)
     return out;
 }
 
+// The channels of a plugin's sidechain input: the first input port that isn't the main one, if it has
+// one or two (the rule buildPorts follows); 0 for none
+uint32_t sidechainChannels(const clap_plugin *p)
+{
+    const auto *ports = static_cast<const clap_plugin_audio_ports *>(p->get_extension(p, CLAP_EXT_AUDIO_PORTS));
+    if (!ports)
+        return 0;
+    const uint32_t n = ports->count(p, true);
+    int main = -1;
+    std::vector<uint32_t> channels;
+    for (uint32_t i = 0; i < n && i < 32; ++i) {
+        clap_audio_port_info info{};
+        if (!ports->get(p, i, true, &info))
+            continue;
+        if (main < 0 && (info.flags & CLAP_AUDIO_PORT_IS_MAIN))
+            main = static_cast<int>(channels.size());
+        channels.push_back(info.channel_count);
+    }
+    if (main < 0 && !channels.empty())
+        main = 0;
+    for (size_t i = 0; i < channels.size(); ++i) {
+        if (static_cast<int>(i) != main && (channels[i] == 1 || channels[i] == 2))
+            return channels[i];
+    }
+    return 0;
+}
+
 void handleScan(uint32_t sequence, Reader &r)
 {
     const std::string path = r.str();
@@ -637,6 +675,29 @@ void handleScan(uint32_t sequence, Reader &r)
     w.u32(static_cast<uint32_t>(found.size()));
     for (const Descriptor &d : found)
         writeDescriptor(w, d);
+    send(Message::Reply, sequence, w.data);
+}
+
+// The sidechain port of one plugin, in a host of its own (the scan's descriptors are already safe)
+void handleProbe(uint32_t sequence, Reader &r)
+{
+    const std::string path = r.str();
+    const std::string id = r.str();
+    std::string error;
+    if (!openModule(path, error))
+        return fail(sequence, error);
+    const clap_plugin_factory *f = factory();
+    if (!f)
+        return fail(sequence, "The plugin has no plugin factory");
+    const clap_plugin *p = f->create_plugin(f, &kHost, id.c_str());
+    if (!p)
+        return fail(sequence, "The plugin file has no plugin \"" + id + "\"");
+    uint32_t channels = 0;
+    if (p->init(p))
+        channels = sidechainChannels(p);
+    p->destroy(p);
+    Writer w;
+    w.u32(channels);
     send(Message::Reply, sequence, w.data);
 }
 
@@ -1078,6 +1139,15 @@ void buildPorts()
         }
         if (main < 0 && !ports.empty())
             main = 0;
+        if (input) {
+            loaded.sidechainInput = kNoPort;
+            for (size_t i = 0; i < ports.size(); ++i) {
+                if (static_cast<int>(i) != main && (ports[i].scratch.size() == 1 || ports[i].scratch.size() == 2)) {
+                    loaded.sidechainInput = static_cast<int>(i);
+                    break;
+                }
+            }
+        }
         std::vector<clap_audio_buffer> &buffers = input ? loaded.inBuffers : loaded.outBuffers;
         buffers.clear();
         for (Port &port : ports) {
@@ -1239,6 +1309,8 @@ void handle(const Incoming &in)
     switch (static_cast<Message>(in.header.type)) {
     case Message::Scan:
         return handleScan(sequence, r);
+    case Message::Probe:
+        return handleProbe(sequence, r);
     case Message::Load:
         return handleLoad(sequence, r);
     case Message::Activate:

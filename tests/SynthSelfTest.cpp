@@ -1,4 +1,5 @@
 #include "SynthSelfTest.h"
+#include "Harness.h"
 
 #include <algorithm>
 #include <chrono>
@@ -24,19 +25,6 @@ namespace {
 
 constexpr double kRate = 48000.0;
 constexpr double kPi = 3.14159265358979323846;
-
-struct Checker {
-    int failures = 0;
-    int count = 0;
-
-    void check(bool ok, const std::string &what, const std::string &detail = {})
-    {
-        ++count;
-        std::printf("%s  %-56s %s\n", ok ? "PASS" : "FAIL", what.c_str(), detail.c_str());
-        if (!ok)
-            ++failures;
-    }
-};
 
 std::string number(const char *format, double value)
 {
@@ -743,8 +731,7 @@ int runSynthSelfTest()
 
     c.check(gNonFinite == 0, "No NaN or infinity in any output", number("(%.0f bad samples)", gNonFinite));
 
-    std::printf("%d synth checks, %d failed\n", c.count, c.failures);
-    return c.failures == 0 ? 0 : 1;
+    return c.finish("synth");
 }
 
 }

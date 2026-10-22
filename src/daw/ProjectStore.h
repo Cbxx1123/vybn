@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "History.h"
 #include "Project.h"
 
 namespace daw {
@@ -29,12 +30,19 @@ public:
     Project &edit();
     // A track's clips, notes, controllers, devices or kind (and anything editMix covers)
     Track &editTrack(int track);
-    // ONLY a track's name, gain, pan, mute, solo, armed, monitor, inputChannel and inputStereo
+    // ONLY a track's name, gain, pan, mute, solo, armed, monitor, inputChannel, inputStereo, output and sends
     Track &editMix(int track);
     // A clip of a track (editTrack(track).clips[clip])
     Clip &editClip(int track, int clip);
     // The effects on the whole mix
     std::vector<audio::DeviceSetting> &editMasterEffects();
+    // The master's volume (Project::masterVolume): moves the master's revision, like its effects
+    float &editMasterVolume();
+    // The master volume's automation lanes: moves the master's revision too
+    std::vector<audio::AutomationLane> &editMasterAutomation();
+    // ONLY the project's name, beats per bar and length in bars: saved, but not a track's or the
+    // structure, so only revision() moves
+    Project &editSettings();
     // The export presets and the export details: saved, but not a track's, so only revision() moves
     std::vector<ExportPreset> &editExportPresets();
     ExportMetadata &editExportMetadata();
@@ -50,6 +58,12 @@ public:
     void toggleLoop();
     // A whole new project (open, new, undo): every revision moves. Its ids are normalized.
     void replace(Project project);
+    // Applies an undo or redo (see HistoryRestore) through the edit calls above, so only what the
+    // plan changes has its revisions move: a track's content through editTrack, its mix through
+    // editMix, the master's effects, the tempo, the settings, the export presets and details, and
+    // the selection each only when they differ. Arming, monitoring and the loop stay as they are.
+    // A structural plan replaces the whole project instead, keeping those by track id.
+    void restore(HistoryRestore plan);
     // Project::normalizeIds with the store's high-water mark, so an id is never given twice in a
     // session (across replace, undo and redo too). When an id changed, revision() and the
     // changed tracks' trackRevision move (not the structure: no track came or went); when none
@@ -63,7 +77,7 @@ public:
     uint64_t revision() const;                // anything that is saved (everything but the selection)
     uint64_t trackRevision(int track) const;  // its content: clips, notes, controllers, devices, kind (not editMix's fields); 0 out of range
     uint64_t mixRevision(int track) const;    // its editMix fields
-    uint64_t masterRevision() const;          // the master effects
+    uint64_t masterRevision() const;          // the master effects and volume
     uint64_t selectionRevision() const;       // the selection (selectedTrack/Clip; Note::selected moves with editClip too)
     uint64_t structureRevision() const;       // tracks added, removed, moved or replaced
 

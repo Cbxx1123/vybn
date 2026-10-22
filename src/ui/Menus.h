@@ -129,6 +129,8 @@ public:
 
     Dropdown &onChange(std::function<void(int)> callback);
     Dropdown &setSelected(int index);
+    // Picks an option as a click on it would: selects it and calls the change callback (if it differs)
+    Dropdown &choose(int index);
     Dropdown &setOptions(std::vector<std::string> options); // keeps the selection's index
     Dropdown &setSize(Size size);
     const std::vector<std::string> &options() const { return options_; }

@@ -52,7 +52,7 @@ bool RecordingSession::start(const std::string &takeFolder, std::string &why, do
     bool audioWithoutInput = false;
     for (size_t i = 0; i < project().tracks.size(); ++i) {
         const Track &track = project().tracks[i];
-        if (!track.armed)
+        if (!track.armed || track.bus()) // buses record nothing
             continue;
         Target t;
         t.track = static_cast<int>(i);

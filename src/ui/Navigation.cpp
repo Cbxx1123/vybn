@@ -207,6 +207,12 @@ ScrollView &ScrollView::setViewHeight(float height)
     return *this;
 }
 
+ScrollView &ScrollView::setFillWidth(bool fill)
+{
+    fillWidth_ = fill;
+    return *this;
+}
+
 ScrollView &ScrollView::scrollTo(float y, float x)
 {
     target_[0] = offset_[0] = std::max(0.0f, x);
@@ -218,6 +224,8 @@ Vec2 ScrollView::measure(const Theme &theme) const
 {
     // Wide enough to show the content without scrolling across, if the parent allows
     const float inset = theme.shadowExtent();
+    if (fillWidth_)
+        return {0.0f, viewHeight_};
     return {content_->preferredSize(theme).x + 2.0f * inset + kBarWidth + inset, viewHeight_};
 }
 

@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -11,6 +10,7 @@
 
 #include "Daemon.h"
 #include "EventBus.h"
+#include "PostQueue.h"
 
 namespace env {
 
@@ -97,14 +97,10 @@ public:
     const Daemon &daemon(size_t index) const { return *daemons_[index]; }
 
 private:
-    void runPosted();
-
     std::vector<std::unique_ptr<Daemon>> daemons_;
     std::vector<DaemonStats> stats_;
     EventBus events_;
-    std::mutex postedMutex_; // guards posted_ and the wake hook
-    std::vector<std::function<void()>> posted_;
-    std::function<void()> wake_;
+    PostQueue posted_; // actions from post()
     bool stopRequested_ = false;
     bool running_ = false;
     uint64_t frame_ = 0;

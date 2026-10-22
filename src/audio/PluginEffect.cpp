@@ -75,8 +75,22 @@ void PluginEffect::onPrepare(double sampleRate, uint32_t)
         slot_->setFormat(sampleRate);
 }
 
+void PluginEffect::automate(uint32_t paramId, double value)
+{
+    if (eventCount_ >= events_.size())
+        return;
+    plugin::Event &e = events_[eventCount_++];
+    e.kind = plugin::EventKind::ParamValue;
+    e.frame = 0;
+    e.id = paramId;
+    e.channel = 0;
+    e.value = value;
+}
+
 void PluginEffect::process(float *left, float *right, uint32_t frames)
 {
+    const uint32_t count = eventCount_;
+    eventCount_ = 0;
     if (!slot_ || !slot_->live())
         return; // loading, or not loadable: the sound passes through
     float *channels[2] = {left, right};
@@ -93,6 +107,13 @@ void PluginEffect::process(float *left, float *right, uint32_t frames)
         block.inputs = part;
         block.outputs = part;
         block.frames = n;
+        // The sidechain key (the chain hands a keyed effect its key for the block), the same piece of it
+        const float *keyPart[2] = {keyLeft_ ? keyLeft_ + done : nullptr, keyRight_ ? keyRight_ + done : nullptr};
+        block.keys = keyLeft_ ? keyPart : nullptr;
+        block.keyChannels = keyLeft_ ? 2 : 0;
+        // The automation's values go with the first piece
+        block.events = done == 0 && count > 0 ? events_.data() : nullptr;
+        block.eventCount = done == 0 ? count : 0;
         slot_->process(block);
         done += n;
     }

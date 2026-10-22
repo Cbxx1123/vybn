@@ -86,6 +86,19 @@ void PluginInstrument::controlChangeAt(int controller, float value, uint32_t fra
     e.value = std::clamp(value, 0.0f, 1.0f);
 }
 
+void PluginInstrument::automate(uint32_t paramId, double value)
+{
+    // Called before the block's notes, so at frame 0 it keeps the events in order
+    if (eventCount_ >= events_.size())
+        return;
+    plugin::Event &e = events_[eventCount_++];
+    e.kind = plugin::EventKind::ParamValue;
+    e.frame = 0;
+    e.id = paramId;
+    e.channel = 0;
+    e.value = value;
+}
+
 void PluginInstrument::allNotesOff()
 {
     // Each sounding key by name, then the plugin's own all notes off for anything else, all at
@@ -157,6 +170,12 @@ bool SamplerDevice::matches(const DeviceSetting &setting) const { return setting
 void SamplerDevice::applySetting(const DeviceSetting &setting)
 {
     sampler_.gain.set(fromDecibels(static_cast<float>(setting.value(kLevel, kDefaultLevel))));
+}
+
+void SamplerDevice::automate(uint32_t paramId, double value)
+{
+    if (paramId == kLevel)
+        sampler_.gain.set(fromDecibels(static_cast<float>(value)));
 }
 
 std::vector<DeviceParam> SamplerDevice::params() const

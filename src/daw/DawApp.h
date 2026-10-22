@@ -12,6 +12,7 @@
 #include "Autosave.h"
 #include "AudioBridge.h"
 #include "AudioPool.h"
+#include "FoldState.h"
 #include "History.h"
 #include "Library.h"
 #include "NoteTools.h"
@@ -44,6 +45,7 @@
 
 namespace daw {
 
+class AutomationWriter;
 class AutosaveController;
 class ArrangementView;
 class AssetBrowser;
@@ -100,6 +102,8 @@ public:
     void versionsDemo();
 
     void addTrack(TrackKind kind);
+    // A new group track just before `index`, going where the track went, and the track going into it
+    void groupTrack(int index);
     // Removes a track (after asking, if it has clips); not while recording
     void deleteTrack(int index);
     // Settings, on `section` ("Plugins") or the first
@@ -138,6 +142,12 @@ public:
     bool stepMode() const { return stepMode_; }
     // The --demo steps check: a drum beat on a Drums track, in the step sequencer with its kick row selected
     void stepsDemo();
+    void masterAutomationDemo();
+    void foldingDemo();
+    // --demo sidechain: a pad with a compressor keyed by a muted kick track, the Devices tab showing it
+    void sidechainDemo();
+    // --demo flexible: three tracks into Group 1, one also sending to Group 2, the mixer showing
+    void flexibleDemo();
     void showMixer();
     void showEffects();
     void showExports();
@@ -212,7 +222,7 @@ private:
     void replaceProject(Project project, std::string path, const Project *saved = nullptr);
     // Puts back a state from the history: the model, the audio graph and the views. From a
     // posted action.
-    void restore(Project state);
+    void restore(HistoryRestore plan);
     // Runs then, after offering to save unsaved changes (Cancel runs nothing)
     void confirmDiscard(std::function<void()> then);
     // Saves to the project's path, or asks for one with the save dialog when it has none or
@@ -265,6 +275,10 @@ private:
     const audio::AudioData *clipAudio(int track, int clip);
     void openClipMenu(ui::Vec2 at, double beat);
     void openTrackMenu(int track, ui::Vec2 at);
+    // What a track can automate: its volume and pan, then each of its devices' parameters (a
+    // submenu each). Picking one adds its lane (empty, so it plays nothing yet) and shows the lanes.
+    void openAutomationMenu(int track, ui::Vec2 at);
+    void openMasterAutomationMenu(ui::Vec2 at);
     void buildInputSettings(ui::Container &body);
     // Settings > Performance: audio threads, streaming samples and its memory, and what the
     // scheduler and memory manager are doing
@@ -322,6 +336,8 @@ private:
     std::unique_ptr<AudioBridge> bridge_;
     // Starts and stops takes, and the count-in (see RecordingController)
     std::unique_ptr<RecordingController> recordingController_;
+    // Writes what armed tracks' controls do into their automation while the song plays (see AutomationWriter)
+    std::unique_ptr<AutomationWriter> automationWriter_;
     // The mix export: its dialogs and its render, stepped each frame (see Exporter)
     std::unique_ptr<Exporter> exporter_;
     // Inputs
@@ -340,8 +356,14 @@ private:
     bool typing_ = false;         // a text field has the keyboard (its Ctrl+Z isn't the project's)
     std::string themePreset_ = "Carbon"; // the Appearance preset the theme started from
     std::string themeSaved_;             // the theme as last written to theme.toml
+    // The window's icon is made from the theme's base and accent colours (AppIcon.h): the ones it was made
+    // from, so it is made again only when the look changes
+    ui::Color iconBase_{}, iconAccent_{};
+    bool iconSet_ = false;
+    void refreshWindowIcon();
     ui::FloatingWindow *appearance_ = nullptr; // the Appearance window while it is open
     ui::MenuBar *menuBar_ = nullptr;
+    FoldState folds_{session_.store()}; // folding groups (Track::folded), for the arrangement and the mixer
     ArrangementView *arrangement_ = nullptr;
     MixerView *mixer_ = nullptr;
     PianoRollView *pianoRoll_ = nullptr;

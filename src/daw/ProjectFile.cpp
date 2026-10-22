@@ -1,6 +1,7 @@
 #include "ProjectFile.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <cmath>
 #include <iterator>
@@ -9,8 +10,10 @@
 #include <sstream>
 #include <system_error>
 
+#include "Routing.h"
 #include "Toml.h"
 #include "audio/Effects.h"
+#include "audio/Encoders.h"
 #include "audio/PluginInstrument.h"
 #include "audio/Synth.h"
 
@@ -95,8 +98,52 @@ bool fromBase64(const std::string &text, std::string &out)
     return true;
 }
 
+// Automation lanes as `automation = [...]` in the table being written: each its parameter (a
+// track's own as "volume" or "pan", a device's by id) and its points as {beat, value}. Nothing for none.
+// A track's kind as the file names it
+const char *kindKey(TrackKind kind)
+{
+    switch (kind) {
+    case TrackKind::Instrument:
+        return "instrument";
+    case TrackKind::Return:
+        return "return";
+    case TrackKind::Group:
+        return "group";
+    case TrackKind::Audio:
+        break;
+    }
+    return "audio";
+}
+
+void writeAutomation(std::ostringstream &out, const std::vector<audio::AutomationLane> &lanes, bool track,
+                     const char *key = "automation")
+{
+    if (lanes.empty())
+        return;
+    out << key << " = [\n";
+    for (const audio::AutomationLane &lane : lanes) {
+        out << "  { param = ";
+        if (lane.param == audio::kVolumeParam)
+            out << "\"volume\"";
+        else if (lane.param == audio::kPanParam)
+            out << "\"pan\"";
+        else if (track && isSendParam(lane.param))
+            out << "\"send\", to = " << sendTarget(lane.param);
+        else
+            out << lane.param;
+        out << ", points = [";
+        for (size_t i = 0; i < lane.points.size(); ++i)
+            out << (i ? ", " : " ") << "{ beat = " << toml::number(lane.points[i].beat) << ", value = "
+                << toml::number(lane.points[i].value) << " }";
+        out << (lane.points.empty() ? "] },\n" : " ] },\n");
+    }
+    out << "]\n";
+}
+
 // One device as a table under `header` ("[tracks.instrument]" or "[[tracks.effects]]"): its kind,
-// id, name, whether it is bypassed, a plugin's state (base64) and its values as {id, value} tables
+// id, name, whether it is bypassed, the track an effect is keyed by (sidechain, when set), a plugin's state (base64), its values as {id, value} tables and
+// its automation
 void writeDevice(std::ostringstream &out, const char *header, const audio::DeviceSetting &d)
 {
     out << "\n" << header << "\n";
@@ -104,8 +151,11 @@ void writeDevice(std::ostringstream &out, const char *header, const audio::Devic
     out << "id = " << toml::quote(d.id) << "\n";
     out << "name = " << toml::quote(d.name) << "\n";
     out << "bypass = " << (d.bypass ? "true" : "false") << "\n";
+    if (d.sidechain != 0)
+        out << "sidechain = " << d.sidechain << "\n";
     if (d.state && !d.state->empty())
         out << "state = " << toml::quote(toBase64(*d.state)) << "\n";
+    writeAutomation(out, d.automation, false);
     if (d.values.empty()) {
         out << "params = []\n";
         return;
@@ -142,6 +192,7 @@ void writeExportTarget(std::ostringstream &out, const ExportTarget &t)
     out << "tail_seconds = " << number(t.tailSeconds) << "\n";
     out << "format = " << quote(enumName(t.format)) << "\n";
     out << "bits = " << t.bits << "\n";
+    out << "bitrate = " << t.bitrate << "\n";
     out << "sample_rate = " << t.sampleRate << "\n";
     out << "mono = " << boolean(t.mono) << "\n";
     out << "normalize = " << quote(enumName(t.normalize)) << "\n";
@@ -171,6 +222,9 @@ std::string writeProject(const Project &project, const std::string &folder)
     out << "tempo = " << number(project.tempo) << "\n";
     out << "beats_per_bar = " << project.beatsPerBar << "\n";
     out << "bars = " << project.bars << "\n";
+    if (project.masterVolume != 1.0f)
+        out << "master_volume = " << number(project.masterVolume) << "\n";
+    writeAutomation(out, project.masterAutomation, true, "master_automation");
     if (project.hasLoop()) {
         out << "loop_start = " << number(project.loopStart) << "\n";
         out << "loop_end = " << number(project.loopEnd) << "\n";
@@ -188,21 +242,35 @@ std::string writeProject(const Project &project, const std::string &folder)
 
     for (const Track &t : project.tracks) {
         const bool instrument = t.kind == TrackKind::Instrument;
+        const bool audio = t.kind == TrackKind::Audio;
         out << "\n[[tracks]]\n";
         if (t.id != kNoId)
             out << "id = " << t.id << "\n";
         out << "name = " << quote(t.name) << "\n";
-        out << "kind = " << (instrument ? "\"instrument\"" : "\"audio\"") << "\n";
+        out << "kind = " << quote(kindKey(t.kind)) << "\n";
         out << "gain = " << number(t.gain) << "\n";
         out << "pan = " << number(t.pan) << "\n";
         out << "mute = " << boolean(t.mute) << "\n";
         out << "solo = " << boolean(t.solo) << "\n";
         out << "armed = " << boolean(t.armed) << "\n";
-        if (!instrument) {
+        if (t.kind == TrackKind::Group && t.folded)
+            out << "folded = true\n";
+        if (audio) {
             out << "input_channel = " << t.inputChannel << "\n";
             out << "input_stereo = " << boolean(t.inputStereo) << "\n";
             out << "monitor = " << boolean(t.monitor) << "\n";
         }
+        // Where its sound goes: a group (its id; none for the master), and its sends
+        if (t.output != kNoId)
+            out << "output = " << t.output << "\n";
+        if (!t.sends.empty()) {
+            out << "sends = [";
+            for (size_t i = 0; i < t.sends.size(); ++i)
+                out << (i ? ", " : " ") << "{ to = " << t.sends[i].to << ", level = " << number(t.sends[i].level)
+                    << ", pre_fader = " << boolean(t.sends[i].preFader) << " }";
+            out << " ]\n";
+        }
+        writeAutomation(out, t.automation, true);
         // Its devices: the instrument, then the effects
         if (instrument && t.hasInstrument())
             writeDevice(out, "[tracks.instrument]", t.instrument);
@@ -389,6 +457,58 @@ bool readId(FieldReader &r, const toml::Value &table, const std::string &where, 
     return true;
 }
 
+// Reads what writeAutomation wrote under `table` into `out`. A track's lanes (`track`) are "volume"
+// and "pan"; a device's are parameter ids. Values are clamped to 0-1, points sorted, a parameter's
+// second lane dropped. The master's (`master`, with `track`) is "volume" alone.
+bool readAutomation(FieldReader &r, const toml::Value &table, bool track, const std::string &where,
+                    std::vector<audio::AutomationLane> &out, bool master = false, const char *key = "automation")
+{
+    const toml::Array *lanes = r.tables(table, key, where);
+    if (!r.ok())
+        return false;
+    for (size_t li = 0; lanes && li < lanes->size(); ++li) {
+        const toml::Value &lv = (*lanes)[li];
+        const std::string laneWhere = where + at(key, li);
+        audio::AutomationLane lane;
+        const toml::Value *param = lv.at("param");
+        // The master has a volume and nothing else of its own to automate here
+        if (master && param && param->type() == toml::Type::String && param->string() != "volume")
+            return r.fail(laneWhere + "the master's only lane is \"volume\"");
+        if (track && param && param->type() == toml::Type::String && param->string() == "volume")
+            lane.param = audio::kVolumeParam;
+        else if (track && param && param->type() == toml::Type::String && param->string() == "pan")
+            lane.param = audio::kPanParam;
+        else if (track && param && param->type() == toml::Type::String && param->string() == "send") {
+            // A send's level: the return it goes to by id (the send itself is checked with the routing)
+            const toml::Value *to = lv.at("to");
+            if (!to || to->type() != toml::Type::Integer || to->integer() <= 0 ||
+                !isSendParam(sendParam(static_cast<ObjectId>(std::min<int64_t>(to->integer(), UINT32_MAX)))))
+                return r.fail(laneWhere + "a send's lane needs the return's or group's id as to");
+            lane.param = sendParam(static_cast<ObjectId>(to->integer()));
+        } else if (!track && param && param->type() == toml::Type::Integer && param->integer() >= 0 &&
+                 param->integer() <= static_cast<int64_t>(UINT32_MAX))
+            lane.param = static_cast<uint32_t>(param->integer());
+        else
+            return r.fail(laneWhere + (track ? "param should be \"volume\", \"pan\" or \"send\"" : "param should be a parameter id"));
+        const toml::Array *points = r.tables(lv, "points", laneWhere);
+        if (!r.ok())
+            return false;
+        for (size_t pi = 0; points && pi < points->size(); ++pi) {
+            audio::AutomationPoint point;
+            r.real((*points)[pi], "beat", laneWhere + at("point", pi), point.beat);
+            r.real((*points)[pi], "value", laneWhere + at("point", pi), point.value);
+            if (!r.ok())
+                return false;
+            lane.points.push_back({std::max(0.0, point.beat), std::clamp(point.value, 0.0f, 1.0f)});
+        }
+        std::stable_sort(lane.points.begin(), lane.points.end(),
+                         [](const audio::AutomationPoint &a, const audio::AutomationPoint &b) { return a.beat < b.beat; });
+        if (!audio::findAutomation(out, lane.param))
+            out.push_back(std::move(lane));
+    }
+    return true;
+}
+
 // Reads what writeDevice wrote into `device`. `instrument` says which kinds may stand there (an
 // instrument: a sampler, a synth or a plugin; an effect: a built-in one or a plugin). Unknown kinds
 // and built-in effects are refused; a built-in effect's, a sampler's or a synth's values are clamped
@@ -402,6 +522,11 @@ bool readDevice(FieldReader &r, const toml::Value &table, bool instrument, const
     r.text(table, "name", where, d.name);
     r.flag(table, "bypass", where, d.bypass);
     r.text(table, "state", where, state);
+    if (const toml::Value *key = table.at("sidechain")) {
+        if (key->type() != toml::Type::Integer || key->integer() < 0 || key->integer() > 4294967295LL)
+            return r.fail(where + "sidechain must be a track's id");
+        d.sidechain = static_cast<uint32_t>(key->integer());
+    }
     const toml::Array *params = r.tables(table, "params", where);
     if (!r.ok())
         return false;
@@ -464,6 +589,8 @@ bool readDevice(FieldReader &r, const toml::Value &table, bool instrument, const
     }
     if (d.name.empty())
         d.name = d.id;
+    if (!readAutomation(r, table, false, where, d.automation))
+        return false;
     device = std::move(d);
     return true;
 }
@@ -529,6 +656,7 @@ bool readExportTarget(FieldReader &r, const toml::Value &table, const std::strin
     r.real(table, "to_bar", where, t.toBar);
     r.real(table, "tail_seconds", where, t.tailSeconds);
     r.whole(table, "bits", where, t.bits);
+    r.whole(table, "bitrate", where, t.bitrate);
     int rate = static_cast<int>(t.sampleRate);
     r.whole(table, "sample_rate", where, rate);
     r.flag(table, "mono", where, t.mono);
@@ -547,6 +675,13 @@ bool readExportTarget(FieldReader &r, const toml::Value &table, const std::strin
     const int rates[] = {22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000};
     const bool knownRate = std::find(std::begin(rates), std::end(rates), rate) != std::end(rates);
     t.sampleRate = knownRate ? static_cast<uint32_t>(rate) : 48000u;
+    if (std::find(std::begin(audio::kMp3Bitrates), std::end(audio::kMp3Bitrates), t.bitrate) == std::end(audio::kMp3Bitrates))
+        t.bitrate = 320;
+    // An MP3 is encoded from 16 bits at 32, 44.1 or 48 kHz
+    if (t.format == ExportFormat::Mp3) {
+        t.sampleRate = mp3RateFor(t.sampleRate);
+        t.bits = 16;
+    }
     t.tailSeconds = std::clamp(t.tailSeconds, 0.0, 30.0);
     t.loudnessLufs = std::clamp(t.loudnessLufs, -40.0, 0.0);
     t.peakDb = std::clamp(t.peakDb, -20.0, 0.0);
@@ -602,7 +737,11 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
     r.real(root, "loop_start", "", p.loopStart);
     r.real(root, "loop_end", "", p.loopEnd);
     r.flag(root, "looping", "", p.looping);
+    r.real(root, "master_volume", "", p.masterVolume);
     if (!r.ok())
+        return false;
+    p.masterVolume = std::clamp(p.masterVolume, 0.0f, 2.0f);
+    if (!readAutomation(r, root, true, "", p.masterAutomation, true, "master_automation"))
         return false;
     p.loopStart = std::max(0.0, p.loopStart);
     p.loopEnd = std::max(p.loopStart, p.loopEnd);
@@ -627,6 +766,10 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
             return false;
         if (kind == "instrument")
             t.kind = TrackKind::Instrument;
+        else if (kind == "return")
+            t.kind = TrackKind::Return;
+        else if (kind == "group")
+            t.kind = TrackKind::Group;
         else if (kind != "audio")
             return r.fail(where + "unknown kind \"" + kind + "\"");
         if (const toml::Value *instrument = tv.at("instrument"); instrument && t.kind == TrackKind::Instrument) {
@@ -640,6 +783,7 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
         r.flag(tv, "mute", where, t.mute);
         r.flag(tv, "solo", where, t.solo);
         r.flag(tv, "armed", where, t.armed);
+        r.flag(tv, "folded", where, t.folded);
         r.whole(tv, "input_channel", where, t.inputChannel);
         r.flag(tv, "input_stereo", where, t.inputStereo);
         r.flag(tv, "monitor", where, t.monitor);
@@ -648,13 +792,41 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
         t.inputChannel = std::clamp(t.inputChannel, -1, 63);
         t.gain = std::clamp(t.gain, 0.0f, 2.0f);
         t.pan = std::clamp(t.pan, -1.0f, 1.0f);
+        t.armed = t.armed && !t.bus(); // buses record nothing
+        t.folded = t.folded && t.kind == TrackKind::Group; // only groups fold
+        // Its output (a group's id) and sends (each to a return's or group's id), checked once every track is read
+        if (const toml::Value *output = tv.at("output")) {
+            if (output->type() != toml::Type::Integer || output->integer() < 0 || output->integer() > 4294967295LL)
+                return r.fail(where + "output must be a track's id");
+            t.output = static_cast<ObjectId>(output->integer());
+        }
+        const toml::Array *sends = r.tables(tv, "sends", where);
+        if (!r.ok())
+            return false;
+        for (size_t si = 0; sends && si < sends->size(); ++si) {
+            const toml::Value &sv = (*sends)[si];
+            const std::string sendWhere = where + at("send", si);
+            Send send;
+            const toml::Value *to = sv.at("to");
+            if (!to || to->type() != toml::Type::Integer || to->integer() <= 0 || to->integer() > 4294967295LL)
+                return r.fail(sendWhere + "to must be a return or group track's id");
+            send.to = static_cast<ObjectId>(to->integer());
+            r.real(sv, "level", sendWhere, send.level);
+            r.flag(sv, "pre_fader", sendWhere, send.preFader);
+            if (!r.ok())
+                return false;
+            send.level = std::clamp(send.level, 0.0f, 1.0f);
+            t.sends.push_back(send);
+        }
+        if (!readAutomation(r, tv, true, where, t.automation))
+            return false;
 
         if (!readEffects(r, tv, "effects", where, t.effects))
             return false;
         const toml::Array *clips = r.tables(tv, "clips", where);
         if (!r.ok())
             return false;
-        for (size_t ci = 0; clips && ci < clips->size(); ++ci) {
+        for (size_t ci = 0; clips && !t.bus() && ci < clips->size(); ++ci) { // buses hold no clips
             const toml::Value &cv = (*clips)[ci];
             const std::string clipWhere = where + at("clip", ci);
             Clip c;
@@ -736,6 +908,11 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
     }
     if (!readEffects(r, root, "master_effects", "", p.masterEffects))
         return false;
+    // The routing, now that every track and device is there: each output into a group, each send into
+    // a return or a group, each sidechain from a track on an effect that takes one, nothing coming back to where
+    // it started
+    if (std::string wrong = routingError(p); !wrong.empty())
+        return r.fail(wrong);
     // A file with no presets at all (no export_presets key) gets the defaults
     if (!root.at("export_presets")) {
         p.exportPresets = defaultExportPresets();

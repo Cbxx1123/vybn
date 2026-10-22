@@ -14,28 +14,13 @@ Environment::~Environment()
 
 void Environment::post(std::function<void()> action)
 {
-    std::lock_guard<std::mutex> lock(postedMutex_);
-    posted_.push_back(std::move(action));
-    if (wake_)
-        wake_();
+    posted_.push(std::move(action));
 }
 
 void Environment::setWakeHook(std::function<void()> hook)
 {
-    std::lock_guard<std::mutex> lock(postedMutex_);
-    wake_ = hook;
+    posted_.setWakeHook(hook);
     events_.setWakeHook(std::move(hook));
-}
-
-void Environment::runPosted()
-{
-    std::vector<std::function<void()>> actions;
-    {
-        std::lock_guard<std::mutex> lock(postedMutex_);
-        actions.swap(posted_);
-    }
-    for (auto &action : actions)
-        action();
 }
 
 void Environment::run()
@@ -48,7 +33,7 @@ void Environment::run()
         d->start(*this);
 
     while (!stopRequested_) {
-        runPosted();
+        posted_.drain();
         events_.dispatch();
         for (size_t i = 0; i < daemons_.size(); ++i) {
             Daemon &d = *daemons_[i];

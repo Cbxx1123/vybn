@@ -60,6 +60,15 @@ public:
     // Returns whether a step was recorded.
     bool recordHistory(bool settled, bool canMerge, double now);
 
+    // Puts back what the history planned (undo or redo): the store applies it through its edit calls, so
+    // only what differs moves (see ProjectStore::restore). Arming, monitoring and the loop stay as they
+    // are now, since they aren't part of the history. The saved text stays as it is too. When nothing
+    // else changed the project since the plan was made, the history adopts the store's revisions, so
+    // the next frame has nothing to compare.
+    void restoreState(HistoryRestore plan);
+    // A whole project as the state to put back (replacing the current one), for tests
+    void restoreState(Project state);
+
 private:
     ProjectStore store_;
     std::string path_;      // the .vbp file, empty until saved

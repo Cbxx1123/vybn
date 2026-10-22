@@ -9,6 +9,7 @@
 
 #include "AudioProcessor.h"
 #include "DeviceChain.h"
+#include "Routing.h"
 
 namespace audio {
 
@@ -67,6 +68,27 @@ public:
     // reader: it resets the value)
     float takePeak(uint32_t channel);
 
+    // Sends (see Routing): each of the track's sends takes a slot's level, linear 0-1, which glides
+    // (any thread). A send's automation, when its route names a lane, plays in place of the level.
+    static constexpr uint32_t kMaxSends = audio::kMaxSends;
+    void setSendLevel(uint32_t slot, float level);
+    float sendLevel(uint32_t slot) const;
+
+    // As the AudioSystem plays a Routing (any of the pool's threads): renderParallel, with what feeds
+    // this track (a bus) taken in before its effects: other tracks' outputs, and their sends' shares
+    // read from their delay lines at the sends' delays and levels. The feeds rendered in an earlier
+    // stage, so all this reads of them holds still; each send's level glides on the one bus it feeds.
+    void renderRouted(const AudioBlock &block, const Route &route);
+
+    // Sidechains: a track's effects can be keyed by other tracks' sound, at most kMaxKeys per track
+    // (each a Route::keys entry). Before its chain runs, a track fills a key buffer from the source's
+    // delay line and hands it to the keyed effect (DeviceChain::setKey).
+    static constexpr uint32_t kMaxKeys = audio::kMaxKeys;
+    // Audio thread, after this track has rendered a block: its sound as the block's effects left it,
+    // before the fader and not silenced by the mute, `delay` frames back, into `left` and `right`
+    // (`frames` each; silence where the delay line has nothing)
+    void readKey(uint32_t delay, uint32_t frames, float *left, float *right) const;
+
     // Offline engines only: copies every block's frames into `left` and `right` (each at least
     // AudioSystem::kMaxBlock long), before the gain, pan and mute when preFader, else after them,
     // which is exactly what the track adds into the mix (silence while it is muted). Set on the
@@ -98,6 +120,22 @@ private:
     static constexpr uint32_t kDelaySize = 32768; // a power of two, above kMaxCompensation + a block
     std::array<std::vector<float>, kChannels> delay_;
     uint32_t delayWrite_ = 0;
+    uint32_t blockStart_ = 0;  // where the last block began in the delay line
+    uint32_t outputDelay_ = 0; // the compensation the last block was read at
+
+    // Routing (audio thread). The gain, pan and mute of the last block a sample at a time (for
+    // post-fader sends read at another delay than the output's), and the mute alone (pre-fader sends):
+    // pre_ only when it is still gliding, else preLevel_'s value for the whole block
+    void render(const AudioBlock &block, const Route *route);
+    void pull(const Feed &feed, const TransportState &transport, uint32_t frames);
+    std::array<std::vector<float>, kChannels> ramp_;
+    std::vector<float> pre_;
+    Smoothed preLevel_;
+    bool preGliding_ = false;
+    std::array<std::atomic<float>, kMaxSends> sendLevels_{};
+    std::array<Smoothed, kMaxSends> sendSmooth_; // glided by the one bus each send feeds
+    std::vector<float> scratch_;                 // a feed's level, a sample at a time (this track pulling)
+    std::array<std::array<std::vector<float>, kChannels>, kMaxKeys> key_; // the sidechain keys of the block, sized in prepare
 };
 
 // Delay compensation for tracks whose sound is delayed by `latencies` frames (their plugins'): how

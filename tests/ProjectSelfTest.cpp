@@ -1,6 +1,8 @@
 #include "ProjectSelfTest.h"
+#include "Harness.h"
 
 #include "BridgeSelfTest.h"
+#include "RoutingSelfTest.h"
 
 #include <algorithm>
 #include <chrono>
@@ -10,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -18,6 +21,7 @@
 #include "audio/PluginInstrument.h"
 #include "audio/Synth.h"
 #include "daw/Appearance.h"
+#include "daw/AutomationWriter.h"
 #include "daw/Autosave.h"
 #include "daw/ExportModel.h"
 #include "daw/ExportModel.h"
@@ -30,17 +34,6 @@
 namespace tests {
 
 namespace {
-
-struct Checker {
-    int failures = 0;
-
-    void check(bool ok, const std::string &what, const std::string &detail = {})
-    {
-        std::printf("%s  %-44s %s\n", ok ? "PASS" : "FAIL", what.c_str(), detail.c_str());
-        if (!ok)
-            ++failures;
-    }
-};
 
 // Reads text that should be refused; returns the error (empty if it was accepted)
 std::string refusal(const std::string &text)
@@ -205,6 +198,49 @@ int runProjectSelfTest()
                 std::to_string(trimmed.start));
         p.deleteTrack(0);
         c.check(p.tracks.size() == 1 && p.selectedTrack == 0, "Deleting a track");
+    }
+
+    // Moving a track (dragging its header): clips and ids go with it, the selection stays on the same track
+    {
+        daw::Project p = daw::demoProject(); // Guitar, Bass, Lead, Drums, Vocals, Ambience
+        const daw::Project before = p;
+        auto order = [](const daw::Project &project) {
+            std::string initials;
+            for (const daw::Track &t : project.tracks)
+                initials += t.name[0];
+            return initials;
+        };
+        const daw::ObjectId guitarId = p.tracks[0].id;
+        const size_t guitarClips = p.tracks[0].clips.size();
+        p.select(0, 1);
+        p.moveTrack(0, 3);
+        c.check(order(p) == "BLDGVA" && p.tracks[3].id == guitarId && p.tracks[3].clips.size() == guitarClips &&
+                    p.selectedTrack == 3 && p.selectedClip == 1,
+                "Moving a track keeps its clips and ids, and the selection follows it", order(p));
+        p.moveTrack(3, 0);
+        bool sameIds = p.tracks.size() == before.tracks.size();
+        for (size_t i = 0; sameIds && i < p.tracks.size(); ++i)
+            sameIds = p.tracks[i].id == before.tracks[i].id;
+        c.check(order(p) == "GBLDVA" && sameIds && p.selectedTrack == 0, "Moving it back restores the order");
+
+        // A track passed over shifts by one, in either direction; the others don't move
+        p.select(2); // Lead
+        p.moveTrack(0, 4);
+        const int afterDown = p.selectedTrack;
+        p.moveTrack(5, 0);
+        c.check(afterDown == 1 && p.selectedTrack == 2 && p.tracks[static_cast<size_t>(p.selectedTrack)].name == "Lead",
+                "A selected track that is passed over stays selected as others move across it");
+        p.select(1);
+        const std::string ordered = order(p);
+        p.moveTrack(-1, 2);
+        p.moveTrack(2, 99);
+        p.moveTrack(2, 2);
+        c.check(order(p) == ordered && p.selectedTrack == 1, "A move to or from a track that isn't there, or to its own place, does nothing");
+
+        daw::Project moved = before;
+        moved.moveTrack(0, 2);
+        c.check(daw::describeChange(before, moved) == "Move track" && !daw::sameContent(before, moved),
+                "History: moving a track is named and is a change", daw::describeChange(before, moved));
     }
 
     // Through a file
@@ -756,15 +792,17 @@ id = "vibin.synth"
                 "Store: revisions only increase");
     }
 
-    // Idle frames: the session's revision checks against scanning the whole project every frame. The
-    // timing is printed (not a check); the checks after it are the behaviour.
+    // Idle frames: on a big project the session's revision checks cost nothing per frame (the old way,
+    // comparing the whole project each frame, took ~50 ms on 160,000 notes). 8 clips a track in the
+    // fast tier (32,000 notes), 40 in the full one.
     {
+        const int clipsPerTrack = full() ? 40 : 8;
         daw::Project big;
         for (int t = 0; t < 16; ++t) {
             const int index = big.addTrack(daw::TrackKind::Instrument);
             daw::Track &track = big.tracks[static_cast<size_t>(index)];
             track.clips.clear();
-            for (int k = 0; k < 40; ++k) {
+            for (int k = 0; k < clipsPerTrack; ++k) {
                 std::vector<daw::Note> notes(250);
                 for (size_t n = 0; n < notes.size(); ++n) {
                     notes[n].start = static_cast<double>(n) * 0.016;
@@ -805,20 +843,12 @@ id = "vibin.synth"
             session.checkModified();
         }
         const double revisionMs = elapsed(revisionStart);
-
-        // The old way: the history compares the whole project each frame, and the saved text is
-        // written and compared every 15th frame
+        // The guard: an idle frame under 5 ms. Scanning the project each frame took ~50 ms at 160,000
+        // notes, and grows with the project; revisions cost the same on any size
+        char cost[96];
+        std::snprintf(cost, sizeof cost, "%.4f ms a frame, %zu notes", revisionMs / frames, notes);
+        c.check(revisionMs / frames < 5.0, "Idle frames: the revision checks cost nothing per frame on a big project", cost);
         const std::string savedText = daw::writeProject(big);
-        daw::History scan;
-        scan.reset(big);
-        int textChecks = 0;
-        const Clock::time_point scanStart = Clock::now();
-        for (int f = 0; f < frames; ++f) {
-            scan.update(big, true, true, 1.0 + f / 60.0);
-            if (f % 15 == 0 && daw::writeProject(big) != savedText)
-                ++textChecks;
-        }
-        const double scanMs = elapsed(scanStart);
 
         // An edit after the idle frames is recorded once it settles
         const size_t before = session.history().undoCount();
@@ -829,22 +859,488 @@ id = "vibin.synth"
                     session.history().undoLabel() == "Rename clip",
                 "Idle frames: an edit after them is recorded once settled", session.history().undoLabel());
 
-        // One saved-state check after an edit: the new way (sameSaved against the saved copy), and the
-        // old way (writing the whole project and comparing its text)
-        // The name goes back, and the edit is at the very end of the project, so the compare goes
-        // through everything before it
+        // One saved-state check after an edit agrees with writing the whole project and comparing its
+        // text. The name goes back, and the edit is at the very end of the project, so the compare
+        // goes through everything before it
         session.store().editClip(0, 0).name = "Clip 0";
-        session.store().editClip(15, 39).notes.back().velocity = 0.3f;
+        session.store().editClip(15, clipsPerTrack - 1).notes.back().velocity = 0.3f;
         const Clock::time_point checkStart = Clock::now();
         session.checkModified();
         const double checkMs = elapsed(checkStart);
-        const Clock::time_point textStart = Clock::now();
         const bool textDiffers = daw::writeProject(session.project()) != savedText;
-        const double textMs = elapsed(textStart);
         c.check(session.modified() && textDiffers, "Saved state: the check after an edit agrees with the text");
-        std::printf("INFO idle frame: %.4f ms with revisions (first frame %.1f ms), %.3f ms scanning (%zu notes, %d text checks); "
-                    "one check after an edit: %.3f ms, %.1f ms writing and comparing the text\n",
-                    revisionMs / frames, firstMs, scanMs / frames, notes, textChecks, checkMs, textMs);
+        if (bench())
+            std::printf("INFO idle frame: %.4f ms with revisions (first frame %.1f ms; %zu notes); one check after an edit: %.3f ms\n",
+                        revisionMs / frames, firstMs, notes, checkMs);
+    }
+
+    // Undo: a single-note edit comes back exactly (and goes again on redo), and arming, monitoring and the
+    // loop stay as they are now. With the benchmark on, also what undo costs on a big project: these numbers
+    // are the baseline the undo redesign is measured against (the churn is reported, not asserted).
+    {
+        using Clock = std::chrono::steady_clock;
+        auto elapsed = [](Clock::time_point from) { return std::chrono::duration<double, std::milli>(Clock::now() - from).count(); };
+        // `tracks` instrument tracks of `clips` clips of `notes` notes each
+        auto build = [](int tracks, int clips, int notes) {
+            daw::Project p;
+            for (int t = 0; t < tracks; ++t) {
+                const int index = p.addTrack(daw::TrackKind::Instrument);
+                daw::Track &track = p.tracks[static_cast<size_t>(index)];
+                track.clips.clear();
+                for (int k = 0; k < clips; ++k) {
+                    std::vector<daw::Note> list(static_cast<size_t>(notes));
+                    for (size_t n = 0; n < list.size(); ++n) {
+                        list[n].start = static_cast<double>(n) * 0.0625;
+                        list[n].length = 0.25;
+                        list[n].key = 40 + static_cast<int>(n % 40);
+                        list[n].velocity = 0.7f;
+                    }
+                    track.clips.push_back(daw::Clip("Clip " + std::to_string(k), k * 8.0, 8.0, std::move(list)));
+                }
+            }
+            return p;
+        };
+        // One undo or redo as DawApp does it: the history's plan, put back by the session
+        auto undoStep = [](daw::ProjectSession &s, double now) {
+            daw::HistoryRestore plan;
+            if (!s.history().undo(s.store(), now, plan))
+                return false;
+            s.restoreState(std::move(plan));
+            return true;
+        };
+        auto redoStep = [](daw::ProjectSession &s) {
+            daw::HistoryRestore plan;
+            if (!s.history().redo(s.store(), plan))
+                return false;
+            s.restoreState(std::move(plan));
+            return true;
+        };
+
+        // The checks, on a small project
+        {
+            daw::ProjectSession s(build(4, 3, 8));
+            s.history().reset(s.project());
+            s.recordHistory(true, false, 0.0);
+            const daw::Project original = s.project();
+            const double was = original.tracks[2].clips[1].notes[3].start;
+            s.store().editClip(2, 1).notes[3].start = was + 1.0;
+            s.recordHistory(true, false, 1.0);
+            const daw::Project edited = s.project();
+            // Arming, monitoring and the loop change after the step was recorded
+            s.store().editMix(1).armed = true;
+            s.store().editMix(1).monitor = true;
+            s.store().setLoop(2.0, 6.0, true);
+            const bool undone = undoStep(s, 2.0);
+            c.check(undone && s.project().tracks[2].clips[1].notes[3].start == was && daw::sameContent(s.project(), original),
+                    "Undo: a single-note edit is put back exactly");
+            c.check(s.project().tracks[1].armed && s.project().tracks[1].monitor && s.project().looping &&
+                        s.project().loopStart == 2.0 && s.project().loopEnd == 6.0,
+                    "Undo: arming, monitoring and the loop are kept as they are now");
+            const bool redone = redoStep(s);
+            c.check(redone && s.project().tracks[2].clips[1].notes[3].start == was + 1.0 && daw::sameContent(s.project(), edited),
+                    "Undo: redo applies the edit again");
+            c.check(s.project().tracks[1].armed && s.project().tracks[1].monitor && s.project().looping,
+                    "Undo: redo keeps arming, monitoring and the loop too");
+        }
+
+        // The history against a plain one that copies the whole project for its state and every step (how
+        // it was before it followed the store's revisions): a few hundred random edits, settled and not,
+        // must give the same steps, labels, merges, and undo and redo results with the same selection
+        {
+            struct Plain {
+                struct Step {
+                    daw::Project project;
+                    std::string label;
+                };
+                daw::Project state;
+                std::vector<Step> undo, redo;
+                double lastTime = -1e9;
+                bool update(const daw::Project &project, bool settled, bool canMerge, double now)
+                {
+                    if (daw::sameContent(project, state)) {
+                        if (!daw::sameSelection(project, state))
+                            state = project;
+                        return false;
+                    }
+                    if (!settled)
+                        return false;
+                    std::string label = daw::describeChange(state, project);
+                    const bool merge = canMerge && !undo.empty() && undo.back().label == label && now - lastTime < 0.5;
+                    if (!merge)
+                        undo.push_back({state, std::move(label)});
+                    redo.clear();
+                    state = project;
+                    lastTime = now;
+                    return true;
+                }
+                const daw::Project *back(const daw::Project &current, double now)
+                {
+                    update(current, true, false, now);
+                    if (undo.empty())
+                        return nullptr;
+                    Step step = std::move(undo.back());
+                    undo.pop_back();
+                    redo.push_back({state, step.label});
+                    state = step.project;
+                    lastTime = -1e9;
+                    return &state;
+                }
+                const daw::Project *forward(const daw::Project &current)
+                {
+                    if (redo.empty() || !daw::sameContent(current, state))
+                        return nullptr;
+                    Step step = std::move(redo.back());
+                    redo.pop_back();
+                    undo.push_back({current, step.label});
+                    state = step.project;
+                    lastTime = -1e9;
+                    return &state;
+                }
+            };
+
+            const int rounds = full() ? 6 : 2, edits = full() ? 190 : 150;
+            std::string problem;
+            size_t steps = 0, merges = 0, undone = 0;
+            for (int round = 0; round < rounds && problem.empty(); ++round) {
+                std::mt19937 rng(1234u + static_cast<unsigned>(round));
+                auto pick = [&rng](int n) { return static_cast<int>(rng() % static_cast<unsigned>(n)); };
+                daw::ProjectSession fs(build(4, 3, 6));
+                fs.history().reset(fs.project());
+                daw::History viaProject;
+                viaProject.reset(fs.project());
+                Plain plain;
+                plain.state = fs.project();
+                const daw::Project first = fs.project();
+                double now = 1.0;
+                auto flag = [&problem](const std::string &what) {
+                    if (problem.empty())
+                        problem = what;
+                };
+                auto agree = [&](const char *what) {
+                    daw::History &h = fs.history();
+                    if (h.undoCount() != plain.undo.size() || viaProject.undoCount() != plain.undo.size() ||
+                        h.redoCount() != plain.redo.size() || viaProject.redoCount() != plain.redo.size())
+                        flag(std::string("step counts after ") + what);
+                    else if (!plain.undo.empty() && (h.undoLabel() != plain.undo.back().label ||
+                                                    viaProject.undoLabel() != plain.undo.back().label))
+                        flag(std::string("labels after ") + what + ": " + h.undoLabel() + " / " + plain.undo.back().label);
+                };
+                auto frame = [&](bool settled, bool merge) {
+                    fs.store().normalizeIds();
+                    fs.verify();
+                    const size_t before = fs.history().undoCount();
+                    const bool a = fs.recordHistory(settled, merge, now);
+                    const bool b = viaProject.update(fs.project(), settled, merge, now);
+                    const bool n = plain.update(fs.project(), settled, merge, now);
+                    if (a != n || b != n)
+                        flag("recorded or not");
+                    if (a && fs.history().undoCount() == before)
+                        merges++;
+                    agree("a frame");
+                };
+                // One undo or redo through all three, the result put back in the session as DawApp does it
+                auto move = [&](bool redo) {
+                    daw::HistoryRestore plan;
+                    const bool x = redo ? fs.history().redo(fs.store(), plan) : fs.history().undo(fs.store(), now, plan);
+                    const daw::Project *y = redo ? viaProject.redo(fs.project()) : viaProject.undo(fs.project(), now);
+                    const daw::Project *z = redo ? plain.forward(fs.project()) : plain.back(fs.project(), now);
+                    if (x != (z != nullptr) || (y != nullptr) != (z != nullptr)) {
+                        flag("undo or redo available");
+                        return false;
+                    }
+                    if (!z)
+                        return false;
+                    // Through the store's own restore: the project must come out as the plain history's state,
+                    // with arming, monitoring and the loop as they were
+                    const daw::Project was = fs.project();
+                    fs.restoreState(std::move(plan));
+                    const daw::Project &now2 = fs.project();
+                    if (!daw::sameContent(now2, *z) || !daw::sameSelection(now2, *z) || !daw::sameContent(*y, *z) ||
+                        !daw::sameSelection(*y, *z))
+                        flag(std::string(redo ? "redo" : "undo") + " result");
+                    for (const daw::Track &t : now2.tracks) {
+                        const daw::Track *before = was.findTrack(t.id);
+                        if (before && before->kind == t.kind && (before->armed != t.armed || before->monitor != t.monitor))
+                            flag("arming or monitoring changed by an undo");
+                    }
+                    if (now2.loopStart != was.loopStart || now2.loopEnd != was.loopEnd || now2.looping != was.looping)
+                        flag("the loop changed by an undo");
+                    fs.verify();
+                    undone += redo ? 0 : 1;
+                    agree("undo or redo");
+                    return true;
+                };
+
+                for (int i = 0; i < edits && problem.empty(); ++i) {
+                    daw::ProjectStore &store = fs.store();
+                    const daw::Project &p = fs.project();
+                    const int tracks = static_cast<int>(p.tracks.size());
+                    const int t = pick(tracks);
+                    const daw::Track &track = p.tracks[static_cast<size_t>(t)];
+                    const int clips = static_cast<int>(track.clips.size());
+                    const int k = clips > 0 ? pick(clips) : -1;
+                    const int notes = k >= 0 ? static_cast<int>(track.clips[static_cast<size_t>(k)].notes.size()) : 0;
+                    const int op = pick(19);
+                    if (op <= 1 && notes > 0)
+                        store.editClip(t, k).notes[static_cast<size_t>(pick(notes))].start += 0.125;
+                    else if (op == 2 && k >= 0)
+                        store.editClip(t, k).notes.push_back(daw::Note{pick(8) * 0.5, 0.5, 40 + pick(20), 0.8f, false, false});
+                    else if (op == 3 && notes > 0)
+                        store.editClip(t, k).notes.erase(store.editClip(t, k).notes.begin() + pick(notes));
+                    else if (op == 4 && notes > 0) {
+                        daw::Note &note = store.editClip(t, k).notes[static_cast<size_t>(pick(notes))];
+                        note.selected = !note.selected;
+                    } else if (op == 5)
+                        store.editMix(t).gain = 0.5f + 0.1f * static_cast<float>(pick(10));
+                    else if (op == 6)
+                        store.editMix(t).armed = !track.armed;
+                    else if (op == 7) {
+                        std::vector<audio::DeviceSetting> &fx = store.editTrack(t).effects;
+                        if (fx.size() < 3 && pick(3) > 0)
+                            fx.push_back(audio::effectSetting(audio::EffectType::Gain));
+                        else if (!fx.empty() && pick(2) == 0)
+                            fx.pop_back();
+                        else if (!fx.empty())
+                            fx.back().bypass = !fx.back().bypass;
+                    } else if (op == 8 || op == 9)
+                        store.select(t, k >= 0 && pick(3) > 0 ? k : -1);
+                    else if (op == 10 && tracks > 1)
+                        store.edit().moveTrack(t, pick(tracks));
+                    else if (op == 11) {
+                        if (tracks < 6)
+                            store.edit().addTrack(pick(2) ? daw::TrackKind::Instrument : daw::TrackKind::Audio);
+                        else
+                            store.edit().deleteTrack(t);
+                    } else if (op == 12)
+                        store.setTempo(100.0 + 10.0 * pick(4));
+                    else if (op == 13 && k >= 0)
+                        store.editClip(t, k).name = "Clip " + std::to_string(pick(5));
+                    else if (op == 14 && k >= 0)
+                        store.editTrack(t).clips.push_back(daw::Clip("New", pick(4) * 8.0, 8.0));
+                    else if (op == 15 && clips > 1)
+                        store.editTrack(t).clips.erase(store.editTrack(t).clips.begin() + k);
+                    else if (op == 17)
+                        store.editMix(t).monitor = !track.monitor;
+                    else if (op == 18)
+                        store.setLoop(pick(8), 8.0 + pick(8), pick(2) == 0);
+                    else if (op == 16 && i % 5 == 0) {
+                        // Some frames pass before an undo, as when the mouse is still held
+                        frame(false, false);
+                        move(pick(3) == 0);
+                        continue;
+                    }
+                    now += pick(4) == 0 ? 0.1 : 1.0;
+                    frame(pick(3) != 0, pick(2) == 0);
+                }
+                now += 1.0;
+                frame(true, false);
+                steps += fs.history().undoCount();
+                // All the way back, then all the way forward again, each step the same in all three
+                std::vector<daw::Project> seen;
+                while (problem.empty() && move(false)) {
+                }
+                const bool backToFirst = daw::sameContent(fs.project(), first);
+                if (!backToFirst)
+                    flag("undoing everything did not reach the first project");
+                while (problem.empty() && move(true)) {
+                }
+            }
+            c.check(problem.empty(), "History fuzz: the same steps, labels, merges and results as copying the whole project",
+                    problem.empty() ? std::to_string(steps) + " steps, " + std::to_string(undone) + " undos, " +
+                                          std::to_string(merges) + " merges"
+                                    : problem);
+        }
+
+        // What an undo moves: a one-note edit on one track moves that track's content revision only, a gain
+        // change that track's mix revision only, and moving a track takes the structural path (replace)
+        {
+            daw::ProjectSession cs(build(6, 3, 8));
+            cs.history().reset(cs.project());
+            cs.recordHistory(true, false, 0.0);
+            struct Moved {
+                std::vector<int> tracks, mix;
+                bool structure = false, master = false, selection = false, revision = false, structural = false, any = false;
+            };
+            // One undo or redo through the session, and which revisions it moved
+            auto apply = [&cs](bool redo, double now) {
+                const daw::ProjectStore &st = cs.store();
+                const int n = static_cast<int>(st.project().tracks.size());
+                std::vector<uint64_t> t, m;
+                for (int i = 0; i < n; ++i) {
+                    t.push_back(st.trackRevision(i));
+                    m.push_back(st.mixRevision(i));
+                }
+                const uint64_t structure = st.structureRevision(), master = st.masterRevision(),
+                               selection = st.selectionRevision(), revision = st.revision();
+                Moved out;
+                daw::HistoryRestore plan;
+                out.any = redo ? cs.history().redo(cs.store(), plan) : cs.history().undo(cs.store(), now, plan);
+                out.structural = plan.structural;
+                cs.restoreState(std::move(plan));
+                for (int i = 0; i < n && i < static_cast<int>(t.size()); ++i) {
+                    if (st.trackRevision(i) != t[static_cast<size_t>(i)])
+                        out.tracks.push_back(i);
+                    if (st.mixRevision(i) != m[static_cast<size_t>(i)])
+                        out.mix.push_back(i);
+                }
+                out.structure = st.structureRevision() != structure;
+                out.master = st.masterRevision() != master;
+                out.selection = st.selectionRevision() != selection;
+                out.revision = st.revision() != revision;
+                return out;
+            };
+            const std::vector<int> only2{2}, only4{4}, none;
+
+            cs.store().editClip(2, 1).notes[3].start += 1.0;
+            cs.recordHistory(true, false, 1.0);
+            Moved m = apply(false, 2.0);
+            c.check(m.any && !m.structural && m.tracks == only2 && m.mix == none && !m.structure && !m.master && !m.selection &&
+                        m.revision,
+                    "Undo churn: a one-note edit on one track moves only that track's content");
+            m = apply(true, 0.0);
+            c.check(m.any && !m.structural && m.tracks == only2 && m.mix == none && !m.structure && !m.master && !m.selection &&
+                        m.revision,
+                    "Undo churn: redo moves only that track's content too");
+            cs.store().editMix(4).gain = 0.3f;
+            cs.recordHistory(true, false, 3.0);
+            m = apply(false, 4.0);
+            c.check(m.any && !m.structural && m.tracks == none && m.mix == only4 && !m.structure && !m.master && !m.selection,
+                    "Undo churn: a gain change moves only that track's mix");
+            cs.store().edit().moveTrack(0, 3);
+            cs.recordHistory(true, false, 5.0);
+            m = apply(false, 6.0);
+            c.check(m.any && m.structural && m.structure, "Undo churn: moving a track takes the structural path");
+            // The frame after an undo has nothing to compare, and the next edit is recorded as usual
+            const size_t steps = cs.history().undoCount();
+            cs.store().editClip(1, 0).notes[0].velocity = 0.1f;
+            const bool recorded = cs.recordHistory(true, false, 7.0);
+            c.check(recorded && cs.history().undoCount() == steps + 1 && cs.history().undoLabel() == "Change velocity",
+                    "Undo churn: an edit after an undo is recorded", cs.history().undoLabel());
+            cs.verify();
+        }
+
+        // A press that selects a clip and then drags it: undo puts back the selection from the press
+        {
+            daw::ProjectSession ds(build(3, 2, 6));
+            ds.history().reset(ds.project());
+            ds.recordHistory(true, false, 0.0);
+            const double was = ds.project().tracks[0].clips[1].notes[2].start;
+            ds.store().select(0, 1); // the press, the mouse down
+            ds.recordHistory(false, false, 1.0);
+            for (int f = 0; f < 4; ++f) {
+                ds.store().editClip(0, 1).notes[2].start += 0.25; // the drag
+                ds.recordHistory(false, false, 1.1 + f * 0.05);
+            }
+            const bool recorded = ds.recordHistory(true, false, 2.0); // the mouse up
+            const daw::Project *back = ds.history().undo(ds.project(), 3.0);
+            c.check(recorded && ds.history().undoCount() == 0 && back && back->selectedTrack == 0 && back->selectedClip == 1 &&
+                        back->tracks[0].clips[1].notes[2].start == was,
+                    "History: undoing a drag that began with a selection puts back that selection");
+        }
+
+        if (bench()) {
+            const int tracks = 32, clips = 20, notes = 64;
+            daw::ProjectSession s(build(tracks, clips, notes));
+            s.history().reset(s.project());
+            s.recordHistory(true, false, 0.0);
+            double now = 1.0;
+
+            // a. A drag: a small edit each frame, unsettled, then the settled frame. The history stops comparing
+            // at the first difference, so a drag on the first track and one on the last are timed apart
+            const int dragFrames = 200;
+            double dragMs = 0.0, dragFirstMs = 0.0;
+            for (int f = 0; f < dragFrames; ++f) {
+                s.store().editClip(0, 0).notes[5].start += 0.001;
+                const Clock::time_point from = Clock::now();
+                s.recordHistory(false, false, now);
+                dragFirstMs += elapsed(from);
+                now += 1.0 / 60.0;
+            }
+            s.recordHistory(true, false, now);
+            for (int f = 0; f < dragFrames; ++f) {
+                s.store().editClip(tracks - 1, clips - 1).notes[5].start += 0.001;
+                const Clock::time_point from = Clock::now();
+                s.recordHistory(false, false, now);
+                dragMs += elapsed(from);
+                now += 1.0 / 60.0;
+            }
+            const Clock::time_point settleFrom = Clock::now();
+            s.recordHistory(true, false, now);
+            const double settledMs = elapsed(settleFrom);
+            now += 1.0;
+
+            // b. Selection changes: each one a different track and clip
+            const int selects = 200;
+            double selectMs = 0.0;
+            for (int i = 0; i < selects; ++i) {
+                s.store().select(i % tracks, (i / tracks) % clips);
+                const Clock::time_point from = Clock::now();
+                s.recordHistory(true, false, now);
+                selectMs += elapsed(from);
+                now += 1.0;
+            }
+
+            // e. Memory: 50 single-note edits on the same clip (their steps are what c undoes)
+            const int edits = 50;
+            for (int i = 0; i < edits; ++i) {
+                s.store().editClip(11, 4).notes[10].start += 0.01;
+                s.recordHistory(true, false, now);
+                now += 1.0;
+            }
+            const size_t stored = s.history().storedClips();
+            // Rough bytes: the clips held, each with its notes, plus a shell (the project without its clips) per step
+            const size_t clipBytes = sizeof(daw::Clip) + static_cast<size_t>(notes) * sizeof(daw::Note);
+            const size_t shellBytes = sizeof(daw::Project) + static_cast<size_t>(tracks) * sizeof(daw::Track);
+            const size_t bytes = stored * clipBytes + (s.history().undoCount() + s.history().redoCount()) * shellBytes;
+            const size_t held = s.history().storedBytes();
+
+            // d. Churn: one single-note edit on one track, recorded, then its undo; what the undo moved
+            s.store().editClip(20, 2).notes[1].velocity = 0.2f;
+            s.recordHistory(true, false, now);
+            now += 1.0;
+            std::vector<uint64_t> trackRev, mixRev;
+            for (int t = 0; t < tracks; ++t) {
+                trackRev.push_back(s.store().trackRevision(t));
+                mixRev.push_back(s.store().mixRevision(t));
+            }
+            const uint64_t structure = s.store().structureRevision(), master = s.store().masterRevision(),
+                           selection = s.store().selectionRevision();
+            undoStep(s, now);
+            int tracksMoved = 0, mixMoved = 0;
+            for (int t = 0; t < tracks; ++t) {
+                tracksMoved += s.store().trackRevision(t) != trackRev[static_cast<size_t>(t)] ? 1 : 0;
+                mixMoved += s.store().mixRevision(t) != mixRev[static_cast<size_t>(t)] ? 1 : 0;
+            }
+            const int structureMoved = s.store().structureRevision() != structure ? 1 : 0;
+            const int masterMoved = s.store().masterRevision() != master ? 1 : 0;
+            const int selectionMoved = s.store().selectionRevision() != selection ? 1 : 0;
+            // The frame after an undo: the history looks at the restored project once
+            const Clock::time_point afterFrom = Clock::now();
+            s.recordHistory(true, false, now);
+            const double afterMs = elapsed(afterFrom);
+
+            // c. Undo and redo latency: the history's step plus the session's restore, over the single-note steps
+            double undoMs = 0.0, redoMs = 0.0;
+            int undos = 0, redos = 0;
+            for (int i = 0; i < edits; ++i) {
+                const Clock::time_point from = Clock::now();
+                undos += undoStep(s, now) ? 1 : 0;
+                undoMs += elapsed(from);
+            }
+            for (int i = 0; i < edits; ++i) {
+                const Clock::time_point from = Clock::now();
+                redos += redoStep(s) ? 1 : 0;
+                redoMs += elapsed(from);
+            }
+
+            std::printf("INFO undo bench (%dx%dx%d, %zu notes): drag frame %.4f ms (first track %.4f ms), settled frame %.3f ms, selection %.4f ms, "
+                        "undo %.3f ms, redo %.3f ms, after-undo frame %.3f ms\n",
+                        tracks, clips, notes, noteCount(s.project()), dragMs / dragFrames, dragFirstMs / dragFrames, settledMs, selectMs / selects,
+                        undoMs / std::max(undos, 1), redoMs / std::max(redos, 1), afterMs);
+            std::printf("INFO undo churn: tracks %d/%d, mix %d/%d, structure %d, master %d, selection %d; "
+                        "stored clips %zu after %d edits, ~%zu bytes (%zu by the old estimate)\n",
+                        tracksMoved, tracks, mixMoved, tracks, structureMoved, masterMoved, selectionMoved, stored, edits, held, bytes);
+        }
     }
 
     // A selection-only change is no step, and undo puts the selection back as it was
@@ -938,7 +1434,13 @@ id = "vibin.synth"
         daw::ExportTarget m;
         m.name = "MIDI";
         m.source = daw::ExportSource::Midi;
-        tp.exportPresets = {{"Everything \"quoted\"", {a, b, d, e, m}}, {"Empty", {}}};
+        daw::ExportTarget p;
+        p.name = "Share";
+        p.format = daw::ExportFormat::Mp3;
+        p.bits = 16;
+        p.bitrate = 192;
+        p.sampleRate = 44100;
+        tp.exportPresets = {{"Everything \"quoted\"", {a, b, d, e, m, p}}, {"Empty", {}}};
 
         const std::string tpText = daw::writeProject(tp);
         daw::Project tpBack;
@@ -984,6 +1486,21 @@ id = "vibin.synth"
                              w->loudnessLufs == -40.0 && w->peakDb == 0.0 && w->ceilingDbtp == -20.0 &&
                              w->fadeInMs == 60000.0 && w->fadeOutMs == 0.0 && w->fromBar == 1.0 && w->toBar == 2.0;
         c.check(clamped, "Export: out-of-range values are clamped, unknown keys ignored", wildWhy);
+
+        // An MP3 target read with what MP3 can't take: the nearest rate, 16 bits, a standard bitrate
+        const std::string wildMp3 = "[[export_presets]]\nname = \"Wild\"\n\n[[export_presets.targets]]\nformat = \"mp3\"\n"
+                                    "bits = 24\nbitrate = 300\nsample_rate = 88200\n";
+        daw::Project mp3P;
+        std::string mp3Why;
+        const bool mp3Ok = daw::readProject(wildMp3, mp3P, mp3Why);
+        const daw::ExportTarget *w3 = mp3Ok && !mp3P.exportPresets.empty() && !mp3P.exportPresets[0].targets.empty()
+                                          ? &mp3P.exportPresets[0].targets[0]
+                                          : nullptr;
+        c.check(w3 && w3->format == daw::ExportFormat::Mp3 && w3->bits == 16 && w3->bitrate == 320 && w3->sampleRate == 44100,
+                "Export: an MP3 target is read at a rate, depth and bitrate MP3 can take", mp3Why);
+        c.check(daw::mp3RateFor(22050) == 44100 && daw::mp3RateFor(32000) == 32000 && daw::mp3RateFor(48000) == 48000 &&
+                    daw::mp3RateFor(176400) == 44100 && daw::mp3RateFor(192000) == 48000,
+                "Export: an MP3's rate keeps the family (44.1 kHz or 48 kHz)");
     }
 
     // File names: each token, unsafe characters, EachTrack outputs and the extensions
@@ -1053,6 +1570,12 @@ id = "vibin.synth"
         const std::string n14 = daw::resolveFileName(t, np, "Mix", "", now);
         c.check(n13 == "Night Mix.WAV" && n14 == "Night Mix.aiff", "File names: the extension is case-blind and AIFF is .aiff",
                 n13 + " / " + n14);
+        t.format = daw::ExportFormat::Mp3;
+        t.bitrate = 256;
+        t.sampleRate = 96000;
+        t.fileName = "{project} {rate} {bits} {format}";
+        const std::string n15 = daw::resolveFileName(t, np, "Mix", "", now);
+        c.check(n15 == "Night Mix 48k 256kbps mp3.mp3", "File names: MP3 is .mp3, with its rate and bitrate", n15);
     }
 
     // The part of the song each range covers
@@ -1571,11 +2094,343 @@ id = "vibin.synth"
         c.check(maxOk && maxP.tracks.size() == 1 && maxP.tracks[0].id == 4294967295u, "Ids: the largest id is read", bareError);
     }
 
+    // Automation: lanes on a track and on its devices read back exactly; a bad lane is refused with a
+    // reason; out-of-range points are clamped and sorted; editing one is an undo step of its own, put
+    // back by moving only its track
+    {
+        daw::Project ap;
+        daw::Track t;
+        t.name = "Automated";
+        t.kind = daw::TrackKind::Instrument;
+        t.instrument = audio::SynthDevice::setting();
+        t.instrument.automation.push_back({3, {{0.0, 0.25f}, {2.5, 1.0f}}});
+        t.effects.push_back(audio::effectSetting(audio::EffectType::Gain));
+        t.effects[0].automation.push_back({0, {{1.0, 0.5f}}});
+        t.effects[0].automation.push_back({1, {}}); // shown, but plays nothing
+        t.automation.push_back({audio::kVolumeParam, {{0.0, 0.0f}, {4.0, 0.79f}, {8.0, 0.5f}}});
+        t.automation.push_back({audio::kPanParam, {{2.0, 0.1f}}});
+        ap.tracks.push_back(t);
+        const std::string text = daw::writeProject(ap);
+        daw::Project back;
+        std::string why;
+        const bool ok = daw::readProject(text, back, why);
+        const bool same = ok && back.tracks.size() == 1 && back.tracks[0].automation == ap.tracks[0].automation &&
+                          back.tracks[0].instrument.automation == ap.tracks[0].instrument.automation &&
+                          back.tracks[0].effects.size() == 1 && back.tracks[0].effects[0].automation == ap.tracks[0].effects[0].automation;
+        // Read again, the text is the same (the first read gives the tracks their ids)
+        daw::Project again;
+        const bool againOk = ok && daw::readProject(daw::writeProject(back), again, why);
+        c.check(same && daw::sameContent(back, ap) && againOk && daw::writeProject(again) == daw::writeProject(back),
+                "Automation: a track's and its devices' lanes read back exactly (an empty lane too)", why);
+
+        auto refused = [](const std::string &file) {
+            daw::Project p;
+            std::string error;
+            return daw::readProject(file, p, error) ? std::string() : error;
+        };
+        const std::string badTrack = refused("format = 3\n[[tracks]]\nname = \"A\"\nautomation = [ { param = \"loud\", points = [] } ]\n");
+        const std::string badDevice = refused(
+            "format = 3\n[[tracks]]\nname = \"A\"\n[[tracks.effects]]\nkind = \"effect\"\nid = \"gain\"\nparams = []\n"
+            "automation = [ { param = \"volume\", points = [] } ]\n");
+        c.check(badTrack.find("volume") != std::string::npos && !badDevice.empty(),
+                "Automation: a lane for something that isn't there is refused with a reason", badTrack + " / " + badDevice);
+        daw::Project wild;
+        const bool wildOk = daw::readProject(
+            "format = 3\n[[tracks]]\nname = \"A\"\nautomation = [ { param = \"pan\", points = [ { beat = 4, value = 3 }, "
+            "{ beat = -2, value = -1 } ] }, { param = \"pan\", points = [] } ]\n",
+            wild, why);
+        const auto &wildLanes = wildOk && !wild.tracks.empty() ? wild.tracks[0].automation : std::vector<audio::AutomationLane>{};
+        c.check(wildLanes.size() == 1 && wildLanes[0].points.size() == 2 && wildLanes[0].points[0].beat == 0.0 &&
+                    wildLanes[0].points[0].value == 0.0f && wildLanes[0].points[1].value == 1.0f,
+                "Automation: points are clamped and sorted, a second lane for one parameter dropped", why);
+
+        // Undo: moving a point is "Edit automation" and only that track's content comes back
+        daw::ProjectStore store(ap);
+        store.edit().tracks.push_back(daw::Track{});
+        daw::History history;
+        history.reset(store.project());
+        store.editTrack(0).automation[0].points[1].value = 0.4f;
+        const bool recorded = history.update(store, true, false, 1.0);
+        const uint64_t other = store.trackRevision(1), structure = store.structureRevision();
+        daw::HistoryRestore plan;
+        const bool undone = history.undo(store, 2.0, plan);
+        store.restore(std::move(plan));
+        c.check(recorded && history.redoLabel() == "Edit automation" && undone &&
+                    store.project().tracks[0].automation[0].points[1].value == 0.79f && store.trackRevision(1) == other &&
+                    store.structureRevision() == structure,
+                "Automation: editing a lane is an undo step, put back without touching other tracks", history.redoLabel());
+        store.editDevice(daw::DevicePlace::effect(false, 0, 0))->automation[0].points[0].value = 0.9f;
+        history.update(store, true, false, 3.0);
+        c.check(history.undoLabel() == "Edit automation", "Automation: a device's lane edit is named too", history.undoLabel());
+    }
+
+    // Recording automation (a latch pass): the lane's own value up to the touch, the written values
+    // replacing what was there, its own value back after, thinned; a held value adds no points; the
+    // playhead going back starts another stretch; and through AutomationWriter, only an armed track
+    // while playing, never the project's own values, the whole pass one undo step
+    {
+        using audio::AutomationWrite;
+        auto near = [](double a, double b) { return std::fabs(a - b) < 1e-4; };
+        const double gap = AutomationWrite::kGap;
+
+        audio::AutomationLane lane{audio::kVolumeParam, {{0.0, 0.2f}, {3.0, 0.1f}, {8.0, 0.8f}}};
+        const audio::AutomationLane before = lane;
+        AutomationWrite w = audio::beginAutomationWrite(lane, 2.0, 0.9f, false, 0.004f);
+        const float ownAtTouch = before.positionAt(2.0 - gap, false);
+        c.check(near(w.from, 2.0 - gap) && lane.points.size() == 5 && near(lane.positionAt(2.0 - gap, false), ownAtTouch) &&
+                    lane.positionAt(2.0, false) == 0.9f,
+                "Automation recording: a touch holds the lane's own value until it, then the value written");
+        for (double beat = 2.25; beat <= 3.5; beat += 0.25)
+            audio::writeAutomation(lane, w, beat, 0.9f);
+        size_t inPass = 0;
+        for (const auto &p : lane.points)
+            inPass += p.beat >= w.from && p.beat <= w.to;
+        c.check(inPass == 3 && lane.positionAt(3.0, false) == 0.9f && near(w.to, 3.5),
+                "Automation recording: a held value moves its last point on (the point at beat 3 replaced)",
+                std::to_string(inPass) + " points in the pass");
+        audio::writeAutomation(lane, w, 4.0, 0.5f);
+        audio::writeAutomation(lane, w, 5.0, 0.5f);
+        audio::finishAutomationWrite(lane, w);
+        const float ownAfter = before.positionAt(5.0 + gap, false);
+        bool untouched = lane.points.front() == before.points.front() && lane.points.back() == before.points.back();
+        bool oldGone = std::none_of(lane.points.begin(), lane.points.end(), [](const audio::AutomationPoint &p) { return p.beat == 3.0; });
+        c.check(untouched && oldGone && near(lane.positionAt(4.5, false), 0.5) && near(lane.positionAt(5.0 + gap, false), ownAfter) &&
+                    near(lane.positionAt(6.5, false), before.positionAt(6.5, false)),
+                "Automation recording: finishing puts the lane's own value back after the pass, the points around it kept");
+
+        // A ramp written frame by frame is thinned to what the line needs
+        audio::AutomationLane ramp{0, {}};
+        AutomationWrite rw = audio::beginAutomationWrite(ramp, 0.0, 0.0f, false, 0.004f);
+        for (int i = 1; i <= 64; ++i)
+            audio::writeAutomation(ramp, rw, i / 16.0, static_cast<float>(i) / 64.0f);
+        const size_t written = ramp.points.size();
+        audio::finishAutomationWrite(ramp, rw);
+        c.check(written == 65 && ramp.points.size() == 2 && ramp.points.back().beat == 4.0 && ramp.points.back().value == 1.0f,
+                "Automation recording: a written ramp is thinned to its ends (an empty lane gets no return point)",
+                std::to_string(written) + " -> " + std::to_string(ramp.points.size()));
+
+        // A loop: the playhead goes back, so the stretch so far ends and another begins
+        audio::AutomationLane looped{0, {{0.0, 0.5f}}};
+        AutomationWrite lw = audio::beginAutomationWrite(looped, 4.0, 1.0f, false, 0.004f);
+        audio::writeAutomation(looped, lw, 6.0, 1.0f);
+        audio::writeAutomation(looped, lw, 1.0, 0.0f); // back to the loop's start
+        audio::writeAutomation(looped, lw, 2.0, 0.0f);
+        audio::finishAutomationWrite(looped, lw);
+        c.check(near(looped.positionAt(1.5, false), 0.0) && near(looped.positionAt(5.0, false), 1.0) &&
+                    near(looped.positionAt(0.5, false), 0.5) && near(lw.from, 1.0 - gap),
+                "Automation recording: going back keeps the first stretch and writes the second");
+
+        // A stepped parameter holds each value
+        audio::AutomationLane steps{0, {}};
+        AutomationWrite sw = audio::beginAutomationWrite(steps, 0.0, 0.0f, true, 0.004f);
+        audio::writeAutomation(steps, sw, 1.0, 0.0f);
+        audio::writeAutomation(steps, sw, 2.0, 1.0f);
+        audio::writeAutomation(steps, sw, 3.0, 1.0f);
+        audio::finishAutomationWrite(steps, sw);
+        c.check(steps.positionAt(1.9, true) == 0.0f && steps.positionAt(2.0, true) == 1.0f && steps.points.size() == 3,
+                "Automation recording: a stepped lane steps where the value changed, repeats between dropped",
+                std::to_string(steps.points.size()));
+
+        // AutomationWriter: a track's volume and a device's knob, one undo step
+        daw::Project wp;
+        daw::Track wt;
+        wt.name = "Written";
+        wt.effects.push_back(audio::effectSetting(audio::EffectType::Gain));
+        wp.tracks.push_back(wt);
+        wp.masterEffects.push_back(audio::effectSetting(audio::EffectType::Gain));
+        daw::ProjectStore wstore(wp);
+        double playhead = 1.0;
+        bool playing = false;
+        daw::AutomationWriter writer(wstore, [&] { return playhead; }, [&] { return playing; });
+        daw::History wh;
+        wh.reset(wstore.project());
+        const float gainBefore = wstore.project().tracks[0].gain;
+        const daw::DevicePlace gainPlace = daw::DevicePlace::effect(false, 0, 0);
+        const daw::AutomationPlace devicePlace{false, gainPlace};
+        const audio::ParamCurve levelCurve = daw::automationCurve(audio::effectParam(audio::effectInfo(audio::EffectType::Gain).params[0], 0));
+        const bool idle = writer.touchTrack(0, audio::kVolumeParam, 0.5);
+        playing = true;
+        const bool unarmed = writer.touchTrack(0, audio::kVolumeParam, 0.5);
+        writer.setArmed(0, true);
+        const bool master = writer.touch(0, daw::AutomationPlace{false, daw::DevicePlace::effect(true, -1, 0)}, 0, levelCurve, 0.0);
+        c.check(!idle && !unarmed && !master && !writer.writing() && writer.armed(0),
+                "Automation recording: nothing is written while stopped, unarmed, or for a master whose writing is off");
+        int steps0 = 0;
+        double now = 0.0;
+        auto frame = [&] {
+            writer.update();
+            now += 0.1;
+            steps0 += wh.update(wstore, !writer.writing(), false, now) ? 1 : 0;
+        };
+        const bool took = writer.touchTrack(0, audio::kVolumeParam, 0.5);
+        frame();
+        for (int i = 0; i < 8; ++i) {
+            playhead += 0.25;
+            if (i == 2)
+                writer.touch(0, devicePlace, 0, levelCurve, -6.0);
+            if (i == 4)
+                writer.touchTrack(0, audio::kVolumeParam, 1.0);
+            frame();
+        }
+        const bool wasWriting = writer.writing();
+        playing = false;
+        frame();
+        const daw::Track &after = wstore.project().tracks[0];
+        const audio::AutomationLane *vol = audio::findAutomation(after.automation, audio::kVolumeParam);
+        const audio::AutomationLane *lvl = audio::findAutomation(after.effects[0].automation, 0);
+        const audio::ParamCurve volCurve = daw::automationCurve(audio::kVolumeParam);
+        c.check(took && wasWriting && !writer.writing() && vol && lvl && after.gain == gainBefore &&
+                    after.effects[0].values == wp.tracks[0].effects[0].values &&
+                    near(volCurve.value(vol->positionAt(1.25, false)), 0.5) && near(volCurve.value(vol->positionAt(3.0, false)), 1.0) &&
+                    near(levelCurve.value(lvl->positionAt(3.0, false)), -6.0),
+                "Automation recording: the fader and a knob write their lanes from the touch to the stop, the own values untouched");
+        c.check(steps0 == 1 && wh.undoLabel() == "Edit automation", "Automation recording: the whole pass is one undo step",
+                std::to_string(steps0) + " steps, " + wh.undoLabel());
+        // Moving a control now that playback has stopped sets the project's value as before
+        c.check(!writer.touchTrack(0, audio::kVolumeParam, 0.25), "Automation recording: stopped, a control sets its own value again");
+
+        // Touch mode: written only while the control is held. A volume lane flat at the fader's 0.25 position;
+        // held from beat 2 to beat 3 at a higher value, then let go while the song plays on: the lane has the
+        // written value up to beat 3, glides back to its own by 3.25, and nothing after is written
+        {
+            daw::Project tp;
+            daw::Track tt;
+            tt.name = "Touched";
+            tt.automation.push_back({audio::kVolumeParam, {{0.0, 0.25f}, {8.0, 0.25f}}});
+            tp.tracks.push_back(tt);
+            daw::ProjectStore ts(tp);
+            double head = 2.0;
+            bool rolling = true;
+            daw::AutomationWriter touch(ts, [&] { return head; }, [&] { return rolling; });
+            touch.setMode(daw::AutomationWriter::Mode::Touch);
+            touch.setArmed(0, true);
+            const audio::ParamCurve curve = daw::automationCurve(audio::kVolumeParam);
+            const float held = 0.75f; // a position: the gain written is curve.value(held)
+            touch.touchTrack(0, audio::kVolumeParam, curve.value(held));
+            for (int i = 0; i < 4; ++i) {
+                head += 0.25;
+                touch.update(true);
+            }
+            const bool writingHeld = touch.writing();
+            touch.update(false); // let go at beat 3
+            const bool writingAfter = touch.writing();
+            head = 5.0;
+            touch.update(false); // later frames write nothing
+            const audio::AutomationLane *lane = audio::findAutomation(ts.project().tracks[0].automation, audio::kVolumeParam);
+            const float at25 = lane ? lane->positionAt(2.5, false) : -1.0f, at3 = lane ? lane->positionAt(3.0, false) : -1.0f;
+            const float at3125 = lane ? lane->positionAt(3.125, false) : -1.0f, at4 = lane ? lane->positionAt(4.0, false) : -1.0f;
+            c.check(writingHeld && !writingAfter && std::fabs(at25 - held) < 1e-3f && std::fabs(at3 - held) < 1e-3f &&
+                        at3125 < held - 0.1f && at3125 > 0.3f && std::fabs(at4 - 0.25f) < 1e-3f,
+                    "Automation recording: touch mode writes while held, then glides back to the lane over a quarter beat",
+                    std::to_string(at25) + " " + std::to_string(at3) + " " + std::to_string(at3125) + " " + std::to_string(at4));
+            // Latch mode ignores the mouse: letting go keeps writing until playback stops
+            touch.setMode(daw::AutomationWriter::Mode::Latch);
+            touch.touchTrack(0, audio::kVolumeParam, curve.value(held));
+            head = 6.0;
+            touch.update(false);
+            const bool latched = touch.writing();
+            rolling = false;
+            touch.update(false);
+            c.check(latched && !touch.writing(), "Automation recording: latch mode keeps writing when the mouse is let go");
+        }
+
+        // The master: its places, its lane rows, and a pass writing its volume and an effect's knob
+        {
+            daw::Project mp = wp;
+            mp.masterVolume = 0.8f;
+            mp.masterAutomation.push_back({audio::kVolumeParam, {{0.0, 0.5f}}});
+            mp.masterEffects[0].automation.push_back({0, {{1.0, 0.25f}}});
+            mp.masterEffects.push_back(audio::effectSetting(audio::EffectType::Gain));
+            mp.masterEffects[1].automation.push_back({0, {}});
+            daw::ProjectStore ms(mp);
+            const auto *volumeLanes = daw::lanesAt(ms.project(), 7, daw::AutomationPlace::masterVolume());
+            const auto *effectLanes = daw::lanesAt(ms.project(), 7, daw::AutomationPlace::masterEffect(1));
+            const auto *gone = daw::lanesAt(ms.project(), 7, daw::AutomationPlace::masterEffect(5));
+            c.check(volumeLanes == &ms.project().masterAutomation && effectLanes == &ms.project().masterEffects[1].automation && !gone &&
+                        !(daw::AutomationPlace::masterVolume() == daw::AutomationPlace{}) &&
+                        !(daw::AutomationPlace::masterEffect(0) == daw::AutomationPlace::masterEffect(1)),
+                    "Master automation: lanesAt finds the master's volume and effects, whatever the track");
+            const uint64_t before = ms.masterRevision(), trackBefore = ms.trackRevision(0);
+            auto *edited = daw::editLanesAt(ms, 7, daw::AutomationPlace::masterVolume());
+            const uint64_t afterVolume = ms.masterRevision();
+            auto *editedEffect = daw::editLanesAt(ms, 7, daw::AutomationPlace::masterEffect(0));
+            c.check(edited == &ms.project().masterAutomation && editedEffect == &ms.project().masterEffects[0].automation &&
+                        afterVolume != before && ms.masterRevision() != afterVolume && ms.trackRevision(0) == trackBefore,
+                    "Master automation: editLanesAt edits through the master's revision alone");
+            const std::vector<daw::AutomationRow> rows = daw::masterAutomationRows(ms.project());
+            c.check(rows.size() == 3 && rows[0].place == daw::AutomationPlace::masterVolume() && rows[0].param == audio::kVolumeParam &&
+                        rows[1].place == daw::AutomationPlace::masterEffect(0) && rows[2].place == daw::AutomationPlace::masterEffect(1),
+                    "Master automation: the lane rows are the volume, then each effect's", std::to_string(rows.size()));
+
+            // Writing: nothing until the master is armed (an armed track doesn't arm it), then one pass, one step
+            double mhead = 2.0;
+            bool mplaying = true;
+            daw::AutomationWriter mw(ms, [&] { return mhead; }, [&] { return mplaying; });
+            mw.setArmed(0, true);
+            const bool unarmedMaster = mw.touchMaster(1.0);
+            mw.setMasterArmed(true);
+            daw::History mh;
+            mh.reset(ms.project());
+            ms.editMasterAutomation().clear();
+            ms.editMasterEffects()[0].automation.clear();
+            mh.reset(ms.project());
+            int mSteps = 0;
+            double mnow = 0.0;
+            auto mframe = [&] {
+                mw.update();
+                mnow += 0.1;
+                mSteps += mh.update(ms, !mw.writing(), false, mnow) ? 1 : 0;
+            };
+            const float volumeBefore = ms.project().masterVolume;
+            const audio::ParamCurve gainCurve = daw::automationCurve(audio::effectParam(audio::effectInfo(audio::EffectType::Gain).params[0], 0));
+            const bool wroteVolume = mw.touchMaster(0.5);
+            mframe();
+            for (int i = 0; i < 8; ++i) {
+                mhead += 0.25;
+                if (i == 2)
+                    mw.touch(0, daw::AutomationPlace{false, daw::DevicePlace::effect(true, -1, 0)}, 0, gainCurve, -6.0);
+                if (i == 4)
+                    mw.touchMaster(1.5);
+                mframe();
+            }
+            const bool writing = mw.writing();
+            mplaying = false;
+            mframe();
+            const audio::AutomationLane *mvol = audio::findAutomation(ms.project().masterAutomation, audio::kVolumeParam);
+            const audio::AutomationLane *mlvl = audio::findAutomation(ms.project().masterEffects[0].automation, 0);
+            c.check(!unarmedMaster && wroteVolume && writing && !mw.writing() && mvol && mlvl && ms.project().masterVolume == volumeBefore &&
+                        near(volCurve.value(mvol->positionAt(2.0, false)), 0.5) && near(volCurve.value(mvol->positionAt(4.0, false)), 1.5) &&
+                        near(gainCurve.value(mlvl->positionAt(4.0, false)), -6.0) && daw::masterVolumeAt(ms.project(), 2.0) < 0.6,
+                    "Master automation: the volume and an effect's knob write their lanes from the touch to the stop");
+            c.check(mSteps == 1 && mh.undoLabel() == "Edit automation",
+                    "Master automation: the whole recording pass is one undo step", std::to_string(mSteps) + " steps, " + mh.undoLabel());
+            // Disarming finishes a pass under way
+            mplaying = true;
+            mw.touchMaster(1.0);
+            const bool underway = mw.writing();
+            mw.setMasterArmed(false);
+            c.check(underway && !mw.writing() && !mw.touchMaster(1.0), "Master automation: disarming finishes the master's pass");
+            // The master strip shows masterVolumeAt at the writer's playhead: it follows the playhead
+            // along the written lane, and a lane with no points shows the project's own volume
+            const audio::AutomationLane *shown = audio::findAutomation(ms.project().masterAutomation, audio::kVolumeParam);
+            mhead = 2.0;
+            const double at2 = daw::masterVolumeAt(ms.project(), mw.playhead());
+            mhead = 4.0;
+            const double at4 = daw::masterVolumeAt(ms.project(), mw.playhead());
+            c.check(shown && near(at2, volCurve.value(shown->positionAt(2.0, false))) && near(at4, volCurve.value(shown->positionAt(4.0, false))) &&
+                        at2 != at4,
+                    "Master automation: the strip's fader value follows the playhead along the lane", std::to_string(at2) + " then " + std::to_string(at4));
+            ms.editMasterAutomation().clear();
+            c.check(near(daw::masterVolumeAt(ms.project(), mw.playhead()), ms.project().masterVolume),
+                    "Master automation: with no lane the strip shows the master volume");
+        }
+    }
+
     // The audio bridge keeps processors across structural edits (its own checks)
     c.failures += runBridgeChecks();
+    c.failures += runRoutingChecks();
 
-    std::printf("\n%s: %d failed\n", c.failures == 0 ? "All passed" : "FAILED", c.failures);
-    return c.failures == 0 ? 0 : 1;
+    return c.finish("project");
 }
 
 }

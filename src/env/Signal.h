@@ -49,6 +49,8 @@ private:
 // the ones under it). A handler returns true when it has dealt with the event, which stops it
 // there; emit returns whether anyone did. Handlers may connect and disconnect hooks, including
 // their own, while being called: hooks added during an emit wait for the next one.
+// The hook list is shared: emit holds it while it offers the event, and connect and disconnect
+// copy it only when an emit is holding it (copy on write), so an emit copies nothing.
 // Main thread only: it doesn't lock.
 template <typename... Args>
 class Signal {
@@ -66,7 +68,7 @@ public:
         slot->priority = priority;
         slot->order = state_->next++;
         // Keep the list sorted: priority high to low, then newest first
-        auto &slots = state_->slots;
+        auto &slots = state_->writable();
         auto at = std::find_if(slots.begin(), slots.end(), [&](const std::shared_ptr<Slot> &s) {
             return s->priority < slot->priority || (s->priority == slot->priority && s->order < slot->order);
         });
@@ -79,23 +81,23 @@ public:
             if (!state || !slot)
                 return;
             slot->alive = false;
-            auto &list = state->slots;
+            auto &list = state->writable();
             list.erase(std::remove(list.begin(), list.end(), slot), list.end());
         });
     }
 
     bool emit(Args... args) const
     {
-        // A copy, so handlers can change the list
-        const std::vector<std::shared_ptr<Slot>> slots = state_->slots;
-        for (const auto &slot : slots) {
+        // Held, so a handler that connects or disconnects changes a copy, not this list
+        const std::shared_ptr<const Slots> slots = state_->slots;
+        for (const auto &slot : *slots) {
             if (slot->alive && slot->handler(args...))
                 return true;
         }
         return false;
     }
 
-    size_t size() const { return state_->slots.size(); }
+    size_t size() const { return state_->slots->size(); }
 
 private:
     struct Slot {
@@ -104,9 +106,17 @@ private:
         uint64_t order = 0;
         bool alive = true;
     };
+    using Slots = std::vector<std::shared_ptr<Slot>>;
     struct State {
-        std::vector<std::shared_ptr<Slot>> slots;
+        std::shared_ptr<Slots> slots = std::make_shared<Slots>();
         uint64_t next = 0;
+        // The list, to change: copied first if an emit is holding it
+        Slots &writable()
+        {
+            if (slots.use_count() > 1)
+                slots = std::make_shared<Slots>(*slots);
+            return *slots;
+        }
     };
     std::shared_ptr<State> state_;
 };

@@ -233,6 +233,9 @@ public:
     bool matches(const DeviceSetting &setting) const override;
     void applySetting(const DeviceSetting &setting) override;
     std::vector<DeviceParam> params() const override;
+    // Its stored parameters are atomics the block takes at its start, so the audio thread may set them
+    bool automatable() const override { return true; }
+    void automate(uint32_t paramId, double value) override { synth_.setParam(paramId, value); }
 
     void prepare(double sampleRate, uint32_t maxFrames) override { synth_.prepare(sampleRate, maxFrames); }
     void process(AudioBlock &block) override { synth_.process(block); }

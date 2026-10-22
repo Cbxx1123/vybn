@@ -42,6 +42,9 @@ public:
     void allNotesOff() override;
     void controlChange(int controller, float value) override { controlChangeAt(controller, value, 0); }
     void controlChangeAt(int controller, float value, uint32_t frame) override;
+    // A parameter value event at the start of the next block it processes
+    bool automatable() const override { return true; }
+    void automate(uint32_t paramId, double value) override;
 
 private:
     bool push(plugin::EventKind kind, int key, float velocity, uint32_t frame);
@@ -76,6 +79,8 @@ public:
     bool matches(const DeviceSetting &setting) const override;
     void applySetting(const DeviceSetting &setting) override;
     std::vector<DeviceParam> params() const override;
+    bool automatable() const override { return true; }
+    void automate(uint32_t paramId, double value) override;
 
     void prepare(double sampleRate, uint32_t maxFrames) override { sampler_.prepare(sampleRate, maxFrames); }
     void process(AudioBlock &block) override { sampler_.process(block); }

@@ -1,4 +1,5 @@
 #include "AudioSelfTest.h"
+#include "Harness.h"
 
 #include <algorithm>
 #include <atomic>
@@ -34,17 +35,6 @@ namespace tests {
 namespace {
 
 constexpr double kRate = 48000.0;
-
-struct Checker {
-    int failures = 0;
-
-    void check(bool ok, const std::string &what, const std::string &detail)
-    {
-        std::printf("%s  %-44s %s\n", ok ? "PASS" : "FAIL", what.c_str(), detail.c_str());
-        if (!ok)
-            ++failures;
-    }
-};
 
 std::string number(const char *pattern, double value)
 {
@@ -198,6 +188,38 @@ void effectChecks(Checker &c)
     auto makeup = makeConfigured(EffectType::Compressor, {0.0f, 1.0f, 1.0f, 50.0f, 0.0f, 6.0f, 100.0f}); // ratio 1: only makeup
     runEffect(*makeup, l, r);
     c.check(std::fabs(peakFrom(l, n) - 0.5f * 1.9953f) < 0.02f, "Effects: compressor makeup gain", number("%.3f", peakFrom(l, n)));
+    // The quick decibel conversions the gain computers use, against the exact ones over their range
+    {
+        double worstDb = 0.0, worstGain = 0.0;
+        for (float a = 1e-5f; a < 8.0f; a *= 1.013f)
+            worstDb = std::max(worstDb, static_cast<double>(std::fabs(audio::fastDecibels(a) - audio::toDecibels(a))));
+        for (float db = -100.0f; db < 24.0f; db += 0.037f) {
+            const float exact = audio::fromDecibels(db);
+            worstGain = std::max(worstGain, static_cast<double>(std::fabs(audio::fastDbToLinear(db) - exact) / exact));
+        }
+        c.check(worstDb < 1e-3 && worstGain < 1e-4, "Effects: the quick decibel conversions are within a thousandth of a dB",
+                number("%.5f dB", static_cast<float>(worstDb)) + number(", %.6f of the gain", static_cast<float>(worstGain)));
+    }
+    // Its detector's high-pass: a loud 60 Hz tone is compressed with it off (20 Hz) and all but ignored
+    // with it at 1 kHz, where the tone is far below the cutoff
+    auto lowTone = [&](float hpf) {
+        sine(l, r, n * 2, 60.0, 0.5f);
+        auto c2 = makeConfigured(EffectType::Compressor, {-18.0f, 4.0f, 1.0f, 50.0f, 0.0f, 0.0f, 100.0f, hpf});
+        runEffect(*c2, l, r);
+        return toDb(peakFrom(l, n));
+    };
+    const float hpfOff = lowTone(20.0f), hpfOn = lowTone(1000.0f);
+    c.check(hpfOff < -12.0f && hpfOn > -8.0f, "Effects: the compressor's detect HPF keeps lows from driving it",
+            number("%.1f dB off, ", hpfOff) + number("%.1f dB at 1 kHz", hpfOn));
+    // The gate's: a 60 Hz tone over its threshold opens it, unless its detector filters the tone out
+    auto gated = [&](float hpf) {
+        sine(l, r, n, 60.0, 0.3f);
+        auto g = makeConfigured(EffectType::Gate, {-30.0f, 1.0f, 20.0f, -80.0f, hpf});
+        runEffect(*g, l, r);
+        return peakFrom(l, n / 2);
+    };
+    c.check(gated(20.0f) > 0.25f && gated(1000.0f) < 0.01f, "Effects: the gate's detect HPF keeps lows from opening it",
+            number("%.3f open, ", gated(20.0f)) + number("%.4f filtered", gated(1000.0f)));
 
     // Limiter: nothing gets past the ceiling, even a loud sine
     sine(l, r, n, 200.0, 2.0f);
@@ -1173,8 +1195,7 @@ int runAudioSelfTest()
                 number("max difference %.2e", poolDifference) + ", " + std::to_string(markedWorkers.load()) + " marked workers");
     }
 
-    std::printf("\n%s: %d failed\n", c.failures == 0 ? "All passed" : "FAILED", c.failures);
-    return c.failures == 0 ? 0 : 1;
+    return c.finish("audio");
 }
 
 }

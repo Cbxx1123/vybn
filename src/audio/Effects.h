@@ -40,6 +40,7 @@ struct EffectInfo {
     size_t paramCount;
     std::array<ParamInfo, kMaxEffectParams> params;
     bool hasMeter; // reports gain reduction (see Effect::meter)
+    bool sidechain = false; // can be keyed by another track's sound (DeviceSetting::sidechain, Effect::setKey)
 };
 
 const EffectInfo &effectInfo(EffectType type);
@@ -63,6 +64,14 @@ public:
     // Audio thread: processes the left and right channels in place. Bypassing fades between the
     // processed and the dry sound, so it doesn't click.
     void run(float *left, float *right, uint32_t frames, const TransportState *transport = nullptr);
+    // Audio thread: the sound an effect with a sidechain listens to in place of its input, for the
+    // block run next (the pointers must stay good until the block is done; nullptr for none). Set
+    // before each run and cleared after it (DeviceChain does), so a key never outlives its block.
+    void setKey(const float *left, const float *right)
+    {
+        keyLeft_ = left && right ? left : nullptr;
+        keyRight_ = left && right ? right : nullptr;
+    }
 
 protected:
     virtual void onPrepare(double sampleRate, uint32_t maxFrames) = 0;
@@ -72,6 +81,8 @@ protected:
     void setMeter(float decibels) { meter_.store(decibels, std::memory_order_relaxed); }
     double sampleRate_ = 48000.0;
     const TransportState *transport_ = nullptr; // the block's, while process runs (may be null)
+    const float *keyLeft_ = nullptr;            // the sidechain key, while process runs (null: the input is the detector's)
+    const float *keyRight_ = nullptr;
 
 private:
     std::atomic<bool> bypass_{false};
@@ -93,7 +104,11 @@ public:
     bool matches(const DeviceSetting &setting) const override;
     void applySetting(const DeviceSetting &setting) override;
     std::vector<DeviceParam> params() const override;
+    // As formatParam, but a detector high-pass at its lowest reads "Off"
+    std::string valueText(const DeviceParam &param, double value) const override;
     bool hasMeter() const override { return effectInfo(type_).hasMeter; }
+    bool automatable() const override { return true; }
+    void automate(uint32_t paramId, double value) override { setParam(paramId, static_cast<float>(value)); }
 
     void setParam(size_t index, float value);
     float param(size_t index) const { return values_[index].load(std::memory_order_relaxed); }
@@ -108,5 +123,10 @@ private:
 
 // A creator for each built-in type
 std::unique_ptr<BuiltinEffect> makeEffect(EffectType type);
+
+// Quick decibel conversions, as toDecibels (to its floor of -120 dB) and fromDecibels, within about a
+// thousandth of a dB: what the dynamics' gain computers use a sample at a time
+float fastDecibels(float amplitude);
+float fastDbToLinear(float db);
 
 }

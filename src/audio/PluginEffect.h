@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 
 #include "Effects.h"
@@ -24,6 +25,9 @@ public:
     std::string valueText(const DeviceParam &param, double value) const override;
     plugin::Slot *slot() override { return slot_.get(); }
     uint32_t latency() const override;
+    // A parameter value event at the start of the next block it processes
+    bool automatable() const override { return true; }
+    void automate(uint32_t paramId, double value) override;
 
 protected:
     void onPrepare(double sampleRate, uint32_t maxFrames) override;
@@ -33,6 +37,9 @@ protected:
 private:
     std::string id_;
     std::unique_ptr<plugin::Slot> slot_;
+    // Audio thread: the automation's events for the next block
+    std::array<plugin::Event, 64> events_{};
+    uint32_t eventCount_ = 0;
 };
 
 // The transport as a plugin is told it

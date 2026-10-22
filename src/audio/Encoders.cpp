@@ -1,5 +1,7 @@
 #include "Encoders.h"
 
+#include "Mp3Encoder.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -51,6 +53,16 @@ std::string refusal(const EncodeFormat &format)
         if (format.bits == 16 || format.bits == 24)
             return {};
         return "FLAC is written as 16 or 24-bit integers, not " + bits;
+    case EncodeFormat::Mp3:
+        if (format.channels > 2)
+            return "MP3 holds mono or stereo";
+        if (std::find(std::begin(kMp3Rates), std::end(kMp3Rates), format.sampleRate) == std::end(kMp3Rates))
+            return "MP3 is written at 32, 44.1 or 48 kHz, not " + std::to_string(format.sampleRate) + " Hz";
+        if (std::find(std::begin(kMp3Bitrates), std::end(kMp3Bitrates), format.bitrate) == std::end(kMp3Bitrates))
+            return "MP3 is written at 96 to 320 kbps (a standard bitrate), not " + std::to_string(format.bitrate);
+        if (format.bits == 16)
+            return {};
+        return "MP3 is encoded from 16-bit samples, not " + bits;
     }
     return "Unknown container";
 }
@@ -849,6 +861,242 @@ private:
     std::streamoff streamInfoAt_ = 0;
 };
 
+// ID3v2.3, the tag at the start of an MP3: a 10-byte header whose size is "syncsafe" (7 bits a
+// byte), then frames of a 4-letter id, a 32-bit size, two flag bytes and the frame's data
+
+uint32_t syncsafe(const uint8_t *p)
+{
+    return (uint32_t(p[0] & 0x7F) << 21) | (uint32_t(p[1] & 0x7F) << 14) | (uint32_t(p[2] & 0x7F) << 7) |
+           uint32_t(p[3] & 0x7F);
+}
+
+void putSyncsafe(std::vector<uint8_t> &out, uint32_t value)
+{
+    for (int shift = 21; shift >= 0; shift -= 7)
+        out.push_back(static_cast<uint8_t>((value >> shift) & 0x7F));
+}
+
+void putFrame(std::vector<uint8_t> &out, const char *id, const std::vector<uint8_t> &data)
+{
+    putText(out, id);
+    putBytes(out, data.size(), 4, true);
+    putBytes(out, 0, 2, true);
+    out.insert(out.end(), data.begin(), data.end());
+}
+
+// Text as an ID3 string: Latin-1 when it's plain ASCII (encoding 0), else UTF-16 with its byte
+// order mark (encoding 1). `encoding` is the byte that goes before it in the frame.
+std::vector<uint8_t> id3String(const std::string &utf8, uint8_t &encoding)
+{
+    std::vector<uint8_t> out;
+    const bool ascii = std::all_of(utf8.begin(), utf8.end(), [](char ch) { return static_cast<unsigned char>(ch) < 0x80; });
+    encoding = ascii ? 0 : 1;
+    if (ascii) {
+        putText(out, utf8);
+        return out;
+    }
+    out.push_back(0xFF);
+    out.push_back(0xFE);
+    for (size_t i = 0; i < utf8.size();) {
+        // One UTF-8 sequence to a code point (a broken one becomes U+FFFD), then to UTF-16
+        const auto byte = [&](size_t k) { return k < utf8.size() ? static_cast<unsigned char>(utf8[k]) : 0u; };
+        const unsigned lead = byte(i);
+        const int length = lead < 0x80 ? 1 : (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3 : (lead >> 3) == 0x1E ? 4 : 0;
+        uint32_t cp = 0xFFFD;
+        if (length == 1) {
+            cp = lead;
+        } else if (length > 1) {
+            cp = lead & (0x7Fu >> length);
+            for (int k = 1; k < length; ++k) {
+                if ((byte(i + k) & 0xC0) != 0x80) {
+                    cp = 0xFFFD;
+                    break;
+                }
+                cp = (cp << 6) | (byte(i + k) & 0x3F);
+            }
+        }
+        i += length > 0 ? static_cast<size_t>(length) : 1;
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            putBytes(out, 0xD800 + (cp >> 10), 2, false);
+            putBytes(out, 0xDC00 + (cp & 0x3FF), 2, false);
+        } else {
+            putBytes(out, cp, 2, false);
+        }
+    }
+    return out;
+}
+
+// A text frame (TIT2, TPE1...): its encoding, then the string
+void putTextFrame(std::vector<uint8_t> &out, const char *id, const std::string &text)
+{
+    if (text.empty())
+        return;
+    uint8_t encoding = 0;
+    const std::vector<uint8_t> value = id3String(text, encoding);
+    std::vector<uint8_t> data{encoding};
+    data.insert(data.end(), value.begin(), value.end());
+    putFrame(out, id, data);
+}
+
+// A comment frame: its encoding, a language, an empty description (ended as the encoding ends a
+// string) and the text
+void putCommentFrame(std::vector<uint8_t> &out, const std::string &text)
+{
+    if (text.empty())
+        return;
+    uint8_t encoding = 0;
+    const std::vector<uint8_t> value = id3String(text, encoding);
+    std::vector<uint8_t> data{encoding};
+    putText(data, "eng");
+    if (encoding == 1) {
+        const uint8_t empty[] = {0xFF, 0xFE, 0, 0};
+        data.insert(data.end(), empty, empty + 4);
+    } else {
+        data.push_back(0);
+    }
+    data.insert(data.end(), value.begin(), value.end());
+    putFrame(out, "COMM", data);
+}
+
+// The frames of the encoder's own tag worth keeping beside ours: all but those our metadata sets,
+// and of its comments only the gapless information (iTunSMPB: the encoder's delay and padding)
+std::vector<uint8_t> keptFrames(const std::vector<uint8_t> &frames)
+{
+    static const char *const ours[] = {"TIT2", "TPE1", "TALB", "TYER", "TSSE"};
+    std::vector<uint8_t> kept;
+    size_t at = 0;
+    while (at + 10 <= frames.size() && frames[at] != 0) {
+        const std::string id(reinterpret_cast<const char *>(&frames[at]), 4);
+        const uint32_t size = (uint32_t(frames[at + 4]) << 24) | (uint32_t(frames[at + 5]) << 16) |
+                              (uint32_t(frames[at + 6]) << 8) | uint32_t(frames[at + 7]);
+        if (size > frames.size() - at - 10)
+            break;
+        const auto begin = frames.begin() + static_cast<std::ptrdiff_t>(at);
+        const auto end = begin + 10 + static_cast<std::ptrdiff_t>(size);
+        bool keep = std::none_of(std::begin(ours), std::end(ours), [&id](const char *o) { return id == o; });
+        if (id == "COMM") {
+            const std::string smpb = "iTunSMPB";
+            keep = std::search(begin + 10, end, smpb.begin(), smpb.end()) != end;
+        }
+        if (keep)
+            kept.insert(kept.end(), begin, end);
+        at += 10 + size;
+    }
+    return kept;
+}
+
+// MP3 through the system's encoder (Mp3Encoder), which writes its own file beside the part file:
+// on close that file's tag is merged with the metadata and its audio copied after it into the part
+// file, which is then renamed as the others are
+class Mp3Writer : public FileWriter {
+public:
+    ~Mp3Writer() override
+    {
+        encoder_.reset();
+        removeEncoded();
+    }
+
+protected:
+    bool begin(std::string &why) override
+    {
+        encoded_ = path_ + ".mp3part";
+        encoder_ = std::make_unique<Mp3Encoder>();
+        // The encoder writes mono at up to 128 kbps (as much per channel as 256 kbps stereo)
+        const int kbps = format_.channels == 1 ? std::min(format_.bitrate, kMp3MonoMaxBitrate) : format_.bitrate;
+        return encoder_->open(encoded_, format_.sampleRate, format_.channels, kbps, why);
+    }
+
+    bool encode(const float *in, uint64_t frames, std::string &why) override
+    {
+        for (uint64_t at = 0; at < frames; at += kPiece) {
+            const uint64_t n = std::min(kPiece, frames - at);
+            const size_t values = static_cast<size_t>(n * format_.channels);
+            samples_.resize(values);
+            for (size_t i = 0; i < values; ++i)
+                samples_[i] = static_cast<int16_t>(toInt(in[at * format_.channels + i], 16));
+            if (!encoder_->write(samples_.data(), n, why))
+                return false;
+        }
+        return true;
+    }
+
+    bool finish(std::string &why) override
+    {
+        if (!encoder_->finish(why))
+            return false;
+        encoder_.reset();
+        std::ifstream in(std::filesystem::u8path(encoded_), std::ios::binary);
+        uint8_t header[10] = {};
+        in.read(reinterpret_cast<char *>(header), sizeof header);
+        if (in.gcount() != sizeof header) {
+            why = "The MP3 encoder wrote no audio";
+            return false;
+        }
+        // Its tag (an ID3v2.3 one without flags is the one it writes), or none: then the file is all audio
+        std::vector<uint8_t> theirs;
+        std::streamoff audioAt = 0;
+        if (std::memcmp(header, "ID3", 3) == 0) {
+            const uint32_t size = syncsafe(header + 6);
+            audioAt = 10 + static_cast<std::streamoff>(size);
+            if (header[3] == 3 && header[5] == 0) {
+                theirs.resize(size);
+                in.read(reinterpret_cast<char *>(theirs.data()), static_cast<std::streamsize>(size));
+                theirs.resize(static_cast<size_t>(std::max<std::streamsize>(in.gcount(), 0)));
+            }
+        }
+
+        std::vector<uint8_t> frames;
+        putTextFrame(frames, "TIT2", metadata_.title);
+        putTextFrame(frames, "TPE1", metadata_.artist);
+        putTextFrame(frames, "TALB", metadata_.album);
+        const auto digit = [](char ch) { return ch >= '0' && ch <= '9'; };
+        if (metadata_.date.size() >= 4 && std::all_of(metadata_.date.begin(), metadata_.date.begin() + 4, digit))
+            putTextFrame(frames, "TYER", metadata_.date.substr(0, 4));
+        putTextFrame(frames, "TSSE", metadata_.software);
+        putCommentFrame(frames, metadata_.comment);
+        const std::vector<uint8_t> kept = keptFrames(theirs);
+        frames.insert(frames.end(), kept.begin(), kept.end());
+        std::vector<uint8_t> tag;
+        putText(tag, "ID3");
+        tag.push_back(3); // version 2.3
+        tag.push_back(0);
+        tag.push_back(0); // no flags
+        putSyncsafe(tag, static_cast<uint32_t>(frames.size()));
+        tag.insert(tag.end(), frames.begin(), frames.end());
+        out_.write(reinterpret_cast<const char *>(tag.data()), static_cast<std::streamsize>(tag.size()));
+
+        // The audio, a piece at a time
+        in.clear();
+        in.seekg(audioAt);
+        buffer_.resize(1 << 16);
+        while (in && out_) {
+            in.read(reinterpret_cast<char *>(buffer_.data()), static_cast<std::streamsize>(buffer_.size()));
+            out_.write(reinterpret_cast<const char *>(buffer_.data()), in.gcount());
+        }
+        in.close();
+        removeEncoded();
+        if (!out_) {
+            why = "Couldn't write " + path_;
+            return false;
+        }
+        return true;
+    }
+
+private:
+    void removeEncoded()
+    {
+        if (encoded_.empty())
+            return;
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::u8path(encoded_), ec);
+    }
+
+    std::unique_ptr<Mp3Encoder> encoder_;
+    std::string encoded_;
+    std::vector<int16_t> samples_;
+};
+
 } // namespace
 
 std::unique_ptr<AudioWriter> makeWriter(const EncodeFormat &format)
@@ -860,6 +1108,8 @@ std::unique_ptr<AudioWriter> makeWriter(const EncodeFormat &format)
         return std::make_unique<AiffWriter>();
     case EncodeFormat::Flac:
         return std::make_unique<FlacWriter>();
+    case EncodeFormat::Mp3:
+        return std::make_unique<Mp3Writer>();
     }
     return nullptr;
 }

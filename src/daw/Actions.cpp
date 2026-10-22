@@ -44,6 +44,9 @@ void defineActions(ui::Keymap &keymap)
 
     define("track.addAudio", "Add audio track", "Tracks and clips", {{Key::T, ctrl}});
     define("track.addInstrument", "Add instrument track", "Tracks and clips", {{Key::T, ctrlShift}});
+    define("track.addReturn", "Add return track", "Tracks and clips", {{Key::T, ctrlAlt}});
+    define("track.addGroup", "Add group track", "Tracks and clips", {});
+    define("track.group", "Group the track", "Tracks and clips", {{Key::G, ctrl}});
     define("track.delete", "Delete track", "Tracks and clips", {{Key::Delete, ctrl}});
     define("clip.duplicate", "Duplicate clip", "Tracks and clips", {{Key::D, ctrl}});
     define("clip.split", "Split clip at playhead", "Tracks and clips", {{Key::E, ctrl}});
@@ -55,9 +58,12 @@ void defineActions(ui::Keymap &keymap)
     define("transport.metronome", "Metronome", "Transport", {{Key::K, ctrl}});
     define("transport.loop", "Loop", "Transport", {{Key::L, ctrl}});
     define("view.follow", "Follow playhead", "Transport", {{Key::F, ctrl}});
+    define("transport.touchAutomation", "Touch automation", "Transport", {});
 
     define("view.darkMode", "Dark mode", "View", {{Key::D, ctrlShift}});
     define("view.appearance", "Appearance", "View", {});
+    define("view.foldAll", "Fold all groups", "View", {});
+    define("view.unfoldAll", "Unfold all groups", "View", {});
     define("view.mixer", "Show the mixer", "View", {{Key::Num1, ctrl}});
     define("view.editor", "Show the clip editor", "View", {{Key::Num2, ctrl}});
     define("view.effects", "Show the devices", "View", {{Key::Num3, ctrl}});

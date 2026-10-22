@@ -49,6 +49,8 @@ struct Settings {
     std::vector<std::string> pluginFolders;
     std::vector<std::string> pluginsDisabled;
     bool pluginSandbox = true;
+    // Automation recording: Touch (a lane is written only while its control is held) or Latch
+    bool automationTouch = false;
     std::vector<std::string> pluginGrants;
     // The piano roll's view (PianoRollView::writeView): its grid, scale, ghosts, lane and zoom
     std::string pianoRollView;

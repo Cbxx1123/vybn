@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.16)
 
 project(UIEngine LANGUAGES CXX)
 
+# Windows resources: the executable's icon (src/win/vibin.rc.in), compiled below
+if(MSVC)
+    enable_language(RC)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -111,7 +116,10 @@ add_executable(main
     src/audio/Processors.cpp
     src/audio/Effects.cpp
     src/audio/Mastering.cpp
+    src/audio/Automation.cpp
+    src/audio/Routing.cpp
     src/audio/Encoders.cpp
+    src/audio/Mp3Encoder.cpp
     src/audio/Device.cpp
     src/audio/DeviceChain.cpp
     src/audio/PluginEffect.cpp
@@ -167,6 +175,7 @@ add_executable(main
     src/daw/DeviceControls.cpp
     src/daw/SynthView.cpp
     src/daw/SynthUserPresets.cpp
+    src/daw/AppIcon.cpp
     src/daw/Splash.cpp
     src/daw/PianoRoll.cpp
     src/daw/NoteTools.cpp
@@ -176,6 +185,9 @@ add_executable(main
     src/daw/RenderJob.cpp
     src/daw/TransportBar.cpp
     src/daw/AudioBridge.cpp
+    src/daw/AutomationLanes.cpp
+    src/daw/Routing.cpp
+    src/daw/AutomationWriter.cpp
     src/daw/Autosave.cpp
     src/daw/PreviewPlayer.cpp
     src/daw/PianoRollMenus.cpp
@@ -217,6 +229,7 @@ add_executable(main
     tests/NoteSelfTest.cpp
     tests/StepSelfTest.cpp
     tests/BridgeSelfTest.cpp
+    tests/RoutingSelfTest.cpp
     tests/RenderSelfTest.cpp
     tests/EngineSelfTest.cpp
     tests/PluginSelfTest.cpp
@@ -224,6 +237,52 @@ add_executable(main
     tests/ExportSelfTest.cpp
 )
 add_dependencies(main shaders vibin-plugin-host vibin-test-plugins)
+
+# vibin-icon-patch: gives the executable the icon of the user's theme once the app has ended (see
+# src/win/IconPatch.cpp and AppIcon.cpp). A plain Windows program with no console, linked statically.
+if(WIN32)
+    add_executable(vibin-icon-patch WIN32 src/win/IconPatch.cpp)
+    target_link_libraries(vibin-icon-patch PRIVATE shell32)
+    if(NOT MSVC)
+        target_link_options(vibin-icon-patch PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
+    set_target_properties(vibin-icon-patch PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/output")
+    add_dependencies(main vibin-icon-patch)
+endif()
+
+if(WIN32)
+    # The executable's icon: the app's mark in the default look. Made by `output/main --write-icon
+    # assets/icon/vibin.ico` (keep it in step with src/daw/AppIcon.cpp); a change to it rebuilds the resource.
+    set(VIBIN_ICON_FILE "${CMAKE_SOURCE_DIR}/assets/icon/vibin.ico")
+    configure_file(src/win/vibin.rc.in "${CMAKE_BINARY_DIR}/vibin.rc" @ONLY)
+    if(MSVC)
+        target_sources(main PRIVATE "${CMAKE_BINARY_DIR}/vibin.rc")
+        set_source_files_properties("${CMAKE_BINARY_DIR}/vibin.rc" PROPERTIES OBJECT_DEPENDS "${VIBIN_ICON_FILE}")
+    else()
+        # Compiled with the windres that comes with the compiler in use, by hand rather than as CMake's RC
+        # language: the default MinGW (C:/MinGW, 32-bit) is first on PATH here, and its windres makes
+        # 32-bit objects, which a 64-bit link refuses
+        get_filename_component(_vibin_compiler_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        find_program(VIBIN_WINDRES NAMES windres HINTS "${_vibin_compiler_dir}" NO_DEFAULT_PATH)
+        if(VIBIN_WINDRES)
+            set(_vibin_rc_object "${CMAKE_BINARY_DIR}/vibin.rc.o")
+            set(_vibin_rc_format "")
+            if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+                set(_vibin_rc_format -F pe-x86-64)
+            endif()
+            add_custom_command(
+                OUTPUT "${_vibin_rc_object}"
+                COMMAND "${VIBIN_WINDRES}" ${_vibin_rc_format} -i "${CMAKE_BINARY_DIR}/vibin.rc" -o "${_vibin_rc_object}"
+                DEPENDS "${CMAKE_BINARY_DIR}/vibin.rc" "${VIBIN_ICON_FILE}"
+                COMMENT "Compiling the executable's icon"
+                VERBATIM)
+            target_sources(main PRIVATE "${_vibin_rc_object}")
+            set_source_files_properties("${_vibin_rc_object}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+        else()
+            message(WARNING "windres not found next to ${CMAKE_CXX_COMPILER}: the executable has no icon of its own")
+        endif()
+    endif()
+endif()
 
 target_include_directories(main PRIVATE src tests)
 # stb as a system include, so its own warnings don't show up under -Wall -Wextra
@@ -246,6 +305,8 @@ if(WIN32)
     target_link_libraries(main PRIVATE winhttp shell32)
     # The plugin sandbox: AppContainers (userenv) and access lists (advapi32)
     target_link_libraries(main PRIVATE userenv advapi32)
+    # MP3 export: Media Foundation's GUIDs (its DLLs are loaded when an MP3 is written) and COM
+    target_link_libraries(main PRIVATE mfuuid ole32)
 endif()
 target_compile_definitions(main PRIVATE
     ENGINE_SHADER_DIR="${SHADER_DIR}"
@@ -258,6 +319,21 @@ if(MSVC)
     target_compile_options(main PRIVATE /W4)
 else()
     target_compile_options(main PRIVATE -Wall -Wextra)
+endif()
+
+# The audio engine's real-time code (what the audio thread and the export engine run every sample) is
+# compiled optimised in every build type (-O3: GCC 10 vectorises only there), keeping its debug
+# information: the app is run as a Debug build, and at -O0 this code took two to three times as long.
+# OFF to step through it in the debugger.
+option(VIBIN_OPTIMISE_AUDIO "Compile the real-time audio code with -O3 in every build type" ON)
+if(VIBIN_OPTIMISE_AUDIO AND NOT MSVC)
+    set_source_files_properties(
+        src/audio/AudioSystem.cpp src/audio/Automation.cpp src/audio/ClipPlayer.cpp src/audio/DeviceChain.cpp
+        src/audio/Effects.cpp src/audio/Encoders.cpp src/audio/Mastering.cpp src/audio/Memory.cpp
+        src/audio/NotePlayer.cpp src/audio/PluginEffect.cpp src/audio/PluginInstrument.cpp src/audio/Preview.cpp
+        src/audio/Processors.cpp src/audio/Recorder.cpp src/audio/Sampler.cpp src/audio/Synth.cpp
+        src/audio/SynthTables.cpp src/audio/Track.cpp
+        PROPERTIES COMPILE_OPTIONS "-O3")
 endif()
 
 set_target_properties(main PROPERTIES

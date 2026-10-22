@@ -1,4 +1,5 @@
 #include "StepSelfTest.h"
+#include "Harness.h"
 
 #include <cmath>
 #include <cstdio>
@@ -13,17 +14,6 @@ namespace {
 
 using daw::Note;
 using daw::StepGrid;
-
-struct Checker {
-    int failures = 0;
-
-    void check(bool ok, const std::string &what, const std::string &detail = {})
-    {
-        std::printf("%s  %-48s %s\n", ok ? "PASS" : "FAIL", what.c_str(), detail.c_str());
-        if (!ok)
-            ++failures;
-    }
-};
 
 Note note(double start, double length, int key, float velocity = 0.8f, bool muted = false)
 {
@@ -340,8 +330,7 @@ int runStepChecks()
     c.check(rows == std::vector<int>{36, 38, 39, 70, 64}, "Rows: the kit first, other keys highest first, no repeats",
             intsText(rows));
 
-    std::printf("\n%s: %d failed\n", c.failures == 0 ? "All passed" : "FAILED", c.failures);
-    return c.failures;
+    return c.finish("steps");
 }
 
 }

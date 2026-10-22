@@ -40,7 +40,15 @@
 //                  rendered into the temp folder and the Exports panel shown), export (the export dialog),
 //                  versions (two saved versions, "First idea" and "With bass", and the Versions dialog),
 //                  recovery (a session that ended without closing, and the recovery dialog over the window),
-//                  steps (a drum beat on a Drums track in the step sequencer, its kick row selected).
+//                  steps (a drum beat on a Drums track in the step sequencer, its kick row selected),
+//                  masterautomation (the arrangement's master row with its volume and a limiter's lanes
+//                  shown, its writing armed, and the transport playing),
+//                  folding (two nested groups round some tracks, the inner one folded, playing),
+//                  sidechain (a pad whose compressor is keyed by a muted kick track, the Devices tab
+//                  showing it, playing), pluginsidechain (the same with the test plugin Test Duck keyed
+//                  by the kick; with --plugin-folder output/plugins),
+//                  flexible (three tracks into Group 1, one also sending to Group 2 and a return, the
+//                  mixer showing, playing).
 //                  Both autosave into a fresh temp folder unless VIBIN_AUTOSAVE_ROOT names one.
 //     PROJECT.vbp  open this project instead of the demo
 
@@ -71,6 +79,7 @@
 #include "daw/PianoRoll.h"
 #include "daw/Library.h"
 #include "daw/Settings.h"
+#include "daw/AppIcon.h"
 #include "daw/Splash.h"
 #include "daw/Appearance.h"
 #include "engine/WindowSystem.h"
@@ -156,6 +165,17 @@ int main(int argc, char **argv)
             return tests::runExportSelfTest();
         if (arg == "--render-selftest")
             return tests::runRenderSelfTest(argc, argv);
+        if (arg == "--write-icon" && i + 1 < argc) {
+            // The executable's icon (assets/icon/vibin.ico, embedded by src/win/vibin.rc), in the default look
+            const ui::Theme look = daw::studioTheme(true);
+            std::string error;
+            if (!daw::writeIconFile(argv[i + 1], look.baseColor(), look.accentColor(), error)) {
+                std::cerr << "Couldn't write the icon: " << error << std::endl;
+                return 1;
+            }
+            std::cout << "Wrote " << argv[i + 1] << std::endl;
+            return 0;
+        }
         if (arg == "--import") {
             daw::Settings settings = daw::Settings::load();
             env::Environment environment;
@@ -187,6 +207,10 @@ int main(int argc, char **argv)
         } else if (arg.size() > 4 && arg.compare(arg.size() - 4, 4, ".vbp") == 0)
             projectFile = arg;
     }
+
+    // The console window this program may have started with stays off the taskbar, so the taskbar button
+    // is the app's window and its icon (see AppIcon.h)
+    daw::keepConsoleOffTaskbar();
 
     try {
         // The loading screen first, in the user's look, so nothing shows blank while the app loads.
@@ -307,6 +331,33 @@ int main(int argc, char **argv)
                 }
                 else if (demo == "steps")
                     app.stepsDemo();
+                else if (demo == "folding") {
+                    app.foldingDemo();
+                    audio.transport().play();
+                }
+                else if (demo == "sidechain") {
+                    app.sidechainDemo();
+                    audio.transport().play();
+                }
+                else if (demo == "flexible") {
+                    app.flexibleDemo();
+                    audio.transport().play();
+                }
+                else if (demo == "pluginsidechain") {
+                    // The sidechain demo with Test Duck (a plugin with a sidechain port; with --plugin-folder
+                    // output/plugins) on the pad in place of the compressor, keyed by the kick
+                    app.sidechainDemo();
+                    const int pad = static_cast<int>(app.project().tracks.size()) - 2;
+                    const daw::ObjectId kick = app.project().tracks.back().id;
+                    audio::DeviceSetting duck = pluginDevice("vibin.test.duck", "Test Duck");
+                    duck.sidechain = kick;
+                    app.store().editTrack(pad).effects = {duck};
+                    audio.transport().play();
+                }
+                else if (demo == "masterautomation") {
+                    app.masterAutomationDemo();
+                    audio.transport().play();
+                }
                 else if (demo == "effects") {
                     // A compressor, an EQ and a reverb on the first track, and a limiter on the master
                     app.store().select(0);

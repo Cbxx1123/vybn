@@ -1,4 +1,5 @@
 #include "NoteSelfTest.h"
+#include "Harness.h"
 
 #include <algorithm>
 #include <cmath>
@@ -14,17 +15,6 @@ namespace tests {
 namespace {
 
 using daw::Note;
-
-struct Checker {
-    int failures = 0;
-
-    void check(bool ok, const std::string &what, const std::string &detail = {})
-    {
-        std::printf("%s  %-48s %s\n", ok ? "PASS" : "FAIL", what.c_str(), detail.c_str());
-        if (!ok)
-            ++failures;
-    }
-};
 
 Note note(double start, double length, int key, float velocity = 0.8f, bool selected = false)
 {
@@ -375,8 +365,7 @@ int runNoteSelfTest()
 
     c.failures += runStepChecks();
 
-    std::printf("\n%s: %d failed\n", c.failures == 0 ? "All passed" : "FAILED", c.failures);
-    return c.failures == 0 ? 0 : 1;
+    return c.finish("notes");
 }
 
 }

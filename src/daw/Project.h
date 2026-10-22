@@ -81,7 +81,20 @@ struct Clip {
     bool hasAudio() const { return !audioFile.empty(); }
 };
 
-enum class TrackKind { Audio, Instrument };
+// Audio and instrument tracks make sound; return and group tracks (buses) take other tracks' instead:
+// a return what the tracks send it, a group what the tracks whose output it is play (docs/routing-plan.md)
+enum class TrackKind { Audio, Instrument, Return, Group };
+inline bool isBus(TrackKind kind) { return kind == TrackKind::Return || kind == TrackKind::Group; }
+
+// A share of a track's sound sent to a return track, before its fader (and pan) or after them
+struct Send {
+    ObjectId to = kNoId;  // the bus: a return or group track
+    float level = 1.0f;   // linear, 0-1 (0 dB at most)
+    bool preFader = false;
+
+    bool operator==(const Send &o) const { return to == o.to && level == o.level && preFader == o.preFader; }
+    bool operator!=(const Send &o) const { return !(*this == o); }
+};
 
 struct Track {
     ObjectId id = kNoId;
@@ -93,6 +106,9 @@ struct Track {
     bool mute = false;
     bool solo = false;
     bool armed = false;
+    // Groups: whether the tracks that go into it are folded away in the arrangement and the mixer. Saved
+    // with the project but, like arming, not an undo step (never set on any other kind of track).
+    bool folded = false;
     // Instrument tracks: the device that plays the notes, first in the track's chain (a library
     // instrument on the sampler, or a plugin; DeviceKind::None for none). They hear MIDI keyboards
     // while armed (or while selected, when no track is armed).
@@ -105,6 +121,15 @@ struct Track {
     bool monitor = false;
     // The effect devices the track's sound goes through, in order, before its gain and pan
     std::vector<audio::DeviceSetting> effects;
+    // Automation of the track's own volume and pan (audio::kVolumeParam, kPanParam); its devices'
+    // parameters have theirs in their settings. Sends' levels have theirs here too (sendParam).
+    std::vector<audio::AutomationLane> automation;
+    // Where the track's sound goes: a group track (its id), or the master (kNoId); and the shares of
+    // it sent to return tracks, one send per return at most. Mix fields (editMix), like the gain.
+    ObjectId output = kNoId;
+    std::vector<Send> sends;
+
+    bool bus() const { return isBus(kind); }
 };
 
 // Where a device is: in the master's chain, or a track's, at `index` among its effects, or the
@@ -137,8 +162,13 @@ struct Project {
     bool hasLoop() const { return loopEnd > loopStart; }
     // Looping on or off; with no loop set, on over the selected clip (else the first four bars)
     void toggleLoop();
-    // Effects on the whole mix, in order, before the master gain
+    // Effects on the whole mix, in order, before the master volume
     std::vector<audio::DeviceSetting> masterEffects;
+    // The master's fader: linear gain 0-2 (+6 dB), after the master effects. Part of the mix (saved,
+    // undone, exported), unlike the audio system's monitoring gain.
+    float masterVolume = 1.0f;
+    // The master volume's automation (only audio::kVolumeParam; a lane with no points plays nothing)
+    std::vector<audio::AutomationLane> masterAutomation;
     // The export presets (saved with the project; what the export dialog renders) and the details
     // written into the exported files' metadata
     std::vector<ExportPreset> exportPresets;
@@ -170,8 +200,11 @@ struct Project {
     void select(int track, int clip = -1);
     // Appends a track and selects it; returns its index
     int addTrack(TrackKind kind);
-    // Removes a track and its clips; the selection moves to a neighbour
+    // Removes a track and its clips; the selection moves to a neighbour. The sends into it go, and
+    // the tracks whose output it was go to the master.
     void deleteTrack(int index);
+    // Moves a track to another index (its clips go with it); the selection follows the track it was on
+    void moveTrack(int from, int to);
     // Removes the selected clip, if any
     void deleteClip();
     // Cuts the selected clip in two at `beat` (on the timeline), keeping the left part selected.

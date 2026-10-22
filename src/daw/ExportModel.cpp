@@ -14,7 +14,7 @@ bool ExportTarget::operator==(const ExportTarget &o) const
 {
     return enabled == o.enabled && name == o.name && source == o.source && tracks == o.tracks && tap == o.tap &&
            respectMuteSolo == o.respectMuteSolo && range == o.range && fromBar == o.fromBar && toBar == o.toBar &&
-           tailSeconds == o.tailSeconds && format == o.format && bits == o.bits && sampleRate == o.sampleRate &&
+           tailSeconds == o.tailSeconds && format == o.format && bits == o.bits && bitrate == o.bitrate && sampleRate == o.sampleRate &&
            mono == o.mono && normalize == o.normalize && peakDb == o.peakDb && loudnessLufs == o.loudnessLufs &&
            limiter == o.limiter && ceilingDbtp == o.ceilingDbtp && fadeInMs == o.fadeInMs && fadeOutMs == o.fadeOutMs &&
            dither == o.dither && fileName == o.fileName && folder == o.folder;
@@ -112,6 +112,7 @@ const NameTable<ExportFormat> kFormats[] = {
     {ExportFormat::Wav, "wav"},
     {ExportFormat::Aiff, "aiff"},
     {ExportFormat::Flac, "flac"},
+    {ExportFormat::Mp3, "mp3"},
 };
 const NameTable<NormalizeMode> kNormalize[] = {
     {NormalizeMode::Off, "off"},
@@ -179,6 +180,7 @@ std::string extensionOf(const ExportTarget &target)
     switch (target.format) {
     case ExportFormat::Aiff: return ".aiff";
     case ExportFormat::Flac: return ".flac";
+    case ExportFormat::Mp3: return ".mp3";
     case ExportFormat::Wav: break;
     }
     return ".wav";
@@ -235,9 +237,9 @@ std::string expand(const std::string &templ, const ExportTarget &target, const P
         else if (token == "time")
             out += dateText(now, "%H-%M");
         else if (token == "rate")
-            out += rateText(target.sampleRate);
+            out += rateText(target.format == ExportFormat::Mp3 ? mp3RateFor(target.sampleRate) : target.sampleRate);
         else if (token == "bits")
-            out += std::to_string(target.bits);
+            out += target.format == ExportFormat::Mp3 ? std::to_string(target.bitrate) + "kbps" : std::to_string(target.bits);
         else if (token == "format")
             out += formatText(target);
         else if (token == "preset")
@@ -279,6 +281,13 @@ std::string resolveFileName(const ExportTarget &target, const Project &project, 
     if (!endsWithIgnoringCase(name, extension))
         name += extension;
     return name;
+}
+
+uint32_t mp3RateFor(uint32_t rate)
+{
+    if (rate == 32000)
+        return rate;
+    return rate % 11025 == 0 ? 44100u : 48000u;
 }
 
 bool exportTargetRange(const Project &project, const ExportTarget &target, double &startBeat, double &endBeat)

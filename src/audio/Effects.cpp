@@ -32,16 +32,19 @@ const EffectInfo kInfo[kEffectTypeCount] = {
       P{"Cutoff", "cutoff", 20.0f, 20000.0f, 8000.0f, Hz, true},
       P{"Resonance", "resonance", 0.5f, 10.0f, 0.707f, ParamUnit::None, true}},
      false},
-    {"Gate", "gate", 4,
+    // Gate and Compressor: "Detect HPF" filters what their detector hears (the key, or their own input)
+    // so low end doesn't drive them; at its lowest, 20 Hz, it is off
+    {"Gate", "gate", 5,
      {P{"Threshold", "threshold", -80.0f, 0.0f, -50.0f, dB}, P{"Attack", "attack", 0.1f, 50.0f, 1.0f, ms, true},
-      P{"Release", "release", 5.0f, 1000.0f, 100.0f, ms, true}, P{"Range", "range", -80.0f, 0.0f, -80.0f, dB}},
-     true},
-    {"Compressor", "compressor", 7,
+      P{"Release", "release", 5.0f, 1000.0f, 100.0f, ms, true}, P{"Range", "range", -80.0f, 0.0f, -80.0f, dB},
+      P{"Detect HPF", "detect_hpf", 20.0f, 2000.0f, 20.0f, Hz, true}},
+     true, true},
+    {"Compressor", "compressor", 8,
      {P{"Threshold", "threshold", -60.0f, 0.0f, -18.0f, dB}, P{"Ratio", "ratio", 1.0f, 20.0f, 4.0f, ParamUnit::Ratio, true},
       P{"Attack", "attack", 0.1f, 200.0f, 10.0f, ms, true}, P{"Release", "release", 10.0f, 2000.0f, 120.0f, ms, true},
       P{"Knee", "knee", 0.0f, 24.0f, 6.0f, dB}, P{"Makeup", "makeup", 0.0f, 24.0f, 0.0f, dB},
-      P{"Mix", "mix", 0.0f, 100.0f, 100.0f, pct}},
-     true},
+      P{"Mix", "mix", 0.0f, 100.0f, 100.0f, pct}, P{"Detect HPF", "detect_hpf", 20.0f, 2000.0f, 20.0f, Hz, true}},
+     true, true},
     {"Limiter", "limiter", 3,
      {P{"Input", "input", 0.0f, 24.0f, 0.0f, dB}, P{"Ceiling", "ceiling", -12.0f, 0.0f, -0.3f, dB},
       P{"Release", "release", 10.0f, 1000.0f, 80.0f, ms, true}},
@@ -132,6 +135,80 @@ float dbToLinear(float db)
 {
     return std::pow(10.0f, db / 20.0f);
 }
+
+// Quick log2 and exp2 for the dynamics' per-sample gain computers, where std::log10 and std::pow cost
+// most of the effect: a float's exponent bits give the whole part and a rational fit the rest, within
+// about 1e-4 (well under a thousandth of a dB; checked against the std functions by the audio self-test)
+float fastLog2(float x)
+{
+    uint32_t bits;
+    std::memcpy(&bits, &x, sizeof bits);
+    const uint32_t mantissaBits = (bits & 0x007FFFFFu) | 0x3F000000u; // the mantissa as a float in [0.5, 1)
+    float mantissa;
+    std::memcpy(&mantissa, &mantissaBits, sizeof mantissa);
+    const float y = static_cast<float>(bits) * 1.1920928955078125e-7f; // the bits as a number, over 2^23
+    return y - 124.22551499f - 1.498030302f * mantissa - 1.72587999f / (0.3520887068f + mantissa);
+}
+
+float fastExp2(float p)
+{
+    const float clipped = std::max(p, -126.0f);
+    const int whole = static_cast<int>(clipped);
+    const float z = clipped - static_cast<float>(whole) + (clipped < 0.0f ? 1.0f : 0.0f);
+    const uint32_t bits = static_cast<uint32_t>((1 << 23) * (clipped + 121.2740575f + 27.7280233f / (4.84252568f - z) - 1.49012907f * z));
+    float out;
+    std::memcpy(&out, &bits, sizeof out);
+    return out;
+}
+
+// Decibels and back, quickly (as toDecibels and dbToLinear, to the same floor)
+float quickDecibels(float amplitude)
+{
+    return amplitude > 1e-6f ? 6.0205999133f * fastLog2(amplitude) : -120.0f;
+}
+
+float quickDbToLinear(float db)
+{
+    return fastExp2(db * 0.1660964047f);
+}
+
+// A dynamics detector's high-pass ("Detect HPF"): the level it reads from a stereo pair, filtered
+// above the cutoff, or plain while the cutoff is at its lowest (off). Its coefficients are worked out
+// again only when the cutoff moves.
+class DetectorFilter {
+public:
+    static constexpr float kOff = 20.5f; // at or under this, no filtering
+
+    void prepare(double sampleRate)
+    {
+        sampleRate_ = sampleRate;
+        cutoff_ = 0.0f;
+        filter_.reset();
+    }
+    void reset() { filter_.reset(); }
+    // Before a block: the cutoff now (Hz)
+    void setCutoff(float hz)
+    {
+        on_ = hz > kOff;
+        if (on_ && hz != cutoff_) {
+            filter_.highpass(sampleRate_, hz, 0.707);
+            cutoff_ = hz;
+        }
+    }
+    // The detector's level for one frame: the louder channel, filtered
+    float level(float left, float right)
+    {
+        if (!on_)
+            return std::max(std::fabs(left), std::fabs(right));
+        return std::max(std::fabs(filter_.tick(0, left)), std::fabs(filter_.tick(1, right)));
+    }
+
+private:
+    Biquad filter_;
+    double sampleRate_ = 48000.0;
+    float cutoff_ = 0.0f;
+    bool on_ = false;
+};
 
 // Gain: a level and a phase flip
 class GainEffect : public BuiltinEffect {
@@ -245,10 +322,12 @@ protected:
     {
         detectorDecay_ = timeCoefficient(sampleRate, 20.0);
         holdSamples_ = static_cast<uint32_t>(sampleRate * 0.01);
+        detector_.prepare(sampleRate);
         reset();
     }
     void reset() override
     {
+        detector_.reset();
         envelope_ = 0.0f;
         gain_ = 1.0f;
         open_ = true;
@@ -256,18 +335,22 @@ protected:
     }
     void process(float *left, float *right, uint32_t frames) override
     {
-        const float threshold = value(0), closeThreshold = value(0) - 4.0f; // hysteresis
+        // The thresholds as levels (the closing one 4 dB under, for hysteresis), so the envelope is
+        // compared without a logarithm a sample
+        const float threshold = dbToLinear(value(0)), closeThreshold = dbToLinear(value(0) - 4.0f);
         const float attack = timeCoefficient(sampleRate_, value(1)), release = timeCoefficient(sampleRate_, value(2));
         const float floor = dbToLinear(value(3));
         float lowest = 1.0f;
+        // The detector listens to the sidechain's key when it has one, else to its own input
+        const float *detectLeft = keyLeft_ ? keyLeft_ : left, *detectRight = keyRight_ ? keyRight_ : right;
+        detector_.setCutoff(value(4));
         for (uint32_t i = 0; i < frames; ++i) {
-            const float level = std::max(std::fabs(left[i]), std::fabs(right[i]));
+            const float level = detector_.level(detectLeft[i], detectRight[i]);
             envelope_ = level > envelope_ ? level : level + (envelope_ - level) * detectorDecay_;
-            const float db = toDecibels(envelope_);
-            if (db > threshold) {
+            if (envelope_ > threshold) {
                 open_ = true;
                 hold_ = holdSamples_;
-            } else if (db < closeThreshold && open_) {
+            } else if (envelope_ < closeThreshold && open_) {
                 if (hold_ > 0)
                     --hold_;
                 else
@@ -284,6 +367,7 @@ protected:
     }
 
 private:
+    DetectorFilter detector_;
     float detectorDecay_ = 0.999f;
     uint32_t holdSamples_ = 480;
     float envelope_ = 0.0f, gain_ = 1.0f;
@@ -297,29 +381,49 @@ public:
     CompressorEffect() : BuiltinEffect(EffectType::Compressor) {}
 
 protected:
-    void onPrepare(double, uint32_t) override { reset(); }
-    void reset() override { reduction_ = 0.0f; }
+    void onPrepare(double sampleRate, uint32_t) override
+    {
+        detector_.prepare(sampleRate);
+        reset();
+    }
+    void reset() override
+    {
+        detector_.reset();
+        reduction_ = 0.0f;
+    }
     void process(float *left, float *right, uint32_t frames) override
     {
         const float threshold = value(0), ratio = std::max(1.0f, value(1)), knee = value(4), makeup = value(5);
         const float attack = timeCoefficient(sampleRate_, value(2)), release = timeCoefficient(sampleRate_, value(3));
         const float mix = value(6) * 0.01f;
         const float slope = 1.0f / ratio - 1.0f; // negative
+        // Under the knee's start the gain computer wants nothing, so a level there needs no logarithm;
+        // and with no reduction under way the gain is the makeup's alone
+        const float kneeStart = dbToLinear(threshold - std::max(0.0f, knee) * 0.5f);
+        const float makeupGain = dbToLinear(makeup);
         float deepest = 0.0f;
+        // The detector listens to the sidechain's key when it has one, else to its own input
+        const float *detectLeft = keyLeft_ ? keyLeft_ : left, *detectRight = keyRight_ ? keyRight_ : right;
+        detector_.setCutoff(value(7));
         for (uint32_t i = 0; i < frames; ++i) {
-            const float db = toDecibels(std::max(std::fabs(left[i]), std::fabs(right[i])));
-            const float over = db - threshold;
+            const float level = detector_.level(detectLeft[i], detectRight[i]);
             float target = 0.0f; // wanted gain change, in dB (zero or less)
-            if (knee > 0.0f && 2.0f * over > -knee && 2.0f * over < knee) {
-                const float x = over + knee * 0.5f;
-                target = slope * x * x / (2.0f * knee);
-            } else if (over > 0.0f && (knee <= 0.0f || 2.0f * over >= knee)) {
-                target = slope * over;
+            if (level > kneeStart) {
+                const float over = quickDecibels(level) - threshold;
+                if (knee > 0.0f && 2.0f * over > -knee && 2.0f * over < knee) {
+                    const float x = over + knee * 0.5f;
+                    target = slope * x * x / (2.0f * knee);
+                } else if (over > 0.0f && (knee <= 0.0f || 2.0f * over >= knee)) {
+                    target = slope * over;
+                }
             }
             const float coefficient = target < reduction_ ? attack : release;
             reduction_ = target + (reduction_ - target) * coefficient;
+            // Released all but a ten-thousandth of a dB: none (else it would creep toward 0 forever)
+            if (target == 0.0f && reduction_ > -1e-4f)
+                reduction_ = 0.0f;
             deepest = std::min(deepest, reduction_);
-            const float g = dbToLinear(reduction_ + makeup);
+            const float g = reduction_ == 0.0f ? makeupGain : quickDbToLinear(reduction_ + makeup);
             left[i] = left[i] * (1.0f - mix) + left[i] * g * mix;
             right[i] = right[i] * (1.0f - mix) + right[i] * g * mix;
         }
@@ -327,6 +431,7 @@ protected:
     }
 
 private:
+    DetectorFilter detector_;
     float reduction_ = 0.0f;
 };
 
@@ -659,6 +764,14 @@ std::vector<DeviceParam> BuiltinEffect::params() const
     return out;
 }
 
+std::string BuiltinEffect::valueText(const DeviceParam &param, double value) const
+{
+    const EffectInfo &info = effectInfo(type_);
+    if (param.id < info.paramCount && std::strcmp(info.params[param.id].key, "detect_hpf") == 0 && value <= DetectorFilter::kOff)
+        return "Off";
+    return formatParam(param, value);
+}
+
 void BuiltinEffect::setParam(size_t index, float value)
 {
     const EffectInfo &info = effectInfo(type_);
@@ -730,6 +843,16 @@ std::unique_ptr<BuiltinEffect> makeEffect(EffectType type)
     case EffectType::Reverb: return std::make_unique<ReverbEffect>();
     }
     return std::make_unique<GainEffect>();
+}
+
+float fastDecibels(float amplitude)
+{
+    return quickDecibels(amplitude);
+}
+
+float fastDbToLinear(float db)
+{
+    return quickDbToLinear(db);
 }
 
 }

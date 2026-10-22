@@ -67,6 +67,29 @@ std::vector<audio::DeviceSetting> &ProjectStore::editMasterEffects()
     return project_.masterEffects;
 }
 
+float &ProjectStore::editMasterVolume()
+{
+    settle();
+    revision_ = bump();
+    masterRevision_ = bump();
+    return project_.masterVolume;
+}
+
+std::vector<audio::AutomationLane> &ProjectStore::editMasterAutomation()
+{
+    settle();
+    revision_ = bump();
+    masterRevision_ = bump();
+    return project_.masterAutomation;
+}
+
+Project &ProjectStore::editSettings()
+{
+    settle();
+    revision_ = bump();
+    return project_;
+}
+
 std::vector<ExportPreset> &ProjectStore::editExportPresets()
 {
     settle();
@@ -141,6 +164,77 @@ void ProjectStore::replace(Project project)
     // nextId_ is kept: an id given earlier in the session is never given again
     idsDirty_ = true;
     normalizeIds();
+}
+
+void ProjectStore::restore(HistoryRestore plan)
+{
+    if (plan.structural) {
+        // Arming, folding and monitoring aren't part of the history: they stay as they are now, kept by track id
+        Project state = std::move(plan.project);
+        for (Track &t : state.tracks) {
+            const Track *now = project_.findTrack(t.id);
+            if (now && now->kind == t.kind) {
+                t.armed = now->armed;
+                t.folded = now->folded;
+                t.monitor = now->monitor;
+            }
+        }
+        // Nor is the loop
+        state.loopStart = project_.loopStart;
+        state.loopEnd = project_.loopEnd;
+        state.looping = project_.looping;
+        // The bridge matches the tracks by id in sync, so a kept track keeps its processor and plugins
+        replace(std::move(state));
+        return;
+    }
+    for (HistoryRestore::TrackChange &change : plan.tracks) {
+        if (change.index >= project_.tracks.size())
+            continue;
+        const int index = static_cast<int>(change.index);
+        if (change.content) {
+            Track &t = editTrack(index);
+            t.instrument = std::move(change.track.instrument);
+            t.effects = std::move(change.track.effects);
+            t.clips = std::move(change.track.clips);
+            t.automation = std::move(change.track.automation);
+        }
+        if (change.mix) {
+            Track &t = editMix(index);
+            t.name = std::move(change.track.name);
+            t.gain = change.track.gain;
+            t.pan = change.track.pan;
+            t.mute = change.track.mute;
+            t.solo = change.track.solo;
+            t.inputChannel = change.track.inputChannel;
+            t.inputStereo = change.track.inputStereo;
+            t.output = change.track.output;
+            t.sends = std::move(change.track.sends);
+        }
+    }
+    const Project &fields = plan.project;
+    if (plan.master) {
+        if (project_.masterEffects != fields.masterEffects)
+            editMasterEffects() = fields.masterEffects;
+        if (project_.masterVolume != fields.masterVolume)
+            editMasterVolume() = fields.masterVolume;
+        if (project_.masterAutomation != fields.masterAutomation)
+            editMasterAutomation() = fields.masterAutomation;
+    }
+    if (plan.tempo)
+        setTempo(fields.tempo);
+    if (plan.settings) {
+        Project &p = editSettings();
+        p.name = fields.name;
+        p.beatsPerBar = fields.beatsPerBar;
+        p.bars = fields.bars;
+    }
+    if (plan.presets)
+        editExportPresets() = fields.exportPresets;
+    if (plan.metadata)
+        editExportMetadata() = fields.exportMetadata;
+    // After the tracks, so the clip selected is one the track has
+    if (plan.selection)
+        select(fields.selectedTrack, fields.selectedClip);
 }
 
 bool ProjectStore::normalizeIds()

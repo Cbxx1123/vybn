@@ -1,5 +1,7 @@
 #include "Project.h"
 
+#include "Routing.h"
+
 #include <algorithm>
 #include <set>
 
@@ -139,7 +141,11 @@ int Project::addTrack(TrackKind kind)
         count += t.kind == kind ? 1 : 0;
     Track t;
     t.kind = kind;
-    t.name = std::string(kind == TrackKind::Audio ? "Audio " : "Instrument ") + std::to_string(count);
+    // Returns are lettered (the mixer's send knobs show the letter): "Return A", "Return B"
+    if (kind == TrackKind::Return)
+        t.name = "Return " + returnLetter(count - 1);
+    else
+        t.name = std::string(kindName(kind)) + " " + std::to_string(count);
     tracks.push_back(t);
     select(static_cast<int>(tracks.size()) - 1);
     return selectedTrack;
@@ -149,11 +155,28 @@ void Project::deleteTrack(int index)
 {
     if (!track(index))
         return;
+    forgetTrack(*this, tracks[static_cast<size_t>(index)].id);
     tracks.erase(tracks.begin() + index);
     if (tracks.empty())
         select(-1);
     else
         select(std::min(index, static_cast<int>(tracks.size()) - 1));
+}
+
+void Project::moveTrack(int from, int to)
+{
+    if (from == to || !track(from) || !track(to))
+        return;
+    Track moved = std::move(tracks[static_cast<size_t>(from)]);
+    tracks.erase(tracks.begin() + from);
+    tracks.insert(tracks.begin() + to, std::move(moved));
+    // The selection stays on the same track: it moves with the track, or shifts past the one that moved
+    if (selectedTrack == from)
+        selectedTrack = to;
+    else if (from < selectedTrack && selectedTrack <= to)
+        --selectedTrack;
+    else if (to <= selectedTrack && selectedTrack < from)
+        ++selectedTrack;
 }
 
 float ControlLane::valueAt(double beat) const
@@ -390,7 +413,7 @@ std::vector<uint64_t> trackShape(const Project &project)
     std::vector<uint64_t> shape;
     shape.reserve(project.tracks.size());
     for (const Track &t : project.tracks)
-        shape.push_back((static_cast<uint64_t>(t.id) << 1) | (t.kind == TrackKind::Instrument ? 1u : 0u));
+        shape.push_back((static_cast<uint64_t>(t.id) << 2) | static_cast<uint64_t>(t.kind));
     return shape;
 }
 
@@ -432,7 +455,17 @@ Project demoProject()
 
 const char *kindName(TrackKind kind)
 {
-    return kind == TrackKind::Audio ? "Audio" : "Instrument";
+    switch (kind) {
+    case TrackKind::Audio:
+        return "Audio";
+    case TrackKind::Instrument:
+        return "Instrument";
+    case TrackKind::Return:
+        return "Return";
+    case TrackKind::Group:
+        return "Group";
+    }
+    return "";
 }
 
 Project newProject(const audio::DeviceSetting &instrument, const NewProjectOptions &options)

@@ -63,6 +63,32 @@
             "problemMatcher": []
         },
         {
+            "label": "test",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "tools/test.sh"
+            ],
+            "dependsOn": "build",
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "test (full)",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "tools/test.sh",
+                "--full"
+            ],
+            "dependsOn": "build",
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
             "label": "clean",
             "type": "shell",
             "command": "cmake",

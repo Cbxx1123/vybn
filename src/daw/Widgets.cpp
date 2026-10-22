@@ -1,6 +1,7 @@
 #include "Widgets.h"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 #include "Format.h"
@@ -51,6 +52,272 @@ void SmallToggle::draw(DrawList &list, const Theme &theme) const
                                   : theme.textColor(on_ ? TextTone::Accent : TextTone::Secondary);
     list.add(theme.text(label_, rect_, theme.fontSize(TextStyle::Caption), TextAlign::Center, color));
     });
+}
+
+// FoldChevron
+
+FoldChevron::FoldChevron(std::function<bool()> folded, std::function<void(bool)> set)
+    : folded_(std::move(folded)), set_(std::move(set))
+{
+}
+
+Vec2 FoldChevron::measure(const Theme &) const
+{
+    return {16.0f, 14.0f};
+}
+
+void FoldChevron::handleInput(const Input &input)
+{
+    if (click_.update(rect_, input, enabled_) && set_)
+        set_(!(folded_ && folded_()));
+}
+
+void FoldChevron::draw(DrawList &list, const Theme &theme) const
+{
+    const bool folded = folded_ && folded_();
+    Fingerprint key;
+    key.add(folded);
+    key.add(click_.hovered);
+    key.add(click_.held());
+    cache_.draw(list, theme, rect_, key.value(), [&] {
+        if (click_.hovered || click_.held())
+            list.add(theme.surface(rect_, Shape::Soft, Elevation::Inset, click_.held() ? 0.55f : 0.3f));
+        const Vec2 c{rect_.x + rect_.w * 0.5f, rect_.y + rect_.h * 0.5f};
+        const TextTone tone = folded ? TextTone::Accent : TextTone::Secondary;
+        if (folded) { // pointing right
+            list.add(theme.inkLine({c.x - 2.0f, c.y - 4.5f}, {c.x + 2.5f, c.y}, 1.6f, tone));
+            list.add(theme.inkLine({c.x + 2.5f, c.y}, {c.x - 2.0f, c.y + 4.5f}, 1.6f, tone));
+        } else { // pointing down
+            list.add(theme.inkLine({c.x - 4.5f, c.y - 2.0f}, {c.x, c.y + 2.5f}, 1.6f, tone));
+            list.add(theme.inkLine({c.x, c.y + 2.5f}, {c.x + 4.5f, c.y - 2.0f}, 1.6f, tone));
+        }
+    });
+}
+
+// RadialToggles
+
+namespace {
+
+Rect circleAt(Vec2 c, float r)
+{
+    return {c.x - r, c.y - r, r * 2.0f, r * 2.0f};
+}
+
+float distance(Vec2 a, Vec2 b)
+{
+    return std::hypot(a.x - b.x, a.y - b.y);
+}
+
+}
+
+RadialToggles::RadialToggles(std::vector<RadialToggle> toggles) : toggles_(std::move(toggles)), on_(toggles_.size(), 0)
+{
+}
+
+float RadialToggles::angle(size_t i, size_t count)
+{
+    const float step = 6.2831853f / static_cast<float>(std::max<size_t>(count, 1));
+    return -1.5707963f + step * static_cast<float>(i);
+}
+
+Vec2 RadialToggles::measure(const Theme &) const
+{
+    return {26.0f, 26.0f};
+}
+
+bool RadialToggles::hitTest(Vec2 p) const
+{
+    return distance(p, rect_.center()) <= rect_.w * 0.5f;
+}
+
+void RadialToggles::handleInput(const Input &input)
+{
+    for (size_t i = 0; i < toggles_.size(); ++i)
+        on_[i] = toggles_[i].get && toggles_[i].get();
+    hovered_ = enabled_ && hitTest(input.mouse);
+    if (hovered_)
+        input.setCursor(engine::Cursor::Hand);
+    if (hovered_ && input.pressed && !*open_)
+        if (Context *context = Context::active())
+            openMenu(*context, true);
+}
+
+RadialMenu &RadialToggles::openMenu(Context &context, bool held)
+{
+    *open_ = true;
+    OverlayOptions options;
+    options.onClose = [open = open_] { *open = false; };
+    return context.openOverlay<RadialMenu>(std::move(options), context, toggles_, rect_.center(), held);
+}
+
+void RadialToggles::draw(DrawList &list, const Theme &theme) const
+{
+    Fingerprint key;
+    for (char on : on_)
+        key.add(on);
+    key.add(hovered_);
+    key.add(*open_);
+    key.add(enabled_);
+    cache_.draw(list, theme, rect_, key.value(), [&] {
+        const Vec2 c = rect_.center();
+        const float r = rect_.w * 0.5f;
+        if (*open_)
+            list.add(theme.surface(rect_, Shape::Circle, Elevation::Inset, 0.55f));
+        else
+            list.add(theme.surface(rect_, Shape::Circle, Elevation::Raised, hovered_ ? 0.75f : 0.5f, Finish::Convex));
+        // A dot per toggle where its button sits in the menu, lit while it is on
+        for (size_t i = 0; i < toggles_.size(); ++i) {
+            const float a = angle(i, toggles_.size());
+            const Rect dot = circleAt({c.x + std::cos(a) * r * 0.5f, c.y + std::sin(a) * r * 0.5f}, 2.5f);
+            if (on_[i] && enabled_)
+                list.add(theme.accent(dot, Shape::Circle));
+            else
+                list.add(theme.ink(dot, Shape::Circle, TextTone::Muted, enabled_, 0.55f));
+        }
+    });
+}
+
+// RadialMenu
+
+RadialMenu::RadialMenu(Context &context, std::vector<RadialToggle> toggles, Vec2 centre, bool held)
+    : context_(context), toggles_(std::move(toggles)), anchor_(centre), centre_(centre), held_(held)
+{
+}
+
+Vec2 RadialMenu::measure(const Theme &) const
+{
+    return {radius() * 2.0f, radius() * 2.0f};
+}
+
+void RadialMenu::arrange(const Rect &window, const Theme &theme)
+{
+    // Kept inside the window, room left beneath for the name
+    const float r = radius() + 4.0f;
+    const float below = theme.fontSize(TextStyle::Caption) + 24.0f;
+    centre_.x = std::clamp(anchor_.x, window.x + r, std::max(window.x + r, window.x + window.w - r));
+    centre_.y = std::clamp(anchor_.y, window.y + r, std::max(window.y + r, window.y + window.h - r - below));
+    rect_ = circleAt(centre_, radius());
+}
+
+Rect RadialMenu::button(size_t i) const
+{
+    const float a = RadialToggles::angle(i, toggles_.size());
+    const float ring = kRing * reveal_;
+    return circleAt({centre_.x + std::cos(a) * ring, centre_.y + std::sin(a) * ring}, kButton * 0.5f);
+}
+
+bool RadialMenu::hitTest(Vec2 p) const
+{
+    return distance(p, centre_) <= radius();
+}
+
+void RadialMenu::flip(size_t i)
+{
+    const RadialToggle &t = toggles_[i];
+    const bool on = t.get && t.get();
+    if (t.set)
+        t.set(!on);
+}
+
+void RadialMenu::close()
+{
+    context_.closeOverlay(*this);
+}
+
+void RadialMenu::handleInput(const Input &input)
+{
+    if (reveal_ < 1.0f) {
+        reveal_ += (1.0f - reveal_) * input.ease(18.0f);
+        if (reveal_ > 0.995f)
+            reveal_ = 1.0f;
+    }
+    // Escape closes it and a toggle's key flips it; other keys go on (Space still plays)
+    if (hooks_.attach(input.signals)) {
+        hooks_.key(Priority::Popup, [this](const KeyEvent &e) {
+            if (!e.down || e.mods != 0)
+                return false;
+            if (e.key == Key::Escape) {
+                close();
+                return true;
+            }
+            for (size_t i = 0; i < toggles_.size(); ++i) {
+                if (toggles_[i].key == e.key) {
+                    if (!e.repeat)
+                        flip(i);
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
+    hovered_ = -1;
+    for (size_t i = 0; i < toggles_.size(); ++i) {
+        if (distance(input.mouse, button(i).center()) <= kButton * 0.5f + 3.0f)
+            hovered_ = static_cast<int>(i);
+    }
+    middleHovered_ = distance(input.mouse, centre_) <= kMiddle * 0.5f;
+    if (hovered_ >= 0 || middleHovered_)
+        input.setCursor(engine::Cursor::Hand);
+
+    if (held_) {
+        // Opened by a press still held: dragging onto a button and letting go flips it
+        dragged_ = dragged_ || distance(input.mouse, centre_) > kMiddle * 0.5f;
+        if (input.released || !input.down) {
+            held_ = false;
+            if (hovered_ >= 0 && dragged_) {
+                flip(static_cast<size_t>(hovered_));
+                close();
+            } else if (dragged_ && !middleHovered_) {
+                close(); // let go over nothing
+            }
+        }
+        return;
+    }
+    if (!input.pressed)
+        return;
+    if (hovered_ >= 0)
+        flip(static_cast<size_t>(hovered_));
+    else if (middleHovered_)
+        close();
+}
+
+void RadialMenu::draw(DrawList &list, const Theme &theme) const
+{
+    const float shown = reveal_;
+    // The disc the buttons sit on, growing out of the middle
+    const float discR = kMiddle * 0.5f + (radius() - kMiddle * 0.5f) * shown;
+    list.add(theme.surface(circleAt(centre_, discR), Shape::Circle, Elevation::Raised, 0.8f, Finish::Flat));
+    // The middle, where the disc that opened it is: pressed in, with a cross that closes
+    const Rect middle = circleAt(centre_, kMiddle * 0.5f);
+    list.add(theme.surface(middle, Shape::Circle, Elevation::Inset, middleHovered_ ? 0.7f : 0.5f));
+    drawIcon(list, theme, Icon::Close, circleAt(centre_, 5.0f), middleHovered_ ? TextTone::Primary : TextTone::Muted);
+
+    const float textSize = theme.fontSize(TextStyle::Caption);
+    for (size_t i = 0; i < toggles_.size(); ++i) {
+        const RadialToggle &t = toggles_[i];
+        const bool on = t.get && t.get();
+        const bool hovered = static_cast<int>(i) == hovered_;
+        const Rect r = button(i);
+        if (on)
+            list.add(theme.surface(r, Shape::Circle, Elevation::Inset, hovered ? 0.7f : 0.55f));
+        else
+            list.add(theme.surface(r, Shape::Circle, Elevation::Raised, hovered ? 0.8f : 0.5f, Finish::Convex));
+        Color color = theme.textColor(on ? TextTone::Accent : hovered ? TextTone::Primary : TextTone::Secondary);
+        color.a *= shown;
+        list.add(theme.text(t.label, r, textSize, TextAlign::Center, color));
+    }
+
+    // The hovered toggle's name (and whether it is on), in a pill under the disc
+    if (hovered_ >= 0 && shown > 0.9f) {
+        const RadialToggle &t = toggles_[static_cast<size_t>(hovered_)];
+        const std::string text = t.name + ((t.get && t.get()) ? "  On" : "  Off");
+        const float w = theme.measureText(text, TextStyle::Caption).x + 20.0f;
+        const float h = textSize + 12.0f;
+        const Rect pill{centre_.x - w * 0.5f, centre_.y + radius() + 6.0f, w, h};
+        list.add(theme.surface(pill, Shape::Pill, Elevation::Raised, 0.7f));
+        list.add(theme.text(text, pill, textSize, TextAlign::Center, theme.textColor(TextTone::Primary)));
+    }
 }
 
 // ScrubField

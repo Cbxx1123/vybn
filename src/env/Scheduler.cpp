@@ -107,7 +107,19 @@ void Scheduler::submit(Lane lane, std::function<void()> job, JobGroup *group)
 
 void Scheduler::wake(Lane lane)
 {
-    poolFor(lane).wake.release();
+    Pool &pool = poolFor(lane);
+    // Already signalled and its pollers not yet started: they will serve this wake's request too
+    if (!pool.wakePending.exchange(true, std::memory_order_acq_rel))
+        pool.wake.release();
+}
+
+void Scheduler::pollersChanged(Pool &pool)
+{
+    uint32_t interval = 1000;
+    for (const auto &p : pool.pollers)
+        interval = std::min(interval, p->intervalMs);
+    pool.intervalMs.store(interval, std::memory_order_relaxed);
+    pool.pollerVersion.fetch_add(1, std::memory_order_release);
 }
 
 int Scheduler::addPoller(Lane lane, std::function<bool()> fn, uint32_t intervalMs)
@@ -120,6 +132,7 @@ int Scheduler::addPoller(Lane lane, std::function<bool()> fn, uint32_t intervalM
     {
         std::lock_guard<std::mutex> lock(pool.mutex);
         pool.pollers.push_back(poller);
+        pollersChanged(pool);
     }
     pool.wake.release(static_cast<uint32_t>(pool.threads.size()));
     return poller->id;
@@ -135,35 +148,36 @@ void Scheduler::removePoller(int id)
                 if ((*it)->id == id) {
                     removed = *it;
                     pool->pollers.erase(it);
+                    pollersChanged(*pool);
                     break;
                 }
             }
         }
-        // Calls already under way finish before it is gone
-        while (removed && removed->running.load() > 0)
-            std::this_thread::yield();
+        // Calls already under way finish before it is gone; threads still holding it in their
+        // snapshot see it dead and skip it, until they take the list again
+        if (removed) {
+            removed->alive.store(false, std::memory_order_seq_cst);
+            while (removed->running.load(std::memory_order_seq_cst) > 0)
+                std::this_thread::yield();
+        }
     }
 }
 
-bool Scheduler::runPollers(Pool &pool)
+bool Scheduler::runPollers(Pool &pool, PollerSnapshot &snapshot)
 {
-    std::vector<std::shared_ptr<Poller>> pollers;
-    {
+    // The list is copied only when it has changed since this thread last ran it
+    if (snapshot.version != pool.pollerVersion.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lock(pool.mutex);
-        pollers = pool.pollers;
+        snapshot.pollers = pool.pollers;
+        snapshot.version = pool.pollerVersion.load(std::memory_order_relaxed);
     }
     bool any = false;
-    for (auto &p : pollers) {
-        ++p->running;
-        // Removed between the copy and now: skip it
-        bool listed;
-        {
-            std::lock_guard<std::mutex> lock(pool.mutex);
-            listed = std::find(pool.pollers.begin(), pool.pollers.end(), p) != pool.pollers.end();
-        }
-        if (listed)
+    for (auto &p : snapshot.pollers) {
+        p->running.fetch_add(1, std::memory_order_seq_cst);
+        // Removed since the snapshot was taken: skip it
+        if (p->alive.load(std::memory_order_seq_cst))
             any = p->fn() || any;
-        --p->running;
+        p->running.fetch_sub(1, std::memory_order_seq_cst);
     }
     return any;
 }
@@ -177,16 +191,14 @@ void Scheduler::loop(Pool &pool)
     else
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL); // reads feed the audio
 #endif
+    PollerSnapshot snapshot;
     for (;;) {
-        uint32_t interval = 1000;
-        {
-            std::lock_guard<std::mutex> lock(pool.mutex);
-            for (const auto &p : pool.pollers)
-                interval = std::min(interval, p->intervalMs);
-        }
-        pool.wake.waitFor(interval);
+        pool.wake.waitFor(pool.intervalMs.load(std::memory_order_relaxed));
         if (stopping_)
             return;
+        // Cleared before the pollers run, so a wake from here on signals again, and one before
+        // it is served by this run
+        pool.wakePending.store(false, std::memory_order_seq_cst);
         // Jobs, the first lane's first
         for (;;) {
             Job job;
@@ -217,7 +229,7 @@ void Scheduler::loop(Pool &pool)
             if (stopping_)
                 return;
         }
-        while (!stopping_ && runPollers(pool)) {
+        while (!stopping_ && runPollers(pool, snapshot)) {
         }
     }
 }

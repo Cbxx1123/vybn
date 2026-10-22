@@ -188,6 +188,7 @@ void NotePlayer::process(AudioBlock &block)
         current_ = next;
     }
 
+    instrument_->automateBlock(block.transport);
     instrument_->beginBlock();
 
     // Previewed keys sound at once

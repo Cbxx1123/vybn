@@ -1,10 +1,15 @@
 #include "InputSelfTest.h"
+#include "Harness.h"
 
+#include <chrono>
 #include <cstdio>
 #include <string>
 #include <vector>
 
 #include "daw/Actions.h"
+#include "env/Environment.h"
+#include "env/EventBus.h"
+#include "env/Signal.h"
 #include "ui/UI.h"
 
 namespace tests {
@@ -17,17 +22,6 @@ using engine::ModCtrl;
 using engine::ModShift;
 using engine::TextEvent;
 using ui::Chord;
-
-struct Checker {
-    int failures = 0;
-
-    void check(bool ok, const std::string &what, const std::string &detail = {})
-    {
-        std::printf("%s  %-44s %s\n", ok ? "PASS" : "FAIL", what.c_str(), detail.c_str());
-        if (!ok)
-            ++failures;
-    }
-};
 
 KeyEvent press(Key key, uint8_t mods = 0, bool repeat = false)
 {
@@ -44,6 +38,75 @@ void type(ui::InputSignals &hub, const std::string &text)
         TextEvent e;
         e.codepoint = static_cast<unsigned char>(c);
         hub.dispatch(e);
+    }
+}
+
+double secondsSince(std::chrono::steady_clock::time_point since)
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - since).count();
+}
+
+// Benchmarks (VIBIN_TEST_BENCH): what dispatching costs through a Signal, the event bus and the
+// environment's posted actions
+void benchDispatch()
+{
+    using Clock = std::chrono::steady_clock;
+    volatile int seen = 0;
+    {
+        // 32 hooks, none handling it: every key a window's components pass on goes this far
+        env::Signal<int> signal;
+        std::vector<env::Connection> hooks;
+        for (int i = 0; i < 32; ++i)
+            hooks.push_back(signal.connect([&seen](int v) { seen = seen + v; return false; }, i % 3));
+        constexpr int kEmits = 200000;
+        const auto begin = Clock::now();
+        for (int i = 0; i < kEmits; ++i)
+            signal.emit(1);
+        std::printf("INFO dispatch signal: %.0f ns an emit through 32 hooks\n", secondsSince(begin) / kEmits * 1e9);
+    }
+    struct Tick {
+        int value;
+    };
+    {
+        env::EventBus bus;
+        for (int i = 0; i < 8; ++i)
+            bus.subscribe<Tick>([&seen](const Tick &t) { seen = seen + t.value; });
+        constexpr int kEvents = 200000;
+        auto begin = Clock::now();
+        for (int i = 0; i < kEvents; ++i)
+            bus.publish(Tick{1});
+        const double publishNs = secondsSince(begin) / kEvents * 1e9;
+        begin = Clock::now();
+        for (int round = 0; round < kEvents / 100; ++round) {
+            for (int i = 0; i < 100; ++i)
+                bus.post(Tick{1});
+            bus.dispatch();
+        }
+        const double postNs = secondsSince(begin) / kEvents * 1e9;
+        std::printf("INFO dispatch bus: %.0f ns a publish to 8 subscribers, %.0f ns a post and its dispatch\n", publishNs, postNs);
+    }
+    {
+        // The environment's loop with a daemon posting 16 actions a tick
+        struct Poster : env::Daemon {
+            explicit Poster(env::Environment &) : env::Daemon("Poster") {}
+            int ticks = 0;
+            int ran = 0;
+            void tick(env::Environment &env) override
+            {
+                if (++ticks >= 20000) {
+                    env.requestStop();
+                    return;
+                }
+                for (int i = 0; i < 16; ++i)
+                    env.post([this] { ++ran; });
+            }
+        };
+        env::Environment environment;
+        auto &poster = environment.add<Poster>();
+        const auto begin = Clock::now();
+        environment.run();
+        std::printf("INFO dispatch environment: %.0f ns a loop iteration with 16 posted actions (%d ran)\n",
+                    secondsSince(begin) / poster.ticks * 1e9, poster.ran);
     }
 }
 
@@ -100,6 +163,39 @@ int runInputSelfTest()
         order.clear();
         signal.emit(1);
         c.check(order == "AHNL", "A destroyed connection unhooks", order);
+    }
+
+    // The event bus: changes during a publish, posted events in order
+    {
+        struct Note {
+            char c;
+        };
+        env::EventBus bus;
+        std::string order;
+        bus.subscribe<Note>([&](const Note &n) { order += std::string("1") + n.c; });
+        env::SubscriptionId self = 0, added = 0;
+        self = bus.subscribe<Note>([&](const Note &n) {
+            order += std::string("2") + n.c;
+            bus.unsubscribe(self);
+            added = bus.subscribe<Note>([&](const Note &m) { order += std::string("3") + m.c; });
+        });
+        bus.subscribe<Note>([&](const Note &n) { order += std::string("4") + n.c; });
+        bus.publish(Note{'a'});
+        c.check(order == "1a2a4a", "Bus: handlers change safely during a publish", order);
+        order.clear();
+        bus.publish(Note{'b'});
+        c.check(order == "1b4b3b", "Bus: the changes apply from the next event", order);
+        order.clear();
+        bus.unsubscribe(added);
+        int wakes = 0;
+        bus.setWakeHook([&wakes] { ++wakes; });
+        bus.post(Note{'c'});
+        bus.post(Note{'d'});
+        const bool early = order.empty();
+        bus.dispatch();
+        bus.setWakeHook(nullptr);
+        c.check(early && order == "1c4c1d4d" && wakes == 2, "Bus: posted events wait for dispatch, in order, waking each time",
+                order);
     }
 
     // Chords
@@ -348,8 +444,10 @@ int runInputSelfTest()
         c.check(ui::fingerprint(ui::DrawList{}) != base, "An empty frame differs from a drawn one");
     }
 
-    std::printf("\n%s: %d failed\n", c.failures == 0 ? "All passed" : "FAILED", c.failures);
-    return c.failures == 0 ? 0 : 1;
+    if (bench())
+        benchDispatch();
+
+    return c.finish("input");
 }
 
 }

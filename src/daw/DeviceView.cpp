@@ -95,7 +95,9 @@ std::string DeviceView::headSignature() const
 {
     audio::Device *d = access_.device ? access_.device() : nullptr;
     const plugin::Slot *s = d ? d->slot() : nullptr;
-    return std::string(d ? "D" : "-") + (s ? std::to_string(static_cast<int>(s->state())) + (s->canEmbedEditor() ? "E" : "") +
+    const audio::DeviceSetting *setting = access_.setting ? access_.setting() : nullptr;
+    const bool sidechain = effect_ && setting && takesSidechain(*setting);
+    return std::string(d ? "D" : "-") + (sidechain ? "~" : "") + (s ? std::to_string(static_cast<int>(s->state())) + (s->canEmbedEditor() ? "E" : "") +
                                                  (s->hasEditor() ? "W" : "")
                                            : "");
 }
@@ -184,6 +186,8 @@ void DeviceView::rebuildHead()
             .setVariant(ButtonVariant::Flat)
             .setSize(Size::Small);
     }
+    if (effect_ && access_.sidechain)
+        addSidechainControl(context_, *head_, access_);
     if (effect_) {
         head_->add<SmallToggle>("Bypass", [this] { return access_.setting && access_.setting() && access_.setting()->bypass; },
                                 [this](bool on) {

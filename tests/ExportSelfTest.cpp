@@ -1,4 +1,5 @@
 #include "ExportSelfTest.h"
+#include "Harness.h"
 
 #include <algorithm>
 #include <array>
@@ -27,6 +28,7 @@
 #include "daw/Project.h"
 #include "audio/AudioSystem.h"
 #include "audio/Midi.h"
+#include "audio/Synth.h"
 #include "daw/AudioBridge.h"
 #include "daw/AudioPool.h"
 #include "daw/Library.h"
@@ -45,18 +47,40 @@ constexpr double kRate = 48000.0;
 constexpr double kPi = 3.14159265358979323846;
 constexpr size_t kTestFrames = 96000; // two seconds
 
-struct Checker {
-    int failures = 0;
-    int count = 0;
-
-    void check(bool ok, const std::string &what, const std::string &detail = {})
-    {
-        ++count;
-        std::printf("%s  %-56s %s\n", ok ? "PASS" : "FAIL", what.c_str(), detail.c_str());
-        if (!ok)
-            ++failures;
+// Each track's first clip, cut to `beats` and moved to the start: the same tracks sounding together, in a
+// song `beats` long
+daw::Project openingBeats(daw::Project project, double beats)
+{
+    for (daw::Track &track : project.tracks) {
+        if (track.clips.empty())
+            continue;
+        daw::Clip opening = track.clips.front();
+        opening.start = 0.0;
+        opening.length = std::min(opening.length, beats);
+        opening.notes.erase(std::remove_if(opening.notes.begin(), opening.notes.end(),
+                                           [beats](const daw::Note &n) { return n.start >= beats; }),
+                            opening.notes.end());
+        track.clips = {opening};
     }
-};
+    return project;
+}
+
+// The song the render checks render. Each of their assertions (the pool and no pool agreeing, the stems adding
+// up to the dry mix, the loudness a preset reaches, the files a preset writes) holds on any stretch of it, and
+// the whole 48 s song costs ~6 s a render, so the fast tier renders the opening 8 beats of every track (4 s,
+// guitar, bass and lead sounding together), on the built-in synthesizer in place of the guitar: nothing read
+// from the user's sample library, so the same on every machine. VIBIN_TEST_FULL renders the song as it is.
+daw::Project songToRender()
+{
+    daw::Project song = daw::demoProject();
+    if (full())
+        return song;
+    for (daw::Track &track : song.tracks) {
+        if (track.kind == daw::TrackKind::Instrument && track.hasInstrument())
+            track.instrument = audio::SynthDevice::setting();
+    }
+    return openingBeats(std::move(song), 8.0);
+}
 
 std::string number(const char *format, double value)
 {
@@ -387,6 +411,153 @@ void encoderChecks(Checker &c)
                 container == audio::EncodeFormat::Flac ? "FLAC refuses 32-bit, with a reason"
                                                        : "AIFF refuses 32-bit, with a reason",
                 error);
+    }
+
+    // MP3, through the system's encoder. Lossy, so what comes back is compared by its error against
+    // the signal, at the delay the encoder and decoder add (about 1200 frames), one channel at a time.
+    {
+        // How far below the signal the error is, in dB, over [from, to) of one channel at `delay`
+        auto snrAt = [](const std::vector<float> &decoded, const std::vector<float> &original, uint32_t channels,
+                        int channel, size_t delay, size_t from, size_t to) {
+            const size_t decodedFrames = decoded.size() / channels;
+            double signal = 0.0, noise = 0.0;
+            for (size_t f = from; f < to && f + delay < decodedFrames; ++f) {
+                for (uint32_t ch = 0; ch < channels; ++ch) {
+                    if (channel >= 0 && ch != static_cast<uint32_t>(channel))
+                        continue;
+                    const double want = original[f * channels + ch];
+                    const double got = decoded[(f + delay) * channels + ch];
+                    signal += want * want;
+                    noise += (got - want) * (got - want);
+                }
+            }
+            return 10.0 * std::log10(signal / std::max(noise, 1e-20));
+        };
+        // The delay, from every channel across the silence ending at frame 40000: the 440 Hz sine
+        // repeats every 1200 frames, so a window of it alone would match one period early or late
+        auto delayOf = [&snrAt](const std::vector<float> &decoded, const std::vector<float> &original, uint32_t channels) {
+            size_t delay = 0;
+            double best = -1e9;
+            for (size_t d = 0; d <= 4000; ++d) {
+                const double snr = snrAt(decoded, original, channels, -1, d, 39000, 41500);
+                if (snr > best) {
+                    best = snr;
+                    delay = d;
+                }
+            }
+            return delay;
+        };
+        // Each channel is then measured over frames 41000 to 49500, where neither jumps to full scale
+        // or silence (MP3 smears those, before and after)
+        auto snrOf = [&](const std::vector<float> &decoded, uint32_t channels, const std::vector<float> &original,
+                         uint32_t channel, size_t &delay) {
+            delay = delayOf(decoded, original, channels);
+            return snrAt(decoded, original, channels, static_cast<int>(channel), delay, 41000, 49500);
+        };
+
+        audio::EncodeFormat format;
+        format.container = audio::EncodeFormat::Mp3;
+        format.bits = 16;
+        format.sampleRate = 48000;
+        format.bitrate = 320;
+        std::string error;
+        const std::string path = dir + "/stereo320.mp3";
+        const bool written = encodeTo(path, format, signal.data(), kTestFrames, error);
+        const bool leftovers = fs::exists(fs::u8path(path + ".part"), ec) || fs::exists(fs::u8path(path + ".mp3part"), ec);
+        const std::vector<unsigned char> bytes = written ? readFile(path) : std::vector<unsigned char>();
+        std::shared_ptr<audio::AudioData> data = written ? audio::loadAudioFile(path, error) : nullptr;
+        const bool layout = data && data->channels == 2 && std::llround(data->sampleRate) == 48000 &&
+                            data->frames >= kTestFrames && data->frames <= kTestFrames + 4000;
+        c.check(written && !leftovers && layout, "An MP3 is written and decodes as 48 kHz stereo of about the same length",
+                data ? number("(%.0f frames)", static_cast<double>(data->frames)) : error);
+        size_t delayLeft = 0, delayRight = 0;
+        const double left = layout ? snrOf(data->samples, 2, signal, 0, delayLeft) : 0.0;
+        const double right = layout ? snrOf(data->samples, 2, signal, 1, delayRight) : 0.0;
+        c.check(left > 40.0 && right > 40.0 && delayLeft == delayRight,
+                "At 320 kbps both channels come back close to the signal, in their places",
+                number("(left %.1f dB, ", left) + number("right %.1f dB, ", right) +
+                    number("delay %.0f frames)", static_cast<double>(delayLeft)));
+
+        // The tag: ID3v2.3 first, with the metadata, and the encoder's gapless information kept
+        c.check(bytes.size() > 10 && std::memcmp(bytes.data(), "ID3\x03", 4) == 0 && containsText(bytes, "TIT2") &&
+                    containsText(bytes, "Encoder test title") && containsText(bytes, "Encoder test album") &&
+                    containsText(bytes, "Vibin tests") && containsText(bytes, "Encoder test comment") &&
+                    containsText(bytes, "TYER") && containsText(bytes, "2026"),
+                "An MP3's ID3 tag holds the title, artist, album, comment and year");
+        c.check(containsText(bytes, "iTunSMPB"), "An MP3 keeps the encoder's gapless information (iTunSMPB)");
+
+        // The bitrate sets the size: 128 kbps is about 128000 / 8 bytes a second
+        format.bitrate = 128;
+        const std::string small = dir + "/stereo128.mp3";
+        const bool smallWritten = encodeTo(small, format, signal.data(), kTestFrames, error);
+        const double seconds = static_cast<double>(kTestFrames) / 48000.0;
+        const double kbps = smallWritten ? static_cast<double>(readFile(small).size()) * 8.0 / seconds / 1000.0 : 0.0;
+        c.check(smallWritten && kbps > 120.0 && kbps < 140.0 && readFile(small).size() < bytes.size(),
+                "An MP3 at 128 kbps is that size, and smaller than at 320", number("(%.1f kbps)", kbps));
+
+        // Mono at 44.1 kHz, and a title that isn't ASCII (written as UTF-16)
+        std::vector<float> mono(kTestFrames);
+        for (size_t i = 0; i < kTestFrames; ++i)
+            mono[i] = signal[i * 2];
+        audio::EncodeFormat monoFormat = format;
+        monoFormat.channels = 1;
+        monoFormat.sampleRate = 44100;
+        monoFormat.bitrate = 192;
+        const std::string monoPath = dir + "/mono.mp3";
+        audio::AudioMetadata meta;
+        meta.title = "Caf\xC3\xA9 \xE2\x99\xAA";
+        auto writer = audio::makeWriter(monoFormat);
+        const bool monoWritten = writer && writer->open(monoPath, monoFormat, meta, error) &&
+                                 writeInPieces(*writer, mono.data(), kTestFrames, 1, error);
+        std::shared_ptr<audio::AudioData> monoData = monoWritten ? audio::loadAudioFile(monoPath, error) : nullptr;
+        size_t monoDelay = 0;
+        const double monoSnr = monoData && monoData->channels == 1 ? snrOf(monoData->samples, 1, mono, 0, monoDelay) : 0.0;
+        c.check(monoData && monoData->channels == 1 && std::llround(monoData->sampleRate) == 44100 && monoSnr > 30.0,
+                "A mono MP3 at 44.1 kHz decodes as mono, close to the signal",
+                monoData ? number("(%.1f dB, ", monoSnr) + number("%.0f channels)", monoData->channels) : error);
+        const std::vector<unsigned char> monoBytes = monoWritten ? readFile(monoPath) : std::vector<unsigned char>();
+        const unsigned char utf16[] = {0xFF, 0xFE, 'C', 0, 'a', 0, 'f', 0, 0xE9, 0, ' ', 0, 0x6A, 0x26};
+        const bool titled = std::search(monoBytes.begin(), monoBytes.end(), std::begin(utf16), std::end(utf16)) != monoBytes.end();
+        c.check(titled, "A title that isn't ASCII is written as UTF-16");
+
+        // What MP3 can't hold is refused with a reason before anything is written
+        struct Refused {
+            const char *what;
+            uint32_t rate;
+            int bitrate;
+            int bits;
+            uint32_t channels;
+        };
+        const Refused refusals[] = {
+            {"96 kHz", 96000, 320, 16, 2}, {"300 kbps", 48000, 300, 16, 2}, {"24-bit", 48000, 320, 24, 2}, {"6 channels", 48000, 320, 16, 6}};
+        for (const Refused &r : refusals) {
+            audio::EncodeFormat bad = format;
+            bad.sampleRate = r.rate;
+            bad.bitrate = r.bitrate;
+            bad.bits = r.bits;
+            bad.channels = r.channels;
+            const std::string badPath = dir + "/refused.mp3";
+            std::string why;
+            auto badWriter = audio::makeWriter(bad);
+            const bool opened = badWriter && badWriter->open(badPath, bad, audio::AudioMetadata(), why);
+            badWriter.reset();
+            c.check(!opened && !why.empty() && !fs::exists(fs::u8path(badPath), ec) &&
+                        !fs::exists(fs::u8path(badPath + ".part"), ec) && !fs::exists(fs::u8path(badPath + ".mp3part"), ec),
+                    std::string("MP3 refuses ") + r.what + ", with a reason", why);
+        }
+
+        // A writer dropped before it's closed (a cancelled render) leaves nothing behind
+        {
+            const std::string dropped = dir + "/dropped.mp3";
+            auto dropWriter = audio::makeWriter(format);
+            std::string why;
+            const bool opened = dropWriter && dropWriter->open(dropped, format, audio::AudioMetadata(), why) &&
+                                dropWriter->write(signal.data(), 10000);
+            dropWriter.reset();
+            c.check(opened && !fs::exists(fs::u8path(dropped), ec) && !fs::exists(fs::u8path(dropped + ".part"), ec) &&
+                        !fs::exists(fs::u8path(dropped + ".mp3part"), ec),
+                    "An MP3 dropped before closing leaves no files", why);
+        }
     }
 
     // A folder that doesn't exist: refused with a reason, no part file
@@ -875,7 +1046,7 @@ void renderChecks(Checker &c)
 
     auto step = [&](env::Environment &) -> bool {
         if (h.phase == 0) {
-            const Project demo = demoProject();
+            const Project demo = songToRender();
             h.started = std::chrono::steady_clock::now();
             h.engine = std::make_unique<OfflineEngine>(environment, nullptr, library, pool, demo, 0.8f, rate);
             h.plain = std::make_unique<OfflineEngine>(environment, nullptr, library, pool, demo, 0.8f, rate, false);
@@ -1034,7 +1205,11 @@ void renderChecks(Checker &c)
             h.phase = 5;
             return false;
         }
-        // Speed: the demo master and each track, in one pass
+        // The speed of a pass is a benchmark (VIBIN_TEST_BENCH): nothing to assert, and a whole extra render
+        if (!bench()) {
+            std::filesystem::remove_all(std::filesystem::u8path(dir), ec);
+            return true;
+        }
         PassOutput master;
         master.id = 0;
         master.master = true;
@@ -1093,7 +1268,7 @@ void queueChecks(Checker &c)
     InstrumentLibrary library(environment, settings);
     AudioPool pool(environment);
     ExportQueue queue(environment, nullptr, library, pool);
-    const Project demo = demoProject();
+    const Project demo = songToRender();
     const double secondsPerBeat = demo.secondsPerBeat();
 
     auto secondsSince = [](Clock::time_point since) {
@@ -1309,12 +1484,36 @@ void queueChecks(Checker &c)
         base.fileName = "sixteen {format}";
         ExportTarget flac = base;
         flac.format = ExportFormat::Flac;
-        preset.targets = {base, flac};
+        // And an MP3 of it, set to a rate MP3 can't take (rendered at 48 kHz instead)
+        ExportTarget mp3 = base;
+        mp3.format = ExportFormat::Mp3;
+        mp3.bitrate = 256;
+        mp3.sampleRate = 96000;
+        preset.targets = {base, flac, mp3};
         if (!waitFor(bits16, preset, 300.0, job))
             return false;
         const std::vector<TargetReport> reports = job->reports();
-        const bool ok = job->state() == RenderJob::Done && reports.size() == 2 && reports[0].ok && reports[1].ok;
+        const bool ok = job->state() == RenderJob::Done && reports.size() == 3 && reports[0].ok && reports[1].ok;
         c.check(ok, "A 16-bit WAV and FLAC of one target render", job->status());
+        if (reports.size() == 3) {
+            // The MP3 against the WAV: the same length give or take the encoder's priming, the same level
+            std::string e1, e2;
+            auto wav = audio::loadAudioFile(reports[0].path, e1);
+            auto mp3Data = reports[2].ok ? audio::loadAudioFile(reports[2].path, e2) : nullptr;
+            auto rms = [](const std::vector<float> &v) {
+                double sum = 0.0;
+                for (float x : v)
+                    sum += static_cast<double>(x) * x;
+                return std::sqrt(sum / std::max<size_t>(v.size(), 1));
+            };
+            const bool shaped = wav && mp3Data && std::llround(mp3Data->sampleRate) == 48000 && mp3Data->channels == wav->channels &&
+                                mp3Data->frames >= wav->frames && mp3Data->frames <= wav->frames + 4000;
+            const double levelDb = shaped ? 20.0 * std::log10(rms(mp3Data->samples) / std::max(rms(wav->samples), 1e-12)) : 99.0;
+            c.check(reports[2].ok && shaped && std::fabs(levelDb) < 0.5 && reports[2].path.size() > 4 &&
+                        reports[2].path.substr(reports[2].path.size() - 4) == ".mp3",
+                    "An MP3 target renders at 48 kHz, as long and as loud as the WAV",
+                    reports[2].ok ? number("(level %+.2f dB)", levelDb) : reports[2].error);
+        }
         if (ok) {
             std::string e1, e2;
             auto wav = audio::loadAudioFile(reports[0].path, e1);
@@ -1663,8 +1862,7 @@ int runExportSelfTest()
     encoderChecks(c);
     midiChecks(c);
     queueChecks(c);
-    std::printf("%d export checks, %d failed\n", c.count, c.failures);
-    return c.failures == 0 ? 0 : 1;
+    return c.finish("export");
 }
 
 }

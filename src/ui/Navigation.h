@@ -85,6 +85,9 @@ public:
 
     // Preferred height of the view (0, the default, asks for none and relies on the parent)
     ScrollView &setViewHeight(float height);
+    // Asks for no width, so the parent's width is the view's: content wider than it scrolls across
+    // rather than widening the parent (a settings page keeps the dialog's width whatever it holds)
+    ScrollView &setFillWidth(bool fill = true);
     // Pixels from the top and left, clamped when next laid out
     ScrollView &scrollTo(float y, float x = 0.0f);
     float offsetY() const { return offset_[1]; }
@@ -102,6 +105,7 @@ private:
 
     std::unique_ptr<Container> content_;
     float viewHeight_ = 0.0f;
+    bool fillWidth_ = false;
     float offset_[2] = {};    // current, eased toward target_
     float target_[2] = {};
     float maxOffset_[2] = {}; // content size beyond the view

@@ -24,7 +24,7 @@
 namespace plugin {
 
 constexpr uint32_t kMagic = 0x48504256; // "VBPH"
-constexpr uint32_t kProtocolVersion = 1;
+constexpr uint32_t kProtocolVersion = 3; // 2: the sidechain key in the block; 3: the Probe request
 constexpr uint32_t kMaxFrames = 4096;    // a block; longer ones are split
 constexpr uint32_t kMaxChannels = 2;     // of the main ports: stereo
 constexpr uint32_t kMaxBlockEvents = 512;
@@ -123,6 +123,10 @@ struct alignas(64) Shared {
     Event events[kMaxBlockEvents];
     int32_t status; // the plugin's process status for the block (CLAP_PROCESS_*)
     uint32_t outputChannels;
+    // The sidechain key for the block (an effect keyed by another track): `keyChannels` of it are
+    // written (0: no key this block; the host then gives the plugin's sidechain port silence)
+    uint32_t keyChannels;
+    float key[kMaxChannels][kMaxFrames];
     float input[kMaxChannels][kMaxFrames];
     float output[kMaxChannels][kMaxFrames];
 
@@ -158,6 +162,9 @@ enum class Message : uint32_t {
     GuiResize,  // width, height: no reply
     GuiClip,    // x, y, width, height in the interface's pixels: the part shown (and taking the
                 // mouse); a zero width for all of it. No reply
+
+    Probe,      // path, plugin id -> Reply: the channels of its sidechain input port (0 for none). Makes and
+                // initialises the plugin, so a plugin that crashes there costs only this request's host
 
     // Replies
     Reply = 100,
@@ -250,6 +257,11 @@ struct Descriptor {
     std::string url;
     std::string features; // CLAP feature strings, space-separated ("instrument synthesizer stereo")
     std::string path;     // the .clap file (filled by the app)
+    // Channels (1 or 2) of its sidechain input, the first audio input port that isn't the main one; 0
+    // for none. Learnt by a Probe after the scan (never on the wire in a scan's reply), and kept in
+    // the scan cache with `probed`, whether a probe was made (a failed one leaves 0, not tried again)
+    uint32_t sidechain = 0;
+    bool probed = false;
 
     bool instrument() const { return hasFeature("instrument"); }
     bool effect() const { return hasFeature("audio-effect") || !instrument(); }

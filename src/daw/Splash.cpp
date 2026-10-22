@@ -5,6 +5,8 @@
 
 #include "Splash.h"
 
+#include "AppIcon.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -68,17 +70,6 @@ void roundedRect(Gdiplus::GraphicsPath &path, float x, float y, float w, float h
 void fillCircle(Gdiplus::Graphics &g, const Gdiplus::Brush &brush, float cx, float cy, float r)
 {
     g.FillEllipse(&brush, cx - r, cy - r, 2.0f * r, 2.0f * r);
-}
-
-// A soft shadow: rings of falling alpha round a circle
-void circleShadow(Gdiplus::Graphics &g, ui::Color colour, float cx, float cy, float r, float spread, float strength)
-{
-    const int steps = 10;
-    for (int i = steps; i >= 1; --i) {
-        const float f = static_cast<float>(i) / steps;
-        Gdiplus::SolidBrush brush(gdi(colour, strength * (1.0f - f) * (1.0f - f) / 3.0f));
-        fillCircle(g, brush, cx, cy, r + spread * f);
-    }
 }
 
 LRESULT CALLBACK splashProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -234,22 +225,8 @@ void Splash::run()
                     g.DrawArc(&lit, ox - groove + 1.0f, oy - groove + 1.0f, 2.0f * groove - 2.0f, 2.0f * groove - 2.0f, 315.0f, 180.0f);
                 }
 
-                // The logo: a raised, slightly domed disc with the waveform
-                const float logo = 42.0f;
-                circleShadow(g, shadow, ox + 4.0f, oy + 5.0f, logo, 12.0f, 0.9f);
-                circleShadow(g, light, ox - 4.0f, oy - 4.0f, logo, 8.0f, 0.5f);
-                Gdiplus::LinearGradientBrush dome(Gdiplus::PointF(ox - logo, oy - logo), Gdiplus::PointF(ox + logo, oy + logo),
-                                                  gdi(mix(base_, light, 0.9f)), gdi(mix(base_, shadow, 0.12f)));
-                fillCircle(g, dome, ox, oy, logo);
-                Gdiplus::SolidBrush accent(gdi(accent_));
-                const float heights[] = {0.32f, 0.62f, 1.0f, 0.7f, 0.4f};
-                for (int i = 0; i < 5; ++i) {
-                    const float bw = 4.6f, bh = 30.0f * heights[i];
-                    const float bx = ox + (i - 2) * 8.0f - bw * 0.5f;
-                    Gdiplus::GraphicsPath bar;
-                    roundedRect(bar, bx, oy - bh * 0.5f, bw, bh, bw * 0.5f - 0.01f);
-                    g.FillPath(&accent, &bar);
-                }
+                // The logo: a raised, slightly domed disc with the waveform (the same mark as the app's icon)
+                drawLogoMark(g, ox, oy, 42.0f, base_, accent_);
 
                 // The dot and its trail: where it was a moment ago, so the trail stretches as it
                 // speeds round the bottom and gathers as it slows over the top

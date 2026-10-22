@@ -1,4 +1,5 @@
 #include "PluginSelfTest.h"
+#include "Harness.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -15,8 +16,19 @@
 #include <vector>
 
 #include "env/Environment.h"
+#include "env/Scheduler.h"
 #include "plugin/Instance.h"
+#include "audio/AudioSystem.h"
 #include "audio/Effects.h"
+#include "audio/Midi.h"
+#include "audio/Synth.h"
+#include "daw/AudioBridge.h"
+#include "daw/AudioPool.h"
+#include "daw/Library.h"
+#include "daw/Project.h"
+#include "daw/ProjectStore.h"
+#include "daw/Routing.h"
+#include "daw/Settings.h"
 #include "audio/DeviceChain.h"
 #include "audio/PluginEffect.h"
 #include "audio/NotePlayer.h"
@@ -31,18 +43,6 @@ namespace {
 
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
-
-struct Checker {
-    int failures = 0;
-
-    void check(bool ok, const std::string &what, const std::string &detail = {})
-    {
-        std::printf("%s  %-52s %s\n", ok ? "PASS" : "FAIL", what.c_str(), detail.c_str());
-        if (!ok)
-            ++failures;
-    }
-    void skip(const std::string &what, const std::string &why) { std::printf("SKIP  %-52s %s\n", what.c_str(), why.c_str()); }
-};
 
 std::string text(const char *pattern, double value)
 {
@@ -131,8 +131,8 @@ int runPluginSelfTest()
     std::string error;
     auto start = Clock::now();
     const bool scanned = plugin::Instance::scan(file, sandbox, found, error);
-    c.check(scanned && found.size() == 3, "a scan lists the file's three plugins", scanned ? text("in %.0f ms", since(start) * 1000) : error);
-    plugin::Descriptor gainD, sineD, faultyD;
+    c.check(scanned && found.size() == 5, "a scan lists the file's five plugins", scanned ? text("in %.0f ms", since(start) * 1000) : error);
+    plugin::Descriptor gainD, sineD, faultyD, duckD;
     for (const auto &d : found) {
         if (d.id == "vibin.test.gain")
             gainD = d;
@@ -140,6 +140,8 @@ int runPluginSelfTest()
             sineD = d;
         else if (d.id == "vibin.test.faulty")
             faultyD = d;
+        else if (d.id == "vibin.test.duck")
+            duckD = d;
     }
     c.check(gainD.name == "Test Gain" && gainD.vendor == "Vibin" && gainD.effect() && !gainD.instrument(), "the gain is an effect, named");
     c.check(sineD.instrument() && sineD.hasFeature("synthesizer"), "the sine is an instrument", sineD.features);
@@ -150,7 +152,7 @@ int runPluginSelfTest()
         const bool ok = plugin::Instance::scan(file + ".missing", sandbox, none, why);
         c.check(!ok && !why.empty(), "a missing file is refused with a reason", why);
     }
-    if (gainD.id.empty() || sineD.id.empty() || faultyD.id.empty()) {
+    if (gainD.id.empty() || sineD.id.empty() || faultyD.id.empty() || duckD.id.empty()) {
         std::printf("\nFAILED: the test plugins couldn't be scanned, so nothing else can be checked\n");
         return 1;
     }
@@ -296,7 +298,13 @@ int runPluginSelfTest()
                 got ? text("%.0f dark pixels", static_cast<double>(dark)) : "no picture");
         uint32_t again = sequence;
         std::this_thread::sleep_for(std::chrono::milliseconds(80));
-        c.check(gain->readGuiFrame(pixels, fw, fh, again) && again != sequence, "and keep coming");
+        // (a loaded machine may take a while to paint again: wait for it)
+        bool more = gain->readGuiFrame(pixels, fw, fh, again) && again != sequence;
+        for (int i = 0; i < 100 && !more; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            more = gain->readGuiFrame(pixels, fw, fh, again) && again != sequence;
+        }
+        c.check(more, "and keep coming");
         if (embedded) {
             gain->poll();
             gain->takeChanges();
@@ -495,12 +503,15 @@ int runPluginSelfTest()
         plugin::PluginConfig config;
         config.folders = {fs::u8path(file).parent_path().u8string()};
         plugin::PluginManager manager(environment, config);
+        const auto scanStart = Clock::now();
         manager.rescan();
         const auto until = Clock::now() + std::chrono::seconds(20);
         while (manager.scanning() && Clock::now() < until)
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::printf("INFO plugin scan: the manager scans the file in %.0f ms, with %zu effect plugins probed for a sidechain port, each in a host of its own\n",
+                    since(scanStart) * 1000, manager.lastScan().probed);
         const auto list = manager.plugins();
-        c.check(!manager.scanning() && list.size() == 3 && manager.version() == 1, "the manager scans a folder",
+        c.check(!manager.scanning() && list.size() == 5 && manager.version() == 1, "the manager scans a folder",
                 text("%.0f plugins", static_cast<double>(list.size())));
         error.clear();
         auto made = manager.create("vibin.test.gain", error);
@@ -555,6 +566,23 @@ int runPluginSelfTest()
                 shown = effect->slot()->text(1, -12.0);
             }
             c.check(shown == "-12.0 dB", "value texts come from the plugin, in the background", shown);
+            // Automation: a curve on Gain reaches the plugin as a value event in the block, not through
+            // the project's values (which still say 0 dB)
+            {
+                audio::AutomationCurve curve;
+                curve.param = 1;
+                curve.curve.min = -60.0;
+                curve.curve.max = 12.0;
+                curve.points = {{0.0, static_cast<float>((-6.0206 + 60.0) / 72.0)}};
+                chain.setAutomation({{effect, {curve}}}, {});
+                audio::TransportState transport;
+                transport.sampleRate = kRate;
+                fill();
+                chain.process(e.outPtr[0], e.outPtr[1], kFrames, &transport);
+                c.check(std::fabs(e.out[0][10] - 0.25f) < 0.005f, "automation reaches it as a value in the block",
+                        text("%.3f", e.out[0][10]));
+                chain.setAutomation({}, {});
+            }
             settings[0].bypass = true;
             chain.apply(settings);
             fill();
@@ -600,6 +628,285 @@ int runPluginSelfTest()
                 e.out[0][i] = e.out[1][i] = 0.5f;
             chain.process(e.outPtr[0], e.outPtr[1], kFrames);
             c.check(effect->slot()->state() == plugin::Slot::State::Ready && e.peak(0) > 0.4f, "Reload brings it back");
+        }
+        // A plugin with a sidechain port in a chain: Test Duck ducks its input by the key's peak in the
+        // block. The chain is handed a key before each process, as a TrackProcessor does for a keyed
+        // effect; no key, or a silent one, passes the sound; the key doesn't linger into the next block.
+        {
+            audio::DeviceChain chain;
+            chain.setPlugins(&manager);
+            chain.prepare(kRate, kFrames);
+            chain.apply({pluginDevice("vibin.test.duck", "Test Duck")});
+            auto *effect = dynamic_cast<audio::PluginEffect *>(chain.effect(0));
+            const auto until = Clock::now() + std::chrono::seconds(10);
+            while (effect && effect->slot()->state() == plugin::Slot::State::Loading && Clock::now() < until) {
+                chain.collect();
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            Buffers e;
+            std::vector<float> keyLeft(kFrames, 0.0f), keyRight(kFrames, 0.0f);
+            auto fill = [&e] {
+                for (uint32_t i = 0; i < kFrames; ++i)
+                    e.out[0][i] = e.out[1][i] = 0.5f;
+            };
+            auto run = [&](const float *l, const float *r) {
+                fill();
+                if (l)
+                    chain.setKey(0, l, r);
+                chain.process(e.outPtr[0], e.outPtr[1], kFrames);
+                return e.out[0][100];
+            };
+            const double unkeyed = run(nullptr, nullptr);
+            std::fill(keyLeft.begin(), keyLeft.end(), 0.75f);
+            std::fill(keyRight.begin(), keyRight.end(), 0.0f);
+            const double keyedLoud = run(keyLeft.data(), keyRight.data()); // left channel at 0.75: gain 0.25
+            std::fill(keyLeft.begin(), keyLeft.end(), 1.0f);
+            const double keyedFull = run(keyLeft.data(), keyRight.data());
+            std::fill(keyLeft.begin(), keyLeft.end(), 0.0f);
+            std::fill(keyRight.begin(), keyRight.end(), 0.5f);
+            const double keyedRight = run(keyLeft.data(), keyRight.data()); // the right channel counts too
+            std::fill(keyRight.begin(), keyRight.end(), 0.0f);
+            const double silentKey = run(keyLeft.data(), keyRight.data());
+            const double afterwards = run(nullptr, nullptr); // the key doesn't linger
+            c.check(effect && effect->slot()->state() == plugin::Slot::State::Ready && std::fabs(unkeyed - 0.5) < 1e-6 &&
+                        std::fabs(silentKey - 0.5) < 1e-6 && std::fabs(afterwards - 0.5) < 1e-6,
+                    "a plugin with a sidechain port passes its input with no key or a silent one",
+                    text("%.3f unkeyed, ", unkeyed) + text("%.3f silent key", silentKey));
+            c.check(std::fabs(keyedLoud - 0.125) < 1e-4 && std::fabs(keyedFull) < 1e-6 && std::fabs(keyedRight - 0.25) < 1e-4,
+                    "and is ducked by the key it is given (both channels of it)",
+                    text("%.4f at 0.75, ", keyedLoud) + text("%.4f at full scale, ", keyedFull) + text("%.4f at 0.5 on the right", keyedRight));
+            // A plugin without a sidechain port ignores the key
+            chain.apply({pluginDevice("vibin.test.gain", "Test Gain")});
+            auto *plain = dynamic_cast<audio::PluginEffect *>(chain.effect(0));
+            for (int i = 0; i < 1000 && plain && plain->slot()->state() == plugin::Slot::State::Loading; ++i) {
+                chain.collect();
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            std::fill(keyLeft.begin(), keyLeft.end(), 1.0f);
+            const double ignored = run(keyLeft.data(), keyRight.data());
+            c.check(plain && std::fabs(ignored - 0.5) < 0.01, "a plugin with no sidechain port ignores the key", text("%.3f", ignored));
+        }
+        // The same through the instance: the block's key reaches the sidechain port, and the round trip
+        // costs about the same keyed and unkeyed
+        {
+            std::string why;
+            std::unique_ptr<plugin::Instance> duck = plugin::Instance::create(duckD, sandbox, why);
+            c.check(duck && duck->activate(kRate, why), "Test Duck loads and activates on its own", why);
+            if (duck) {
+                Buffers d;
+                for (uint32_t i = 0; i < kFrames; ++i)
+                    d.in[0][i] = d.in[1][i] = 0.5f;
+                std::vector<float> k0(kFrames, 0.5f), k1(kFrames, 0.5f);
+                const float *keys[2] = {k0.data(), k1.data()};
+                auto block = [&](bool keyed) {
+                    plugin::ProcessBlock b = d.block(true);
+                    b.keys = keyed ? keys : nullptr;
+                    b.keyChannels = keyed ? 2 : 0;
+                    return b;
+                };
+                bool answered = duck->process(block(false)) && std::fabs(d.out[0][10] - 0.5f) < 1e-6f;
+                const bool ducked = duck->process(block(true)) && std::fabs(d.out[0][10] - 0.25f) < 1e-4f;
+                const bool back = duck->process(block(false)) && std::fabs(d.out[0][10] - 0.5f) < 1e-6f;
+                c.check(answered && ducked && back, "the instance hands the block's key to the sidechain port, and only for that block");
+                auto time = [&](bool keyed) {
+                    const int blocks = 400;
+                    const auto t0 = Clock::now();
+                    for (int i = 0; i < blocks; ++i)
+                        duck->process(block(keyed));
+                    return since(t0) / blocks * 1e6;
+                };
+                time(false); // warm
+                const double plain = time(false), keyed = time(true);
+                std::printf("INFO plugin sidechain: a block's round trip %.0f us unkeyed, %.0f us keyed (a plain gain plugin: see above)\n", plain, keyed);
+                c.check(keyed < 2000.0 && duck->missed() == 0, "a keyed block's round trip is quick too",
+                        text("%.0f us unkeyed, ", plain) + text("%.0f us keyed", keyed));
+            }
+        }
+        // The scan's sidechain info, as the Sidechain control and the rules read it: Test Duck has a
+        // stereo sidechain port, Test Gain, the sine and the faulty one none
+        {
+            plugin::Descriptor duck, gainInfo;
+            const bool foundDuck = manager.find("vibin.test.duck", duck), foundGain = manager.find("vibin.test.gain", gainInfo);
+            plugin::Descriptor crashy;
+            const bool foundCrashy = manager.find("vibin.test.crashinit", crashy);
+            c.check(foundCrashy && crashy.sidechain == 0 && crashy.probed && manager.lastScan().probed == 4,
+                    "a plugin that crashes when made is still listed by the scan; its failed probe leaves no sidechain and is remembered",
+                    text("%.0f probed", static_cast<double>(manager.lastScan().probed)));
+            c.check(foundDuck && foundGain && duck.sidechain == 2 && gainInfo.sidechain == 0 && !duck.instrument(),
+                    "the scan reports a plugin's sidechain port (channels), and none for a plugin without one",
+                    text("duck %.0f, ", foundDuck ? duck.sidechain : 99) + text("gain %.0f", foundGain ? gainInfo.sidechain : 99));
+            daw::setPluginSidechainLookup([&manager](const std::string &id) -> uint32_t {
+                plugin::Descriptor d;
+                return manager.find(id, d) ? d.sidechain : 0u;
+            });
+            daw::Project p;
+            p.tracks.resize(2);
+            p.tracks[0].name = "Pad";
+            p.tracks[1].name = "Kick";
+            p.tracks[0].effects = {pluginDevice("vibin.test.duck", "Test Duck"), pluginDevice("vibin.test.gain", "Test Gain"),
+                                   pluginDevice("vibin.not.installed", "Missing")};
+            p.tracks[0].effects[2].sidechain = 2; // a key a missing plugin keeps
+            daw::ObjectId next = 1;
+            p.normalizeIds(next);
+            const daw::SidechainOffer duckOffer = daw::sidechainOffer(p, daw::DevicePlace::effect(false, 0, 0));
+            const daw::SidechainOffer gainOffer = daw::sidechainOffer(p, daw::DevicePlace::effect(false, 0, 1));
+            const daw::SidechainOffer missing = daw::sidechainOffer(p, daw::DevicePlace::effect(false, 0, 2));
+            c.check(duckOffer.available && duckOffer.sources.size() == 1 && !gainOffer.available && !missing.available &&
+                        p.tracks[0].effects[2].sidechain == p.tracks[1].id,
+                    "a plugin with a sidechain port is offered the control, one without or not installed isn't (and keeps its key)");
+            // The rules count every keyed plugin, installed or not, so the limit holds whatever the engine finds
+            c.check(daw::keyedCount(p.tracks[0].effects) == 1 && daw::routingError(p).empty() && !daw::takesSidechain(p.tracks[0].effects[2]) &&
+                        daw::mayTakeSidechain(p.tracks[0].effects[2]),
+                    "a keyed plugin that isn't installed still counts toward the limit and the file keeps it");
+            const daw::RoutingPlan plan = daw::planRouting(p, {0, 0}, 16384);
+            c.check(plan.nodes[0].keys.size() == 1 && plan.nodes[0].keys[0].effect == 2 && plan.nodes[1].stage < plan.nodes[0].stage,
+                    "and the plan orders and times its key like any other");
+            daw::setPluginSidechainLookup({});
+        }
+
+        // A plugin keyed through the bridge: a pad with Test Duck, keyed by a muted kick track
+        {
+            const fs::path dir = fs::temp_directory_path() / "vibin-plugin-sidechain";
+            std::error_code removed;
+            fs::remove_all(dir, removed);
+            fs::create_directories(dir, removed);
+            daw::Settings settings;
+            settings.libraryPath = dir.u8string();
+            daw::InstrumentLibrary library(environment, settings);
+            daw::AudioPool pool(environment);
+            audio::AudioSystem engine(environment, audio::Deviceless{});
+            engine.masterGain().set(1.0f);
+            audio::MidiHub &midi = engine.add<audio::MidiHub>();
+            daw::AudioBridge bridge(engine, midi, &manager, library, pool);
+            daw::AudioBridge::SyncOptions options;
+            options.listen = false;
+
+            daw::Project p;
+            p.tracks.resize(2);
+            for (daw::Track &t : p.tracks) {
+                t.kind = daw::TrackKind::Instrument;
+                t.instrument = audio::SynthDevice::setting();
+            }
+            p.tracks[0].name = "Pad";
+            p.tracks[0].clips.push_back(daw::Clip("Held", 0.0, 16.0, {daw::Note{0.0, 16.0, 57, 0.8f}}));
+            p.tracks[0].effects = {pluginDevice("vibin.test.duck", "Test Duck")};
+            p.tracks[1].name = "Kick";
+            std::vector<daw::Note> beats;
+            for (int beat = 0; beat < 4; ++beat)
+                beats.push_back(daw::Note{static_cast<double>(beat), 0.25, 36, 0.9f});
+            p.tracks[1].clips.push_back(daw::Clip("Kick", 0.0, 16.0, beats));
+            p.tracks[1].mute = true;
+            p.tracks[1].gain = 0.0f;
+            audio::DeviceSetting boost = audio::effectSetting(audio::EffectType::Gain);
+            boost.setValue(0, 24.0);
+            p.tracks[1].effects = {boost};
+            daw::ObjectId next = 1;
+            p.normalizeIds(next);
+            const daw::ObjectId kick = p.tracks[1].id;
+            daw::ProjectStore store(p);
+            bridge.sync(store, options);
+            // The plugin loads in the background: sync until its slot is ready
+            plugin::Slot *slot = nullptr;
+            const auto until = Clock::now() + std::chrono::seconds(15);
+            while (Clock::now() < until) {
+                bridge.sync(store, options);
+                audio::DeviceChain *chain = bridge.chainOf(false, 0);
+                audio::Effect *effect = chain ? chain->effect(0) : nullptr;
+                slot = effect ? effect->slot() : nullptr;
+                if (slot && slot->state() == plugin::Slot::State::Ready)
+                    break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            c.check(slot && slot->state() == plugin::Slot::State::Ready, "Test Duck loads on a track through the bridge");
+            // The pad's level in dB while a kick note sounds and between the notes, over beats 1 to 3
+            struct Levels {
+                double during = 0.0, between = 0.0;
+            };
+            auto rms = [](const std::vector<float> &stereo, size_t from, size_t to) {
+                double sum = 0.0;
+                size_t n = 0;
+                for (size_t f = from; f < to && f * 2 + 1 < stereo.size(); ++f, n += 2)
+                    sum += static_cast<double>(stereo[f * 2]) * stereo[f * 2] + static_cast<double>(stereo[f * 2 + 1]) * stereo[f * 2 + 1];
+                return n ? std::sqrt(sum / static_cast<double>(n)) : 0.0;
+            };
+            auto levels = [&] {
+                bridge.sync(store, options);
+                constexpr uint32_t block = 512;
+                engine.transport().setTempo(120.0);
+                engine.transport().locate(0);
+                engine.transport().play();
+                std::vector<float> out(static_cast<size_t>(4.0 * 24000.0) * 2);
+                for (size_t at = 0; at + block * 2 <= out.size(); at += block * 2)
+                    engine.renderOffline(out.data() + at, block, 48000.0);
+                engine.transport().stop();
+                double during = 0.0, between = 0.0;
+                for (size_t beat = 1; beat < 4; ++beat) {
+                    during += rms(out, beat * 24000 + 1500, beat * 24000 + 4500);
+                    between += rms(out, beat * 24000 + 18000, beat * 24000 + 23000);
+                }
+                Levels l;
+                l.during = 20.0 * std::log10(std::max(during / 3.0, 1e-9));
+                l.between = 20.0 * std::log10(std::max(between / 3.0, 1e-9));
+                return l;
+            };
+            const Levels unkeyed = levels();
+            store.editTrack(0).effects[0].sidechain = kick;
+            const Levels keyed = levels();
+            store.editTrack(0).effects[0].sidechain = daw::kNoId;
+            const Levels released = levels();
+            c.check(std::fabs(unkeyed.during - unkeyed.between) < 1.0 && unkeyed.between > -40.0,
+                    "an unkeyed Test Duck passes the pad steadily",
+                    text("%.1f dB during, ", unkeyed.during) + text("%.1f dB between", unkeyed.between));
+            c.check(keyed.between - keyed.during > 20.0 && std::fabs(keyed.between - unkeyed.between) < 1.0,
+                    "keyed by a muted kick through the bridge, it ducks the pad on each kick and not between",
+                    text("%.1f dB during, ", keyed.during) + text("%.1f dB between", keyed.between));
+            c.check(std::fabs(released.during - released.between) < 1.0 && std::fabs(released.between - unkeyed.between) < 1.0,
+                    "and removing the key brings the steady level back",
+                    text("%.1f dB during, ", released.during) + text("%.1f dB between", released.between));
+        }
+
+        // A keyed plugin that crashes: silence, no dangling key, and keyed again after Reload
+        {
+            audio::DeviceChain chain;
+            chain.setPlugins(&manager);
+            chain.prepare(kRate, kFrames);
+            std::vector<audio::DeviceSetting> settings = {pluginDevice("vibin.test.faulty", "Test Faulty")};
+            chain.apply(settings);
+            auto *effect = dynamic_cast<audio::PluginEffect *>(chain.effect(0));
+            const auto until = Clock::now() + std::chrono::seconds(10);
+            while (effect->slot()->state() == plugin::Slot::State::Loading && Clock::now() < until) {
+                chain.collect();
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            Buffers e;
+            std::vector<float> keyLeft(kFrames, 0.5f), keyRight(kFrames, 0.5f);
+            auto run = [&] {
+                for (uint32_t i = 0; i < kFrames; ++i)
+                    e.out[0][i] = e.out[1][i] = 0.5f;
+                chain.setKey(0, keyLeft.data(), keyRight.data());
+                chain.process(e.outPtr[0], e.outPtr[1], kFrames);
+            };
+            settings[0].setValue(1, 1.0); // crash
+            chain.apply(settings);
+            run();
+            for (int i = 0; i < 200 && effect->slot()->state() == plugin::Slot::State::Ready; ++i) {
+                manager.tick(environment);
+                chain.collect();
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            run(); // keyed blocks keep coming while it is down
+            run();
+            c.check(effect->slot()->state() == plugin::Slot::State::Crashed && e.peak(0) == 0.0f,
+                    "a keyed plugin that crashes is silent and says so, and keyed blocks go on", effect->slot()->message());
+            settings[0].values.clear();
+            chain.apply(settings);
+            effect->slot()->reload();
+            for (int i = 0; i < 400 && effect->slot()->state() != plugin::Slot::State::Ready; ++i) {
+                chain.collect();
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            run();
+            c.check(effect->slot()->state() == plugin::Slot::State::Ready && e.peak(0) > 0.4f, "and after Reload it plays keyed blocks again");
         }
         // A plugin instrument on a track's note player: sequenced notes start on their frame in
         // one block (no splitting), and switching back to the sampler lets its notes go
@@ -748,9 +1055,18 @@ int runPluginSelfTest()
             const plugin::ScanStats first = scanNow(false);
             const plugin::ScanStats second = scanNow(false);
             const plugin::ScanStats forced = scanNow(true);
-            c.check(first.scanned == 1 && second.scanned == 0 && second.cached == 1 && scanner.plugins().size() == 3 && forced.scanned == 1,
+            c.check(first.scanned == 1 && second.scanned == 0 && second.probed == 0 && second.cached == 1 && scanner.plugins().size() == 5 && forced.scanned == 1,
                     "the scan cache: unchanged files aren't loaded again",
                     text("%.0f scanned, then ", static_cast<double>(first.scanned)) + text("%.0f", static_cast<double>(second.scanned)));
+            plugin::Descriptor cachedDuck;
+            c.check(scanner.find("vibin.test.duck", cachedDuck) && cachedDuck.sidechain == 2,
+                    "the scan cache keeps a plugin's sidechain port");
+            // A cache from before the sidechain info (format 1) is read as nothing, so it is scanned again
+            {
+                const fs::path old = temp / "old.cache";
+                std::ofstream(old, std::ios::binary) << "# Vibin plugin scans 1: old" << (char)10 << "file" << (char)9 << "x.clap" << (char)9 << "1" << (char)9 << "1" << (char)9 << (char)10;
+                c.check(plugin::readScanCache(old.u8string()).empty(), "an older scan cache is ignored, so its plugins are scanned again");
+            }
             // A file that changes is scanned again
             // (its size, since a host just let go of it may still hold it a moment)
             bool grown = false;
@@ -788,8 +1104,7 @@ int runPluginSelfTest()
                 standard.empty() ? "" : standard[0]);
     }
 
-    std::printf("\n%s: %d failed\n", c.failures == 0 ? "All passed" : "FAILED", c.failures);
-    return c.failures == 0 ? 0 : 1;
+    return c.finish("plugin");
 }
 
 }

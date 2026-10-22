@@ -531,9 +531,12 @@ void storeReport(RenderResults &results, size_t index, TargetReport report)
     results.finished.fetch_add(1);
 }
 
-// The bits an output's samples are written at: 16, 24, or 32 (float, WAV only)
+// The bits an output's samples are written at: 16, 24, or 32 (float, WAV only); an MP3 is encoded
+// from 16 bits, so it is dithered to 16
 int outputBits(const ExportTarget &t)
 {
+    if (t.format == ExportFormat::Mp3)
+        return 16;
     int bits = t.bits == 16 || t.bits == 24 || t.bits == 32 ? t.bits : 24;
     if (t.format != ExportFormat::Wav && bits == 32)
         bits = 24;
@@ -680,7 +683,9 @@ TargetReport finishAudio(const FinishSpec &s, const std::atomic<bool> &cancel)
     audio::EncodeFormat format;
     format.container = t.format == ExportFormat::Aiff   ? audio::EncodeFormat::Aiff
                        : t.format == ExportFormat::Flac ? audio::EncodeFormat::Flac
+                       : t.format == ExportFormat::Mp3  ? audio::EncodeFormat::Mp3
                                                         : audio::EncodeFormat::Wav;
+    format.bitrate = t.bitrate;
     format.bits = outputBits(t);
     format.sampleRate = s.rate;
     format.channels = channels;
@@ -974,6 +979,9 @@ void RenderJob::plan()
         if (o.skipped || o.midi)
             continue;
         o.tempPath = (std::filesystem::u8path(tempFolder_) / ("output-" + std::to_string(i) + ".f32")).u8string();
+        // An MP3 can only be written at some rates: rendered at the nearest of them
+        if (o.target.format == ExportFormat::Mp3)
+            o.target.sampleRate = mp3RateFor(o.target.sampleRate);
         const uint32_t rate = o.target.sampleRate;
         const bool preFader = o.target.tap == ExportTap::PreFader;
         const bool unmuted = !o.master && !o.target.respectMuteSolo;

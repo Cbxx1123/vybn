@@ -84,7 +84,7 @@ std::vector<ScanRecord> readScanCache(const std::string &file)
     std::vector<ScanRecord> out;
     std::ifstream in(fs::u8path(file), std::ios::binary);
     std::string line;
-    if (!std::getline(in, line) || line.rfind("# Vibin plugin scans 1", 0) != 0)
+    if (!std::getline(in, line) || line.rfind("# Vibin plugin scans 3", 0) != 0)
         return out;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r')
@@ -106,6 +106,8 @@ std::vector<ScanRecord> readScanCache(const std::string &file)
             d.description = f[5];
             d.url = f[6];
             d.features = f[7];
+            d.sidechain = f.size() >= 9 ? static_cast<uint32_t>(std::strtoul(f[8].c_str(), nullptr, 10)) : 0;
+            d.probed = f.size() >= 10 && f[9] == "1";
             d.path = out.back().path;
             if (!d.id.empty())
                 out.back().plugins.push_back(std::move(d));
@@ -124,12 +126,12 @@ bool writeScanCache(const std::string &file, const std::vector<ScanRecord> &reco
         std::ofstream out(temp, std::ios::binary | std::ios::trunc);
         if (!out)
             return false;
-        out << "# Vibin plugin scans 1: what each .clap held when it was last scanned\n";
+        out << "# Vibin plugin scans 3: what each .clap held when it was last scanned\n";
         for (const ScanRecord &r : records) {
             out << "file\t" << escape(r.path) << "\t" << r.size << "\t" << r.modified << "\t" << escape(r.error) << "\n";
             for (const Descriptor &d : r.plugins)
                 out << "plugin\t" << escape(d.id) << "\t" << escape(d.name) << "\t" << escape(d.vendor) << "\t" << escape(d.version)
-                    << "\t" << escape(d.description) << "\t" << escape(d.url) << "\t" << escape(d.features) << "\n";
+                    << "\t" << escape(d.description) << "\t" << escape(d.url) << "\t" << escape(d.features) << "\t" << d.sidechain << "\t" << (d.probed ? 1 : 0) << "\n";
         }
         if (!out)
             return false;
@@ -245,6 +247,20 @@ void PluginManager::rescan(bool force)
                                     record.error = error.empty() ? "it couldn't be scanned" : error;
                                 ++stats.scanned;
                             }
+                            // Effect plugins whose sidechain port hasn't been asked: each in a host of its own, after the
+                            // descriptors are safe, so a plugin that crashes when made leaves sidechain 0 (not asked again:
+                            // `probed` is cached either way; a forced scan tries again)
+                            if (record.error.empty()) {
+                                for (Descriptor &d : record.plugins) {
+                                    if (d.probed || d.instrument())
+                                        continue;
+                                    std::string why;
+                                    uint32_t channels = 0;
+                                    d.sidechain = Instance::probeSidechain(file, d.id, options, channels, why) ? channels : 0;
+                                    d.probed = true;
+                                    ++stats.probed;
+                                }
+                            }
                             if (!record.error.empty())
                                 problems.push_back({file, record.error});
                             // The first file to offer an id wins
@@ -254,7 +270,7 @@ void PluginManager::rescan(bool force)
                             records.push_back(std::move(record));
                         }
                     }
-                    if (!cacheFile.empty() && (stats.scanned > 0 || records.size() != cache.size()))
+                    if (!cacheFile.empty() && (stats.scanned > 0 || stats.probed > 0 || records.size() != cache.size()))
                         writeScanCache(cacheFile, records);
                     std::sort(found.begin(), found.end(), [](const Descriptor &a, const Descriptor &b) { return lower(a.name) < lower(b.name); });
                     {
@@ -303,6 +319,15 @@ bool PluginManager::find(const std::string &id, Descriptor &out) const
             return true;
         }
     return false;
+}
+
+uint32_t PluginManager::sidechainChannels(const std::string &id) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const Descriptor &d : plugins_)
+        if (d.id == id)
+            return d.sidechain;
+    return 0;
 }
 
 std::shared_ptr<Instance> PluginManager::create(const std::string &id, std::string &error)

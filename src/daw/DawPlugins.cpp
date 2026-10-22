@@ -8,9 +8,11 @@
 #include <filesystem>
 #include <system_error>
 
+#include "AutomationWriter.h"
 #include "DeviceControls.h"
 #include "DeviceView.h"
 #include "Format.h"
+#include "TransportBar.h"
 #include "PluginEditor.h"
 #include "engine/Shell.h"
 
@@ -101,6 +103,19 @@ void DawApp::openDevice(const DevicePlace &place, bool interface)
             const DevicePlace at = placeAt(place, trackId);
             const audio::DeviceSetting *d = project().device(at);
             return d && d->key() == key ? bridge_->deviceAt(project(), at) : nullptr;
+        };
+        access.playhead = [this] { return transportBeats(audio_); };
+        access.revision = [this] { return session_.store().revision(); };
+        access.sidechain = [this, place, trackId, key]() -> SidechainOffer {
+            const DevicePlace at = placeAt(place, trackId);
+            const audio::DeviceSetting *d = project().device(at);
+            return d && d->key() == key ? sidechainOffer(project(), at) : SidechainOffer{};
+        };
+        access.write = [this, place, trackId, key](const audio::DeviceParam &param, double value) {
+            const DevicePlace at = placeAt(place, trackId);
+            const audio::DeviceSetting *d = project().device(at);
+            return d && d->key() == key &&
+                   automationWriter_->touch(at.track, AutomationPlace{false, at}, param.id, automationCurve(param), value);
         };
         // A panel of the dock grid of its own, floating in a native window to begin with (it can be
         // docked anywhere in the grid, and closed from its tab or its window)

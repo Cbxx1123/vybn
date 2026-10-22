@@ -152,6 +152,11 @@ void DevicePicker::close()
 
 void DevicePicker::pick(const CatalogueEntry &entry)
 {
+    // Choosing the instrument already in use keeps it (and its settings) as it is
+    if (options_.instruments && entry.key() == options_.current) {
+        close();
+        return;
+    }
     // The entry may go when the catalogue changes: keep a copy for after the overlay has closed
     const CatalogueEntry chosen = entry;
     auto onPick = options_.onPick;
@@ -173,6 +178,9 @@ std::vector<const CatalogueEntry *> DevicePicker::filtered()
             continue;
         out.push_back(&e);
     }
+    // The instrument in use goes first, so it is the one highlighted when the picker opens
+    if (options_.instruments)
+        std::stable_partition(out.begin(), out.end(), [this](const CatalogueEntry *e) { return e->key() == options_.current; });
     return out;
 }
 

@@ -472,6 +472,16 @@ Dropdown &Dropdown::setSelected(int index)
     return *this;
 }
 
+Dropdown &Dropdown::choose(int index)
+{
+    if (selected_ != index) {
+        selected_ = index;
+        if (onChange_)
+            onChange_(index);
+    }
+    return *this;
+}
+
 Dropdown &Dropdown::setOptions(std::vector<std::string> options)
 {
     options_ = std::move(options);

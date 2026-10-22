@@ -1,6 +1,8 @@
 #include "BridgeSelfTest.h"
+#include "Harness.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -8,10 +10,16 @@
 #include <vector>
 
 #include "audio/AudioSystem.h"
+#include "audio/DeviceChain.h"
+#include "audio/Effects.h"
 #include "audio/Midi.h"
+#include "audio/Synth.h"
 #include "audio/Track.h"
 #include "daw/AudioBridge.h"
 #include "daw/AudioPool.h"
+#include "daw/AutomationLanes.h"
+#include "daw/Format.h"
+#include "daw/History.h"
 #include "daw/Library.h"
 #include "daw/Project.h"
 #include "daw/ProjectStore.h"
@@ -22,17 +30,6 @@
 namespace tests {
 
 namespace {
-
-struct Checker {
-    int failures = 0;
-
-    void check(bool ok, const std::string &what, const std::string &detail = {})
-    {
-        std::printf("%s  %-44s %s\n", ok ? "PASS" : "FAIL", what.c_str(), detail.c_str());
-        if (!ok)
-            ++failures;
-    }
-};
 
 using Processors = std::vector<audio::TrackProcessor *>;
 
@@ -72,6 +69,109 @@ daw::Project makeProject(size_t count)
         p.tracks.push_back(t);
     }
     return p;
+}
+
+// The RMS of interleaved stereo frames [from, to)
+double rmsOf(const std::vector<float> &stereo, size_t from, size_t to)
+{
+    double sum = 0.0;
+    size_t n = 0;
+    for (size_t f = from; f < to && f * 2 + 1 < stereo.size(); ++f, n += 2)
+        sum += static_cast<double>(stereo[f * 2]) * stereo[f * 2] + static_cast<double>(stereo[f * 2 + 1]) * stereo[f * 2 + 1];
+    return n ? std::sqrt(sum / static_cast<double>(n)) : 0.0;
+}
+
+// Plays the engine from the start for `beats` beats at 120 BPM (24000 frames a beat at 48 kHz)
+std::vector<float> playFromStart(audio::AudioSystem &engine, double beats)
+{
+    constexpr uint32_t kBlock = 512;
+    engine.transport().setTempo(120.0);
+    engine.transport().locate(0);
+    engine.transport().play();
+    std::vector<float> out(static_cast<size_t>(beats * 24000.0) * 2);
+    for (size_t at = 0; at + kBlock * 2 <= out.size(); at += kBlock * 2)
+        engine.renderOffline(out.data() + at, kBlock, 48000.0);
+    engine.transport().stop();
+    return out;
+}
+
+// Automation through the bridge: a device's parameter follows its lane at the playhead (playing or
+// not), the synth's likewise, the track's volume follows its lane in the sound, and a lane with no
+// points plays nothing
+void automationChecks(Checker &c, audio::AudioSystem &engine, daw::AudioBridge &bridge,
+                      const daw::AudioBridge::SyncOptions &options)
+{
+    bridge.dropAll();
+    daw::Project p;
+    daw::Track t;
+    t.name = "Automated";
+    t.kind = daw::TrackKind::Instrument;
+    t.instrument = audio::SynthDevice::setting();
+    t.effects.push_back(audio::effectSetting(audio::EffectType::Gain));
+    // The Gain effect's gain (-60 to 24 dB) from a quarter of the way at beat 0 to three quarters at beat 4
+    t.effects[0].automation.push_back({0, {{0.0, 0.25f}, {4.0, 0.75f}}});
+    // A synth parameter (the first shown one that isn't a choice) at its knob's middle from beat 0
+    const std::vector<audio::DeviceParam> synthParams = audio::synth::synthParams();
+    const auto shown = std::find_if(synthParams.begin(), synthParams.end(), [](const audio::DeviceParam &q) {
+        return !q.hidden && !q.readOnly && q.unit != audio::ParamUnit::Choice && q.unit != audio::ParamUnit::Toggle && q.max > q.min;
+    });
+    const audio::DeviceParam synthParam = shown != synthParams.end() ? *shown : audio::DeviceParam{};
+    t.instrument.automation.push_back({synthParam.id, {{0.0, 0.5f}}});
+    // A note held across the whole render
+    t.clips.push_back(daw::Clip("Held", 0.0, 16.0, {daw::Note{0.0, 16.0, 57, 0.8f}}));
+    daw::ProjectStore store(p);
+    store.edit().tracks.push_back(t);
+    bridge.sync(store, options);
+
+    // Stopped at beat 2: the Gain effect sits halfway along its lane (-18 dB), the synth at its middle
+    engine.transport().stop();
+    engine.transport().locate(48000);
+    std::vector<float> block(256 * 2);
+    engine.renderOffline(block.data(), 256, 48000.0);
+    engine.renderOffline(block.data(), 256, 48000.0);
+    audio::DeviceChain *chain = bridge.chainOf(false, 0);
+    auto *gain = chain ? dynamic_cast<audio::BuiltinEffect *>(chain->effect(0)) : nullptr;
+    const float gainNow = gain ? gain->param(0) : 0.0f;
+    c.check(gain && std::fabs(gainNow - -18.0f) < 0.01f, "Automation: an effect's parameter follows its lane at the playhead",
+            std::to_string(gainNow) + " dB at beat 2");
+    auto *synth = chain ? dynamic_cast<audio::SynthDevice *>(chain->instrument()) : nullptr;
+    const double wanted = daw::automationCurve(synthParam).value(0.5);
+    const double synthNow = synth ? synth->synth().param(synthParam.id) : -1.0;
+    c.check(synth && std::fabs(synthNow - wanted) < 1e-3 * std::max(1.0, std::fabs(wanted)),
+            "Automation: the synth's parameter follows its lane", synthParam.name + " " + std::to_string(synthNow));
+
+    // The track's own volume: silent until beat 4, then at unity. The note sounds only from there,
+    // as loud as without automation.
+    store.editTrack(0).automation.push_back(
+        {audio::kVolumeParam, {{0.0, 0.0f}, {3.999, 0.0f}, {4.0, daw::faderPosition(1.0f, 2.0f)}}});
+    store.editTrack(0).effects[0].automation.clear(); // the Gain effect at its own 0 dB
+    bridge.sync(store, options);
+    const std::vector<float> automatedRender = playFromStart(engine, 5.5);
+    const double before = rmsOf(automatedRender, 24000, 90000), after = rmsOf(automatedRender, 102000, 130000);
+    store.editTrack(0).automation.clear();
+    bridge.sync(store, options);
+    const std::vector<float> plainRender = playFromStart(engine, 5.5);
+    const double plain = rmsOf(plainRender, 102000, 130000);
+    const double offDb = 20.0 * std::log10(std::max(after, 1e-12) / std::max(plain, 1e-12));
+    c.check(before < 1e-5 && after > 1e-3 && std::fabs(offDb) < 0.5,
+            "Automation: the track's volume follows its lane (silent, then as loud as without)",
+            "rms " + std::to_string(before) + " then " + std::to_string(after) + " (" + std::to_string(offDb) + " dB off)");
+
+    // A lane with no points is kept but plays nothing: the effect is back at its own value
+    store.editTrack(0).effects[0].automation = {{0, {}}};
+    store.editDevice(daw::DevicePlace::effect(false, 0, 0))->setValue(0, -6.0);
+    bridge.sync(store, options);
+    engine.renderOffline(block.data(), 256, 48000.0);
+    const float own = gain ? gain->param(0) : 0.0f;
+    c.check(gain && std::fabs(own - -6.0f) < 0.01f, "Automation: a lane with no points leaves the parameter its own value",
+            std::to_string(own) + " dB");
+
+    // A plugin's report of an automated parameter isn't written into the project (checked through the
+    // project's compare: the lane counts, not a value)
+    c.check(audio::automated(store.project().tracks[0].instrument.automation, synthParam.id) &&
+                !audio::automated(store.project().tracks[0].effects[0].automation, 0),
+            "Automation: a lane with points is automated, one without isn't");
+    bridge.dropAll();
 }
 
 }
@@ -123,11 +223,19 @@ int runBridgeChecks()
     c.check(bridge.processorsRemoved() == removedBeforeDelete + 1, "Bridge: a delete removes exactly one processor",
             std::to_string(bridge.processorsRemoved() - removedBeforeDelete) + " removed");
 
-    // Undo: the project as it was before the delete (its ids kept). Tracks 0, 2, 3 keep their processors
-    // at their indexes; only the restored track 1 is new
+    // Undo, through the history as DawApp does it (a structural plan, so the store replaces the project): the
+    // project as it was before the delete (its ids kept). Tracks 0, 2, 3 keep their processors at their
+    // indexes; only the restored track 1 is new
+    daw::History history;
+    history.reset(beforeDelete);
+    history.update(store, true, false, 1.0);
     const uint64_t madeBeforeUndo = bridge.processorsMade();
     const uint64_t removedBeforeUndo = bridge.processorsRemoved();
-    store.replace(beforeDelete);
+    daw::HistoryRestore undoDelete;
+    const bool deleteUndone = history.undo(store, 2.0, undoDelete);
+    store.restore(std::move(undoDelete));
+    history.adopt(store);
+    c.check(deleteUndone && store.project().tracks.size() == beforeDelete.tracks.size(), "Bridge: the history undoes the delete");
     bridge.sync(store, options);
     const Processors afterUndo = processorsOf(bridge, 4);
     c.check(afterUndo[0] == first[0] && afterUndo[2] == first[2] && afterUndo[3] == first[3],
@@ -203,8 +311,39 @@ int runBridgeChecks()
     c.check(bridge.processorsMade() == madeBeforeAdd + 1 && bridge.processorsRemoved() == removedBeforeAdd,
             "Bridge: an added track makes exactly one processor");
 
-    std::printf("\n%s: %d failed\n", c.failures == 0 ? "All passed" : "FAILED", c.failures);
-    return c.failures;
+    // Undoing a one-note edit on one track: the bridge sends that track's notes again and no other's, and
+    // makes and removes no processor
+    {
+        const int instrument = static_cast<int>(
+            std::find_if(store.project().tracks.begin(), store.project().tracks.end(),
+                         [](const daw::Track &t) { return t.kind == daw::TrackKind::Instrument; }) -
+            store.project().tracks.begin());
+        daw::Note note;
+        note.start = 0.5;
+        store.editClip(instrument, 0).notes.push_back(note);
+        bridge.sync(store, options);
+        daw::History noteHistory;
+        noteHistory.reset(store.project());
+        store.editClip(instrument, 0).notes[0].start = 2.0;
+        noteHistory.update(store, true, false, 1.0);
+        bridge.sync(store, options);
+        const uint64_t sent = bridge.sequencesSent(), made = bridge.processorsMade(), removed = bridge.processorsRemoved();
+        daw::HistoryRestore plan;
+        const bool undone = noteHistory.undo(store, 2.0, plan);
+        store.restore(std::move(plan));
+        noteHistory.adopt(store);
+        bridge.sync(store, options);
+        c.check(undone && store.project().tracks[static_cast<size_t>(instrument)].clips[0].notes[0].start == 0.5,
+                "Bridge: undoing a note edit puts the note back");
+        c.check(bridge.sequencesSent() == sent + 1, "Bridge: undoing a one-note edit sends only that track's notes",
+                std::to_string(bridge.sequencesSent() - sent) + " sent");
+        c.check(bridge.processorsMade() == made && bridge.processorsRemoved() == removed,
+                "Bridge: undoing a one-note edit makes and removes no processor");
+    }
+
+    automationChecks(c, engine, bridge, options);
+
+    return c.finish("bridge");
 }
 
 }

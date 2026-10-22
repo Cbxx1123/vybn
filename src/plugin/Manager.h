@@ -37,6 +37,7 @@ struct ScanStats {
     size_t files = 0;   // .clap files found
     size_t scanned = 0; // loaded in a host to be scanned
     size_t cached = 0;  // taken from the cache
+    size_t probed = 0;  // effect plugins whose sidechain port was asked after the scan (each in a host of its own)
 };
 
 // A scanned file, as the cache keeps it
@@ -89,6 +90,9 @@ public:
     std::vector<Descriptor> plugins() const;
     std::vector<ScanProblem> problems() const;
     bool find(const std::string &id, Descriptor &out) const;
+    // A plugin's sidechain input channels (1 or 2) as the probe after the scan found them, 0 for none, an
+    // instrument, an unknown id or a plugin whose probe failed; no copy, so it is cheap to ask every frame
+    uint32_t sidechainChannels(const std::string &id) const;
 
     // Makes an instance of plugin `id` in a host of its own. Blocks while the host starts and
     // loads it, so call it from a job. The manager watches it until the last holder lets go.

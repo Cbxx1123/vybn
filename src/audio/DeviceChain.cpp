@@ -159,18 +159,101 @@ void DeviceChain::apply(const DeviceSetting &instrument, const std::vector<Devic
     for (size_t i = 0; i < n; ++i)
         effects_[i]->applySetting(effects[i]);
 
-    auto fresh = std::make_unique<Layout>();
-    fresh->instrument = instrument_.get();
-    for (size_t i = 0; i < n; ++i)
-        fresh->effects[i] = effects_[i].get();
-    fresh->count = n;
-    published_.store(fresh.get(), std::memory_order_release);
-    retired_.push_back({std::move(layout_), nullptr, stamp});
-    layout_ = std::move(fresh);
+    // The curves of devices that went go with them; those kept keep theirs
+    for (const auto &effect : old)
+        curves_.erase(effect.get());
+    for (const auto &device : gone)
+        curves_.erase(device.get());
+    publish(stamp);
     for (auto &effect : old)
         retire(std::move(effect), stamp);
     for (auto &device : gone)
         retire(std::move(device), stamp);
+}
+
+void DeviceChain::publish(uint64_t stamp)
+{
+    auto curvesOf = [this](const Device *device) -> std::shared_ptr<const AutomationCurves> {
+        const auto found = curves_.find(device);
+        return found != curves_.end() ? found->second : nullptr;
+    };
+    auto fresh = std::make_unique<Layout>();
+    fresh->instrument = instrument_.get();
+    fresh->instrumentCurves = curvesOf(instrument_.get());
+    for (size_t i = 0; i < effects_.size(); ++i) {
+        fresh->effects[i] = effects_[i].get();
+        fresh->effectCurves[i] = curvesOf(effects_[i].get());
+    }
+    fresh->count = effects_.size();
+    fresh->mixCurves = mixCurves_;
+    published_.store(fresh.get(), std::memory_order_release);
+    retired_.push_back({std::move(layout_), nullptr, stamp});
+    layout_ = std::move(fresh);
+}
+
+void DeviceChain::setAutomation(const std::vector<std::pair<const Device *, AutomationCurves>> &devices, AutomationCurves mix)
+{
+    curves_.clear();
+    for (const auto &[device, curves] : devices) {
+        if (device && !curves.empty())
+            curves_[device] = std::make_shared<const AutomationCurves>(curves);
+    }
+    mixCurves_ = mix.empty() ? nullptr : std::make_shared<const AutomationCurves>(std::move(mix));
+    publish(blocks_.load(std::memory_order_acquire));
+}
+
+namespace {
+
+// Sets a device's automated parameters for a block starting at `beat`
+void automateDevice(Device &device, const AutomationCurves &curves, double beat)
+{
+    for (const AutomationCurve &curve : curves)
+        device.automate(curve.param, curve.valueAt(beat));
+}
+
+}
+
+void DeviceChain::automateInstrument(const TransportState &transport) const
+{
+    const Layout *layout = published_.load(std::memory_order_acquire);
+    if (layout && layout->instrument && layout->instrumentCurves)
+        automateDevice(*layout->instrument, *layout->instrumentCurves, transport.beatAt(0));
+}
+
+void DeviceChain::automateMix(const TransportState &transport, float &gain, float &pan) const
+{
+    const Layout *layout = published_.load(std::memory_order_acquire);
+    if (!layout || !layout->mixCurves)
+        return;
+    const double beat = transport.beatAt(0);
+    for (const AutomationCurve &curve : *layout->mixCurves) {
+        if (curve.param == kVolumeParam)
+            gain = static_cast<float>(curve.valueAt(beat));
+        else if (curve.param == kPanParam)
+            pan = static_cast<float>(curve.valueAt(beat));
+    }
+}
+
+bool DeviceChain::automateMixParam(const TransportState &transport, uint32_t param, float &value) const
+{
+    const Layout *layout = published_.load(std::memory_order_acquire);
+    if (!layout || !layout->mixCurves)
+        return false;
+    for (const AutomationCurve &curve : *layout->mixCurves) {
+        if (curve.param == param) {
+            value = static_cast<float>(curve.valueAt(transport.beatAt(0)));
+            return true;
+        }
+    }
+    return false;
+}
+
+void DeviceChain::setKey(size_t effect, const float *left, const float *right)
+{
+    if (effect < kMaxEffects) {
+        keyLeft_[effect] = left;
+        keyRight_[effect] = right;
+    }
 }
 
 void DeviceChain::collect()
@@ -195,12 +278,25 @@ InstrumentDevice *DeviceChain::liveInstrument() const
 void DeviceChain::process(float *left, float *right, uint32_t frames, const TransportState *transport)
 {
     const Layout *layout = published_.load(std::memory_order_acquire);
-    for (size_t i = 0; layout && i < layout->count; ++i)
+    for (size_t i = 0; layout && i < layout->count; ++i) {
+        if (transport && layout->effectCurves[i])
+            automateDevice(*layout->effects[i], *layout->effectCurves[i], transport->beatAt(0));
+        layout->effects[i]->setKey(keyLeft_[i], keyRight_[i]);
         layout->effects[i]->run(left, right, frames, transport);
+        layout->effects[i]->setKey(nullptr, nullptr);
+    }
+    keyLeft_.fill(nullptr);
+    keyRight_.fill(nullptr);
     blocks_.fetch_add(1, std::memory_order_release);
 }
 
 // ChainInstrument
+
+void ChainInstrument::automateBlock(const TransportState &transport)
+{
+    if (const DeviceChain *chain = chain_.load(std::memory_order_acquire))
+        chain->automateInstrument(transport);
+}
 
 void ChainInstrument::beginBlock()
 {

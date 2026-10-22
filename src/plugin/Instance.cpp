@@ -181,6 +181,30 @@ std::unique_ptr<Instance> Instance::create(const Descriptor &plugin, const Sandb
     return instance;
 }
 
+bool Instance::probeSidechain(const std::string &path, const std::string &id, const SandboxOptions &options, uint32_t &channels,
+                              std::string &error)
+{
+    Instance instance;
+    SandboxOptions sandbox = options;
+    sandbox.readable.push_back(path);
+    if (!instance.start(sandbox, error))
+        return false;
+    Writer w;
+    w.str(path);
+    w.str(id);
+    std::string reply;
+    if (!instance.call(Message::Probe, w.data, reply, 10000, error))
+        return false;
+    Reader r(reply);
+    channels = r.u32();
+    if (!r.ok()) {
+        error = "The plugin host answered nonsense";
+        return false;
+    }
+    channels = channels == 1 || channels == 2 ? channels : 0;
+    return true;
+}
+
 bool Instance::scan(const std::string &path, const SandboxOptions &options, std::vector<Descriptor> &found, std::string &error)
 {
     Instance instance;
@@ -705,6 +729,11 @@ bool Instance::process(const ProcessBlock &block)
     for (uint32_t c = 0; c < inputs; ++c)
         std::memcpy(s.input[c], block.inputs[c], block.frames * sizeof(float));
     s.inputChannels = inputs;
+    // The key only when there is one: its copy costs nothing otherwise
+    const uint32_t keys = block.keys ? std::min(block.keyChannels, kMaxChannels) : 0;
+    for (uint32_t c = 0; c < keys; ++c)
+        std::memcpy(s.key[c], block.keys[c], block.frames * sizeof(float));
+    s.keyChannels = keys;
     s.frames = block.frames;
     s.transport = block.transport;
     const uint32_t events = std::min(block.eventCount, kMaxBlockEvents);
@@ -775,6 +804,11 @@ std::unique_ptr<Instance> Instance::create(const Descriptor &, const SandboxOpti
 {
     error = "Plugins are only hosted on Windows for now";
     return nullptr;
+}
+bool Instance::probeSidechain(const std::string &, const std::string &, const SandboxOptions &, uint32_t &, std::string &error)
+{
+    error = "Plugins are only hosted on Windows for now";
+    return false;
 }
 bool Instance::scan(const std::string &, const SandboxOptions &, std::vector<Descriptor> &, std::string &error)
 {

@@ -23,6 +23,9 @@ public:
     virtual void noteOff(int key) = 0;
     // Releases every sounding note (the transport stopped or jumped)
     virtual void allNotesOff() = 0;
+    // Audio thread, at the start of each block before beginBlock: an instrument whose parameters
+    // follow automation sets them for the block here, from the transport's position
+    virtual void automateBlock(const TransportState & /*transport*/) {}
     // Audio thread, at the start of each block before any notes: pick up changes from the main
     // thread here (a new sample set, say)
     virtual void beginBlock() {}

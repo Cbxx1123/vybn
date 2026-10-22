@@ -8,7 +8,8 @@
 namespace daw {
 
 // The loading screen: a small card in the middle of the screen with the app's logo (a raised disc
-// with a waveform), its name, and a dot that swoops round the logo in a groove, fast round the
+// with a waveform, drawn by drawLogoMark: the same mark as the app's icon, see AppIcon.h), its name,
+// and a dot that swoops round the logo in a groove, fast round the
 // bottom and slow over the top, its trail stretching and gathering with its speed. It shows the
 // moment the app starts, so there is no blank window while the app loads, and fades out once the
 // main window is on screen (close; the destructor waits for that).

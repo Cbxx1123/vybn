@@ -7,24 +7,32 @@
 #include <memory>
 #include <string>
 
-// Encoders for exports: WAV, AIFF and FLAC files written as the audio streams in. Memory stays
+// Encoders for exports: WAV, AIFF, FLAC and MP3 files written as the audio streams in. Memory stays
 // bounded whatever the length (FLAC holds one block), and every file is written to `<path>.part`
 // and renamed over `path` when it is closed, so a failed export never leaves a half file behind
 // under the real name. FLAC is our own encoder (RFC 9639): fixed predictors of orders 0-4 with
 // partitioned Rice codes, and the best of independent, left-side, right-side and mid-side stereo
-// for each block.
+// for each block. MP3 is the system's encoder (Mp3Encoder.h), with our metadata merged into its tag.
 
 namespace audio {
 
 // The container and sample format an encoder writes. Integers are 16 or 24 bits; 32 is 32-bit
-// float (WAV only). AIFF takes 16 or 24 bits, FLAC 16 or 24 bits.
+// float (WAV only). AIFF takes 16 or 24 bits, FLAC 16 or 24 bits. MP3 takes 16 bits (what the
+// encoder is given), mono or stereo at 32, 44.1 or 48 kHz, at one of kMp3Bitrates.
 struct EncodeFormat {
-    enum Container { Wav, Aiff, Flac };
+    enum Container { Wav, Aiff, Flac, Mp3 };
     Container container = Wav;
     int bits = 24;
     uint32_t sampleRate = 48000;
     uint32_t channels = 2;
+    int bitrate = 320; // kbps, MP3 only
 };
+
+// The bitrates and sample rates an MP3 can be written at. A mono one is written at no more than
+// kMp3MonoMaxBitrate (the system's encoder goes no higher for one channel).
+constexpr int kMp3Bitrates[] = {96, 112, 128, 160, 192, 224, 256, 320};
+constexpr uint32_t kMp3Rates[] = {32000, 44100, 48000};
+constexpr int kMp3MonoMaxBitrate = 128;
 
 // Text stored in the file. Empty fields are left out; `software` names the encoder.
 struct AudioMetadata {

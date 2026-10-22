@@ -1,0 +1,12 @@
+// The executable's icon: the app's mark in the default look (Carbon, dark), as Explorer, the taskbar
+// before the window has made its own, and Alt-Tab show it. The file is assets/icon/vibin.ico, made by
+//   output/main --write-icon assets/icon/vibin.ico
+// from the same drawing as the loading screen (src/daw/AppIcon.cpp); once running, the window's icon
+// follows the user's theme (DawApp::refreshWindowIcon).
+//
+// CMake fills in the path (configure_file) and compiles this with windres.
+//
+// Explorer shows the icon group with the lowest id (1); GLFW gives its windows' class the one named
+// GLFW_ICON, so a window has it from the moment it exists. Both are the same file.
+1 ICON "@VIBIN_ICON_FILE@"
+GLFW_ICON ICON "@VIBIN_ICON_FILE@"

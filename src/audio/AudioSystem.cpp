@@ -1,4 +1,5 @@
 #include "AudioSystem.h"
+#include "Track.h"
 
 #include <algorithm>
 #include <chrono>
@@ -81,6 +82,10 @@ void AudioSystem::reserveBuffers()
         channel.assign(kMaxBlock, 0.0f);
     for (auto &channel : inputScratch_)
         channel.assign(kMaxBlock, 0.0f);
+    for (auto &key : masterKey_) {
+        for (auto &channel : key)
+            channel.assign(kMaxBlock, 0.0f);
+    }
 }
 
 AudioSystem::~AudioSystem()
@@ -148,6 +153,30 @@ void AudioSystem::remove(AudioProcessor &processor)
     }
 }
 
+void AudioSystem::setRouting(std::unique_ptr<Routing> routing)
+{
+    if (routing)
+        routing->finish();
+    const uint64_t sequence = ++routingsSent_;
+    const Routing *raw = routing.get();
+    if (routing)
+        routings_.push_back({sequence, std::move(routing)});
+    while (!commands_.push({Command::Type::Route, nullptr, raw, sequence}))
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (!running_)
+        applyCommandsHere();
+    deleteRoutings();
+}
+
+void AudioSystem::deleteRoutings()
+{
+    // Those before the one the audio thread took last are never read again
+    const uint64_t applied = routingApplied_.load(std::memory_order_acquire);
+    routings_.erase(std::remove_if(routings_.begin(), routings_.end(),
+                                   [applied](const SentRouting &r) { return r.sequence < applied; }),
+                    routings_.end());
+}
+
 void AudioSystem::applyCommandsHere()
 {
     // Only while no audio thread is consuming the queue: this thread plays both sides
@@ -156,6 +185,7 @@ void AudioSystem::applyCommandsHere()
 
 void AudioSystem::deleteRetired()
 {
+    deleteRoutings();
     AudioProcessor *processor = nullptr;
     while (retired_.pop(processor)) {
         owned_.erase(std::remove_if(owned_.begin(), owned_.end(),
@@ -364,6 +394,15 @@ void AudioSystem::applyCommands()
     Command command;
     bool changed = false;
     while (commands_.pop(command)) {
+        if (command.type == Command::Type::Route) {
+            routing_ = command.routing;
+            routingApplied_.store(command.sequence, std::memory_order_release);
+            continue;
+        }
+        // A routing naming a processor that leaves would read it after it is deleted: mix as with none
+        // until the next one (setRouting's callers replace it first, so this is only a safety)
+        if (command.type == Command::Type::Remove && routing_ && routing_->contains(command.processor))
+            routing_ = nullptr;
         if (command.type == Command::Type::Add) {
             // Full graph: drop it (it stays owned, and is deleted with the system)
             if (active_.size() < active_.capacity())
@@ -388,6 +427,34 @@ void AudioSystem::applyCommands()
     }
 }
 
+void AudioSystem::routedJob(void *context, uint32_t index)
+{
+    auto *job = static_cast<RoutedBlock *>(context);
+    const Route &route = job->routes[index];
+    route.track->renderRouted(*job->block, route);
+}
+
+void AudioSystem::renderRouted(AudioBlock &block)
+{
+    // Stage by stage: the stage's tracks at once across the pool (a lone one here; each bus taking in
+    // what feeds it), then those that go to the master added into it in order
+    uint32_t begin = 0;
+    for (const uint32_t end : routing_->stageEnds) {
+        const uint32_t count = end - begin;
+        RoutedBlock job{routing_->routes.data() + begin, &block};
+        if (pool_ && count > 1)
+            pool_->run(count, &AudioSystem::routedJob, &job);
+        else
+            for (uint32_t p = 0; p < count; ++p)
+                routedJob(&job, p);
+        for (uint32_t r = begin; r < end; ++r) {
+            if (!routing_->routes[r].output)
+                routing_->routes[r].track->mixInto(block);
+        }
+        begin = end;
+    }
+}
+
 void AudioSystem::render(float *out, uint32_t frames, double sampleRate, const float *input, uint32_t inputStride)
 {
     const uint32_t inputs = std::min(inputStride, kMaxInputs);
@@ -399,6 +466,8 @@ void AudioSystem::render(float *out, uint32_t frames, double sampleRate, const f
     if (sampleRate != preparedRate_) {
         gain_.prepare(sampleRate);
         gain_.reset(masterGain_.get());
+        volume_.prepare(sampleRate);
+        volume_.reset(masterVolume_.get());
         preparedRate_ = sampleRate;
     }
 
@@ -436,7 +505,9 @@ void AudioSystem::render(float *out, uint32_t frames, double sampleRate, const f
             if (!processor->parallel())
                 processor->process(block);
         }
-        if (!parallel_.empty()) {
+        if (routing_) {
+            renderRouted(block);
+        } else if (!parallel_.empty()) {
             ParallelBlock job{parallel_.data(), &block};
             if (pool_)
                 pool_->run(static_cast<uint32_t>(parallel_.size()), &AudioSystem::renderJob, &job);
@@ -447,13 +518,29 @@ void AudioSystem::render(float *out, uint32_t frames, double sampleRate, const f
                 processor->mixInto(block);
         }
 
+        // The master's sidechains: tracks' sound read once every stage has rendered
+        if (routing_) {
+            uint32_t k = 0;
+            for (const KeyFeed &key : routing_->masterKeys) {
+                if (k >= kMaxMasterKeys)
+                    break;
+                if (!key.from)
+                    continue;
+                key.from->readKey(key.delay, n, masterKey_[k][0].data(), masterKey_[k][1].data());
+                masterEffects_.setKey(key.effect, masterKey_[k][0].data(), masterKey_[k][1].data());
+                ++k;
+            }
+        }
         masterEffects_.process(scratch_[0].data(), scratch_[1].data(), n, &state);
 
-        // Master gain, metering, and interleaving into the device's buffer
+        // Master volume and gain, metering, and interleaving into the device's buffer
         const float target = masterGain_.get();
+        // The master volume at the block's start: its automation's, once the project has made some
+        float volume = masterVolume_.get();
+        masterEffects_.automateMixParam(state, kVolumeParam, volume);
         float *o = out + static_cast<size_t>(done) * kChannels;
         for (uint32_t i = 0; i < n; ++i) {
-            const float g = gain_.next(target);
+            const float g = gain_.next(target) * volume_.next(volume);
             for (uint32_t c = 0; c < kChannels; ++c) {
                 const float v = scratch_[c][i] * g;
                 o[i * kChannels + c] = v;

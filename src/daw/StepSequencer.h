@@ -36,15 +36,16 @@ struct StepSequencerHooks {
 //   hooks.addRowMenu.
 // - In the velocity lane drag a step's bar to set its velocity, or across to paint.
 // - The wheel scrolls the rows, Shift-wheel the steps (when they don't all fit; a step is at
-//   least kMinStepWidth wide). Beats are shaded in alternate groups; the step under the playhead
-//   is lit while playing.
-// Drawing follows the Theme only (inset wells for the grid, raised accent-filled pills for steps
-// that are on, brighter by velocity, hollow for muted rows).
+//   least kMinStepWidth wide). The header numbers the bars (and the beats, when they have room);
+//   beats are tinted in alternate groups with a line at each bar; the step under the playhead is
+//   lit, and marked in the header, while playing.
+// Drawing follows the Theme only (an inset well for the grid, flat tints for steps that are off,
+// raised accent-filled pills for steps that are on, brighter by velocity, hollow for muted rows).
 class StepSequencerView : public ui::Component {
 public:
-    static constexpr float kNameWidth = 112.0f;
-    static constexpr float kHeaderHeight = 22.0f;
-    static constexpr float kRowHeight = 26.0f;
+    static constexpr float kNameWidth = 136.0f;
+    static constexpr float kHeaderHeight = 24.0f;
+    static constexpr float kRowHeight = 28.0f;
     static constexpr float kLaneHeight = 64.0f;
     static constexpr float kMinStepWidth = 18.0f;
 

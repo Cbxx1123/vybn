@@ -1,5 +1,7 @@
 #include "History.h"
 
+#include "ProjectStore.h"
+
 #include <algorithm>
 #include <set>
 #include <utility>
@@ -56,11 +58,18 @@ bool identicalClip(const Clip &a, const Clip &b)
     return true;
 }
 
+// Everything about a track but its clips that the history compares
+bool sameTrackFields(const Track &a, const Track &b)
+{
+    return a.name == b.name && a.kind == b.kind && a.gain == b.gain && a.pan == b.pan && a.mute == b.mute &&
+           a.solo == b.solo && a.instrument == b.instrument && a.inputChannel == b.inputChannel &&
+           a.inputStereo == b.inputStereo && a.effects == b.effects && a.automation == b.automation &&
+           a.output == b.output && a.sends == b.sends;
+}
+
 bool sameTrack(const Track &a, const Track &b)
 {
-    if (a.name != b.name || a.kind != b.kind || a.gain != b.gain || a.pan != b.pan || a.mute != b.mute ||
-        a.solo != b.solo || a.instrument != b.instrument || a.inputChannel != b.inputChannel ||
-        a.inputStereo != b.inputStereo || a.effects != b.effects || a.clips.size() != b.clips.size())
+    if (!sameTrackFields(a, b) || a.clips.size() != b.clips.size())
         return false;
     for (size_t i = 0; i < a.clips.size(); ++i) {
         if (!sameClip(a.clips[i], b.clips[i]))
@@ -115,8 +124,12 @@ std::string describeEffects(const std::vector<audio::DeviceSetting> &a, const st
         const std::string &name = b[i].name;
         if (a[i].bypass != b[i].bypass)
             return std::string(b[i].bypass ? "Bypass " : "Enable ") + name;
+        if (a[i].sidechain != b[i].sidechain)
+            return "Sidechain";
         if (a[i].values != b[i].values)
             return name + " settings";
+        if (a[i].automation != b[i].automation)
+            return "Edit automation";
     }
     return "Edit effects";
 }
@@ -126,7 +139,8 @@ std::string describeEffects(const std::vector<audio::DeviceSetting> &a, const st
 bool sameContent(const Project &a, const Project &b)
 {
     if (a.name != b.name || a.tempo != b.tempo || a.beatsPerBar != b.beatsPerBar || a.bars != b.bars ||
-        a.masterEffects != b.masterEffects || a.exportPresets != b.exportPresets ||
+        a.masterEffects != b.masterEffects || a.masterVolume != b.masterVolume ||
+        a.masterAutomation != b.masterAutomation || a.exportPresets != b.exportPresets ||
         a.exportMetadata != b.exportMetadata || a.tracks.size() != b.tracks.size())
         return false;
     for (size_t i = 0; i < a.tracks.size(); ++i) {
@@ -141,13 +155,13 @@ namespace {
 // The device fields writeDevice writes: its state only when there is one
 bool sameSavedDevice(const audio::DeviceSetting &a, const audio::DeviceSetting &b)
 {
-    if (a.kind != b.kind || a.id != b.id || a.name != b.name || a.bypass != b.bypass)
+    if (a.kind != b.kind || a.id != b.id || a.name != b.name || a.bypass != b.bypass || a.sidechain != b.sidechain)
         return false;
     const bool stateA = a.state && !a.state->empty();
     const bool stateB = b.state && !b.state->empty();
     if (stateA != stateB || (stateA && *a.state != *b.state))
         return false;
-    return a.values == b.values;
+    return a.values == b.values && a.automation == b.automation;
 }
 
 // A clip as writeProject writes it: an audio track's clips keep their audio, an instrument track's
@@ -186,8 +200,9 @@ bool sameSavedClip(const Clip &a, const Clip &b, bool instrument)
 bool sameSavedTrack(const Track &a, const Track &b)
 {
     if (a.kind != b.kind || a.name != b.name || a.gain != b.gain || a.pan != b.pan || a.mute != b.mute ||
-        a.solo != b.solo || a.armed != b.armed || a.effects.size() != b.effects.size() ||
-        a.clips.size() != b.clips.size())
+        a.solo != b.solo || a.armed != b.armed || a.folded != b.folded || a.effects.size() != b.effects.size() ||
+        a.clips.size() != b.clips.size() || a.automation != b.automation || a.output != b.output ||
+        a.sends != b.sends)
         return false;
     const bool instrument = a.kind == TrackKind::Instrument;
     if (!instrument && (a.inputChannel != b.inputChannel || a.inputStereo != b.inputStereo || a.monitor != b.monitor))
@@ -211,7 +226,8 @@ bool sameSavedTrack(const Track &a, const Track &b)
 bool sameSaved(const Project &a, const Project &b)
 {
     if (a.name != b.name || a.tempo != b.tempo || a.beatsPerBar != b.beatsPerBar || a.bars != b.bars ||
-        a.hasLoop() != b.hasLoop() || a.masterEffects.size() != b.masterEffects.size() ||
+        a.hasLoop() != b.hasLoop() || a.masterEffects.size() != b.masterEffects.size() || a.masterVolume != b.masterVolume ||
+        a.masterAutomation != b.masterAutomation ||
         a.exportPresets != b.exportPresets || a.exportMetadata != b.exportMetadata || a.tracks.size() != b.tracks.size())
         return false;
     if (a.hasLoop() && (a.loopStart != b.loopStart || a.loopEnd != b.loopEnd || a.looping != b.looping))
@@ -254,6 +270,10 @@ std::string describeChange(const Project &a, const Project &b)
         return b.tracks.size() - a.tracks.size() == 1 ? "Add track" : "Add tracks";
     if (b.tracks.size() < a.tracks.size())
         return a.tracks.size() - b.tracks.size() == 1 ? "Delete track" : "Delete tracks";
+    for (size_t i = 0; i < a.tracks.size(); ++i) {
+        if (a.tracks[i].id != b.tracks[i].id)
+            return "Move track";
+    }
     if (a.tempo != b.tempo)
         return "Change tempo";
     if (a.name != b.name || a.beatsPerBar != b.beatsPerBar || a.bars != b.bars)
@@ -261,6 +281,10 @@ std::string describeChange(const Project &a, const Project &b)
 
     if (a.masterEffects != b.masterEffects)
         return describeEffects(a.masterEffects, b.masterEffects, "master");
+    if (a.masterVolume != b.masterVolume)
+        return "Master volume";
+    if (a.masterAutomation != b.masterAutomation)
+        return "Edit automation";
     if (a.exportPresets != b.exportPresets)
         return "Edit export preset";
     if (a.exportMetadata != b.exportMetadata)
@@ -289,6 +313,8 @@ std::string describeChange(const Project &a, const Project &b)
             return "Rename track";
         if (ta.instrument.kind != tb.instrument.kind || ta.instrument.id != tb.instrument.id)
             return tb.hasInstrument() ? "Change instrument" : "Remove instrument";
+        if (ta.instrument.automation != tb.instrument.automation)
+            return "Edit automation";
         if (ta.instrument != tb.instrument)
             return tb.instrument.name + " settings";
         if (ta.gain != tb.gain)
@@ -301,6 +327,14 @@ std::string describeChange(const Project &a, const Project &b)
             return tb.solo ? "Solo track" : "Unsolo track";
         if (ta.inputChannel != tb.inputChannel || ta.inputStereo != tb.inputStereo)
             return "Track input";
+        if (ta.output != tb.output)
+            return "Route track";
+        if (ta.sends.size() != tb.sends.size())
+            return tb.sends.size() > ta.sends.size() ? "Add send" : "Remove send";
+        if (ta.sends != tb.sends)
+            return "Change send";
+        if (ta.automation != tb.automation)
+            return "Edit automation";
         if (ta.effects != tb.effects)
             return describeEffects(ta.effects, tb.effects, "track");
         for (size_t c = 0; c < ta.clips.size(); ++c) {
@@ -344,34 +378,166 @@ std::string describeChange(const Project &a, const Project &b)
     return "Edit";
 }
 
-History::Snapshot History::pack(Project project, const Snapshot *like)
+namespace {
+
+// Track's fields are listed by hand here (shellOf, sameTrackFields) and in ProjectStore::restore, so
+// a field added to Track would quietly drop out of undo. This stops the build when Track's size
+// changes (on the toolchain the project builds with): add the field to those three, then update the size.
+#if defined(__GLIBCXX__) && defined(__x86_64__)
+static_assert(sizeof(Track) == 320, "Track changed: add the new field to shellOf, sameTrackFields and "
+                                     "ProjectStore::restore, then update this size");
+#endif
+
+// A track without its clips. Keep in step with Track: a field left out here is lost from undo.
+Track shellOf(const Track &t)
 {
-    Snapshot s;
-    s.clips.resize(project.tracks.size());
-    for (size_t t = 0; t < project.tracks.size(); ++t) {
-        std::vector<Clip> &clips = project.tracks[t].clips;
-        for (size_t c = 0; c < clips.size(); ++c) {
-            const std::shared_ptr<const Clip> *same = nullptr;
-            if (like && t < like->clips.size() && c < like->clips[t].size() && identicalClip(*like->clips[t][c], clips[c]))
-                same = &like->clips[t][c];
-            s.clips[t].push_back(same ? *same : std::make_shared<const Clip>(std::move(clips[c])));
-        }
-        clips.clear();
-        clips.shrink_to_fit();
-    }
-    s.shell = std::move(project);
+    Track s;
+    s.id = t.id;
+    s.name = t.name;
+    s.kind = t.kind;
+    s.gain = t.gain;
+    s.pan = t.pan;
+    s.mute = t.mute;
+    s.solo = t.solo;
+    s.armed = t.armed;
+    s.folded = t.folded;
+    s.instrument = t.instrument;
+    s.inputChannel = t.inputChannel;
+    s.inputStereo = t.inputStereo;
+    s.monitor = t.monitor;
+    s.effects = t.effects;
+    s.automation = t.automation;
+    s.output = t.output;
+    s.sends = t.sends;
     return s;
+}
+
+// The project's own fields, with no tracks
+Project rootOf(const Project &p)
+{
+    Project r;
+    r.name = p.name;
+    r.tempo = p.tempo;
+    r.beatsPerBar = p.beatsPerBar;
+    r.bars = p.bars;
+    r.loopStart = p.loopStart;
+    r.loopEnd = p.loopEnd;
+    r.looping = p.looping;
+    r.masterEffects = p.masterEffects;
+    r.masterVolume = p.masterVolume;
+    r.masterAutomation = p.masterAutomation;
+    r.exportPresets = p.exportPresets;
+    r.exportMetadata = p.exportMetadata;
+    r.selectedTrack = p.selectedTrack;
+    r.selectedClip = p.selectedClip;
+    return r;
+}
+
+// The same shell, ids, arming, folding and monitoring included: safe to share between snapshots
+bool identicalShell(const Track &a, const Track &b)
+{
+    return sameTrackFields(a, b) && a.id == b.id && a.armed == b.armed && a.folded == b.folded && a.monitor == b.monitor;
+}
+
+// Whether the project's own fields (all but the tracks and the selection) differ from the shell's
+bool fieldsDiffer(const Project &project, const Project &shell, bool master)
+{
+    return project.name != shell.name || project.tempo != shell.tempo || project.beatsPerBar != shell.beatsPerBar ||
+           project.bars != shell.bars || project.exportPresets != shell.exportPresets ||
+           project.exportMetadata != shell.exportMetadata || (master && (project.masterEffects != shell.masterEffects || project.masterVolume != shell.masterVolume ||
+                                                    project.masterAutomation != shell.masterAutomation));
+}
+
+// The fields editMix covers, less arming, folding and monitoring (which undo leaves as they are)
+bool sameMixFields(const Track &a, const Track &b)
+{
+    return a.name == b.name && a.gain == b.gain && a.pan == b.pan && a.mute == b.mute && a.solo == b.solo &&
+           a.inputChannel == b.inputChannel && a.inputStereo == b.inputStereo && a.output == b.output &&
+           a.sends == b.sends;
+}
+
+}
+
+bool History::sameEntry(const TrackEntry &entry, const Track &track)
+{
+    if (!entry.shell || !sameTrackFields(*entry.shell, track) || entry.clips.size() != track.clips.size())
+        return false;
+    for (size_t i = 0; i < track.clips.size(); ++i) {
+        if (!sameClip(*entry.clips[i], track.clips[i]))
+            return false;
+    }
+    return true;
+}
+
+void History::syncEntry(TrackEntry &entry, const Track &track)
+{
+    if (!entry.shell || !identicalShell(*entry.shell, track))
+        entry.shell = std::make_shared<const Track>(shellOf(track));
+    entry.clips.resize(track.clips.size());
+    for (size_t c = 0; c < track.clips.size(); ++c) {
+        if (!entry.clips[c] || !identicalClip(*entry.clips[c], track.clips[c]))
+            entry.clips[c] = std::make_shared<const Clip>(track.clips[c]);
+    }
+}
+
+Track History::unpackTrack(const TrackEntry &entry)
+{
+    Track track = *entry.shell;
+    track.clips.reserve(entry.clips.size());
+    for (const auto &clip : entry.clips)
+        track.clips.push_back(*clip);
+    return track;
 }
 
 Project History::unpack(const Snapshot &snapshot)
 {
     Project project = snapshot.shell;
-    for (size_t t = 0; t < project.tracks.size() && t < snapshot.clips.size(); ++t) {
-        project.tracks[t].clips.reserve(snapshot.clips[t].size());
-        for (const auto &clip : snapshot.clips[t])
-            project.tracks[t].clips.push_back(*clip);
-    }
+    project.tracks.reserve(snapshot.tracks.size());
+    for (const TrackEntry &entry : snapshot.tracks)
+        project.tracks.push_back(unpackTrack(entry));
     return project;
+}
+
+HistoryRestore History::makePlan(const Snapshot &from, const Snapshot &to, const std::string &label)
+{
+    HistoryRestore plan;
+    plan.label = label;
+    // The tracks coming, going or moving (or changing kind) can only be applied by replacing the project
+    bool structural = from.tracks.size() != to.tracks.size();
+    for (size_t i = 0; i < from.tracks.size() && !structural; ++i)
+        structural = from.tracks[i].shell->id != to.tracks[i].shell->id || from.tracks[i].shell->kind != to.tracks[i].shell->kind;
+    plan.tempo = from.shell.tempo != to.shell.tempo;
+    if (structural) {
+        plan.structural = true;
+        plan.tempo = true;
+        plan.project = unpack(to);
+        return plan;
+    }
+    plan.project = rootOf(to.shell);
+    plan.settings = from.shell.name != to.shell.name || from.shell.beatsPerBar != to.shell.beatsPerBar || from.shell.bars != to.shell.bars;
+    plan.presets = from.shell.exportPresets != to.shell.exportPresets;
+    plan.metadata = from.shell.exportMetadata != to.shell.exportMetadata;
+    plan.master = from.shell.masterEffects != to.shell.masterEffects || from.shell.masterVolume != to.shell.masterVolume ||
+                   from.shell.masterAutomation != to.shell.masterAutomation;
+    plan.selection = from.shell.selectedTrack != to.shell.selectedTrack || from.shell.selectedClip != to.shell.selectedClip;
+    // Only the tracks whose parts differ, found by pointer and confirmed by comparing where they do
+    for (size_t i = 0; i < from.tracks.size(); ++i) {
+        const TrackEntry &a = from.tracks[i];
+        const TrackEntry &b = to.tracks[i];
+        bool content = false, mix = false;
+        if (a.shell != b.shell) {
+            mix = !sameMixFields(*a.shell, *b.shell);
+            content = a.shell->instrument != b.shell->instrument || a.shell->effects != b.shell->effects ||
+                      a.shell->automation != b.shell->automation;
+        }
+        if (a.clips.size() != b.clips.size())
+            content = true;
+        for (size_t c = 0; c < a.clips.size() && !content; ++c)
+            content = a.clips[c] != b.clips[c] && !identicalClip(*a.clips[c], *b.clips[c]);
+        if (content || mix)
+            plan.tracks.push_back({i, unpackTrack(b), content, mix});
+    }
+    return plan;
 }
 
 size_t History::storedClips() const
@@ -379,8 +545,8 @@ size_t History::storedClips() const
     std::set<const Clip *> clips;
     for (const auto *steps : {&undo_, &redo_}) {
         for (const Step &step : *steps) {
-            for (const auto &track : step.snapshot.clips) {
-                for (const auto &clip : track)
+            for (const TrackEntry &track : step.snapshot.tracks) {
+                for (const auto &clip : track.clips)
                     clips.insert(clip.get());
             }
         }
@@ -388,63 +554,262 @@ size_t History::storedClips() const
     return clips.size();
 }
 
+size_t History::storedBytes() const
+{
+    std::set<const Clip *> clips;
+    std::set<const Track *> shells;
+    size_t bytes = 0;
+    for (const auto *steps : {&undo_, &redo_}) {
+        for (const Step &step : *steps) {
+            bytes += sizeof(Step) + sizeof(Project) + step.label.size();
+            for (const TrackEntry &track : step.snapshot.tracks) {
+                bytes += sizeof(TrackEntry) + track.clips.size() * sizeof(std::shared_ptr<const Clip>);
+                if (shells.insert(track.shell.get()).second)
+                    bytes += sizeof(Track) + track.shell->effects.size() * sizeof(audio::DeviceSetting);
+                for (const auto &clip : track.clips) {
+                    if (clips.insert(clip.get()).second)
+                        bytes += sizeof(Clip) + clip->notes.size() * sizeof(Note);
+                }
+            }
+        }
+    }
+    return bytes;
+}
+
+bool History::matches(const Project &project) const
+{
+    if (fieldsDiffer(project, state_.shell, true) || project.tracks.size() != state_.tracks.size())
+        return false;
+    for (size_t i = 0; i < project.tracks.size(); ++i) {
+        if (!sameEntry(state_.tracks[i], project.tracks[i]))
+            return false;
+    }
+    return true;
+}
+
+const Project &History::current() const
+{
+    currentCache_ = unpack(state_);
+    return currentCache_;
+}
+
+void History::sync(const Project &project, const std::vector<char> &moved, bool structure, bool fields, bool master)
+{
+    Project &shell = state_.shell;
+    if (fields) {
+        shell.name = project.name;
+        shell.tempo = project.tempo;
+        shell.beatsPerBar = project.beatsPerBar;
+        shell.bars = project.bars;
+        shell.loopStart = project.loopStart;
+        shell.loopEnd = project.loopEnd;
+        shell.looping = project.looping;
+        shell.exportPresets = project.exportPresets;
+        shell.exportMetadata = project.exportMetadata;
+    }
+    if (master) {
+        shell.masterEffects = project.masterEffects;
+        shell.masterVolume = project.masterVolume;
+        shell.masterAutomation = project.masterAutomation;
+    }
+    shell.selectedTrack = project.selectedTrack;
+    shell.selectedClip = project.selectedClip;
+    if (structure) {
+        // Tracks may have come, gone or moved: each takes the old entry with its id, so what didn't
+        // change is still shared
+        std::vector<TrackEntry> old = std::move(state_.tracks);
+        state_.tracks.assign(project.tracks.size(), TrackEntry());
+        for (size_t i = 0; i < project.tracks.size(); ++i) {
+            const Track &track = project.tracks[i];
+            const TrackEntry *from = i < old.size() ? &old[i] : nullptr;
+            if (track.id != kNoId) {
+                for (const TrackEntry &entry : old) {
+                    if (entry.shell && entry.shell->id == track.id) {
+                        from = &entry;
+                        break;
+                    }
+                }
+            }
+            if (from)
+                state_.tracks[i] = *from;
+            syncEntry(state_.tracks[i], track);
+        }
+        return;
+    }
+    for (size_t i = 0; i < project.tracks.size(); ++i) {
+        if (moved[i])
+            syncEntry(state_.tracks[i], project.tracks[i]);
+    }
+}
+
+void History::markSeen(const ProjectStore *store)
+{
+    known_ = store != nullptr;
+    if (!store)
+        return;
+    structureSeen_ = store->structureRevision();
+    revisionSeen_ = store->revision();
+    masterSeen_ = store->masterRevision();
+    const size_t count = state_.tracks.size();
+    trackSeen_.resize(count);
+    mixSeen_.resize(count);
+    for (size_t i = 0; i < count; ++i) {
+        trackSeen_[i] = store->trackRevision(static_cast<int>(i));
+        mixSeen_[i] = store->mixRevision(static_cast<int>(i));
+    }
+}
+
+void History::adopt(const ProjectStore &store)
+{
+    pending_ = false;
+    // Only when the store has the tracks the state has; otherwise the next look compares everything
+    if (store.project().tracks.size() == state_.tracks.size())
+        markSeen(&store);
+    else
+        known_ = false;
+}
+
 void History::reset(const Project &project)
 {
-    state_ = project;
+    state_ = Snapshot();
+    sync(project, std::vector<char>(project.tracks.size(), 1), true, true, true);
     undo_.clear();
     redo_.clear();
     lastTime_ = -1e9;
+    known_ = false;
+    pending_ = false;
+}
+
+History::Compare History::compare(const Project &project, const ProjectStore *store) const
+{
+    const size_t count = project.tracks.size();
+    Compare c;
+    c.moved.assign(count, 1);
+    // What needs comparing: with revisions to go by, the tracks whose revisions moved since the last
+    // state recorded; otherwise, or once the structure moved, all of them
+    if (store && known_ && count == state_.tracks.size() && trackSeen_.size() == count &&
+        store->structureRevision() == structureSeen_) {
+        c.structure = false;
+        c.fields = store->revision() != revisionSeen_;
+        c.master = store->masterRevision() != masterSeen_;
+        for (size_t i = 0; i < count; ++i) {
+            c.moved[i] = store->trackRevision(static_cast<int>(i)) != trackSeen_[i] ||
+                         store->mixRevision(static_cast<int>(i)) != mixSeen_[i];
+        }
+    }
+    c.differs = (c.fields && fieldsDiffer(project, state_.shell, c.master)) || count != state_.tracks.size();
+    for (size_t i = 0; i < count && !c.differs; ++i)
+        c.differs = c.moved[i] && !sameEntry(state_.tracks[i], project.tracks[i]);
+    return c;
+}
+
+bool History::look(const Project &project, const ProjectStore *store, bool settled, bool canMerge, double now)
+{
+    if (pending_ && !settled)
+        return false; // a difference is already seen; nothing can change until the settled frame
+    const Compare c = compare(project, store);
+    if (c.differs) {
+        if (!settled) {
+            pending_ = true;
+            return false;
+        }
+        std::string label;
+        if (!c.structure) {
+            // The same tracks in the same order: only the ones that moved can differ, so the label is
+            // found from those alone (the rest would add nothing to it)
+            Project before = rootOf(state_.shell);
+            Project after = rootOf(project);
+            for (size_t i = 0; i < c.moved.size(); ++i) {
+                if (c.moved[i]) {
+                    before.tracks.push_back(unpackTrack(state_.tracks[i]));
+                    after.tracks.push_back(project.tracks[i]);
+                }
+            }
+            label = describeChange(before, after);
+        } else {
+            label = describeChange(unpack(state_), project);
+        }
+        const bool merge = canMerge && !undo_.empty() && undo_.back().label == label && now - lastTime_ < 0.5;
+        if (!merge) {
+            undo_.push_back({state_, std::move(label)});
+            if (undo_.size() > kMaxSteps)
+                undo_.erase(undo_.begin());
+        }
+        redo_.clear();
+        lastTime_ = now;
+    }
+    // The state recorded takes in the change, or, when only the selection moved, just that: remembered,
+    // so undo puts it back as it was before the edit
+    sync(project, c.moved, c.structure, c.fields, c.master);
+    markSeen(store);
+    pending_ = false;
+    return c.differs;
+}
+
+bool History::update(const ProjectStore &store, bool settled, bool canMerge, double now)
+{
+    return look(store.project(), &store, settled, canMerge, now);
 }
 
 bool History::update(const Project &project, bool settled, bool canMerge, double now)
 {
-    if (sameContent(project, state_)) {
-        // Only the selection moved: remembered, so undo puts it back as it was before the edit
-        if (!sameSelection(project, state_))
-            state_ = project;
-        return false;
+    return look(project, nullptr, settled, canMerge, now);
+}
+
+bool History::takeStep(bool forward, const Project &current, const ProjectStore *store, double now, HistoryRestore *plan)
+{
+    if (!forward) {
+        look(current, store, true, false, now); // a change still waiting is the one to take back
+        if (undo_.empty())
+            return false;
+    } else {
+        if (redo_.empty())
+            return false;
+        const Compare c = compare(current, store);
+        if (c.differs)
+            return false; // an edit since the undo has replaced what could be redone
+        // The step to undo this one is the project as it is now, its selection included
+        sync(current, c.moved, c.structure, c.fields, c.master);
     }
-    if (!settled)
-        return false;
-    std::string label = describeChange(state_, project);
-    const bool merge = canMerge && !undo_.empty() && undo_.back().label == label && now - lastTime_ < 0.5;
-    if (!merge) {
-        Snapshot packed = pack(std::move(state_), undo_.empty() ? nullptr : &undo_.back().snapshot);
-        undo_.push_back({std::move(packed), std::move(label)});
-        if (undo_.size() > kMaxSteps)
-            undo_.erase(undo_.begin());
+    auto &from = forward ? redo_ : undo_;
+    Step step = std::move(from.back());
+    from.pop_back();
+    (forward ? undo_ : redo_).push_back({state_, step.label});
+    if (plan) {
+        *plan = makePlan(state_, step.snapshot, step.label);
+        plan->revision = store ? store->revision() : 0;
     }
-    redo_.clear();
-    state_ = project;
-    lastTime_ = now;
+    state_ = std::move(step.snapshot);
+    known_ = false;
+    pending_ = false;
+    lastTime_ = -1e9;
     return true;
+}
+
+bool History::undo(const ProjectStore &store, double now, HistoryRestore &plan)
+{
+    return takeStep(false, store.project(), &store, now, &plan);
+}
+
+bool History::redo(const ProjectStore &store, HistoryRestore &plan)
+{
+    return takeStep(true, store.project(), &store, 0.0, &plan);
 }
 
 const Project *History::undo(const Project &current, double now)
 {
-    update(current, true, false, now); // a change still waiting is the one to take back
-    if (undo_.empty())
+    if (!takeStep(false, current, nullptr, now, nullptr))
         return nullptr;
-    Step step = std::move(undo_.back());
-    undo_.pop_back();
-    Snapshot packed = pack(std::move(state_), &step.snapshot);
-    redo_.push_back({std::move(packed), step.label});
-    state_ = unpack(step.snapshot);
-    lastTime_ = -1e9;
-    return &state_;
+    currentCache_ = unpack(state_);
+    return &currentCache_;
 }
 
 const Project *History::redo(const Project &current)
 {
-    if (redo_.empty() || !sameContent(current, state_))
-        return nullptr; // an edit since the undo has replaced what could be redone
-    Step step = std::move(redo_.back());
-    redo_.pop_back();
-    Snapshot packed = pack(current, &step.snapshot);
-    undo_.push_back({std::move(packed), step.label});
-    state_ = unpack(step.snapshot);
-    lastTime_ = -1e9;
-    return &state_;
+    if (!takeStep(true, current, nullptr, 0.0, nullptr))
+        return nullptr;
+    currentCache_ = unpack(state_);
+    return &currentCache_;
 }
 
 }

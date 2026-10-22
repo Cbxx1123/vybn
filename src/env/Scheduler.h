@@ -71,7 +71,10 @@ struct SchedulerConfig {
 // submit() queues a job on a lane from any thread but a real-time one; Interactive jobs run
 // ahead of Background ones on the shared workers. A lane's pollers run whenever one of its
 // threads wakes: from wake(), which real-time threads may call (it takes no lock), or every
-// `interval` ms. The disk streamer is a Disk poller, woken by the audio thread's requests.
+// `interval` ms. Wakes coalesce: only the first since the lane's pollers last started signals a
+// thread (one kernel call), so voices asking for many chunks at once cost an atomic each. Running
+// the pollers takes no lock and allocates nothing unless the list changed since that thread last
+// ran them. The disk streamer is a Disk poller, woken by the audio thread's requests.
 // stop() runs the stop hooks (so jobs waiting on the network can be cancelled), drops jobs not
 // yet started and joins every thread.
 class Scheduler : public Daemon {
@@ -80,7 +83,8 @@ public:
     ~Scheduler() override;
 
     void submit(Lane lane, std::function<void()> job, JobGroup *group = nullptr);
-    // Real-time safe: wakes one of the lane's threads to run its pollers
+    // Real-time safe: wakes one of the lane's threads to run its pollers, unless a wake is
+    // already pending (the pollers it starts will see whatever this one was for)
     void wake(Lane lane);
     // fn returns true when it did something (it is then called again at once). Returns an id.
     int addPoller(Lane lane, std::function<bool()> fn, uint32_t intervalMs = 50);
@@ -112,7 +116,15 @@ private:
         int id;
         std::function<bool()> fn;
         uint32_t intervalMs;
+        // removePoller clears `alive` and then waits for `running` to fall to 0; a caller raises
+        // `running` and then reads `alive` (both sequentially consistent, so one sees the other)
         std::atomic<int> running{0};
+        std::atomic<bool> alive{true};
+    };
+    // A pool thread's copy of the poller list, taken again only when the list's version moves
+    struct PollerSnapshot {
+        std::vector<std::shared_ptr<Poller>> pollers;
+        uint64_t version = ~0ull;
     };
     struct Pool {
         std::vector<std::thread> threads;
@@ -120,7 +132,10 @@ private:
         std::vector<Lane> lanes;                    // the lanes it serves, first first
         std::array<std::deque<Job>, kLaneCount> queues;
         std::vector<std::shared_ptr<Poller>> pollers;
+        std::atomic<uint64_t> pollerVersion{0};     // bumped (under mutex) when pollers changes
+        std::atomic<uint32_t> intervalMs{1000};     // the shortest poller interval, or 1000
         Semaphore wake;                             // a job queued, or a poller woken
+        alignas(64) std::atomic<bool> wakePending{false}; // a wake() signalled, its pollers not yet started
         std::atomic<uint32_t> busy{0};
         std::array<std::atomic<uint64_t>, kLaneCount> completed{};
     };
@@ -129,7 +144,8 @@ private:
     const Pool &poolFor(Lane lane) const;
     void startPool(Pool &pool, uint32_t threads, std::vector<Lane> lanes, const char *name);
     void loop(Pool &pool);
-    bool runPollers(Pool &pool);
+    bool runPollers(Pool &pool, PollerSnapshot &snapshot);
+    static void pollersChanged(Pool &pool); // under pool.mutex
     void shutdown();
 
     RealtimePool realtime_;

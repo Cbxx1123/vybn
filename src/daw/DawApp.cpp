@@ -11,16 +11,19 @@
 #include <vector>
 
 #include "Actions.h"
+#include "AutomationWriter.h"
 #include "Autosave.h"
 #include "Arrangement.h"
 #include "AudioEditor.h"
 #include "Browser.h"
+#include "AppIcon.h"
 #include "DevicePicker.h"
 #include "DevicesPanel.h"
 #include "ExportsPanel.h"
 #include "audio/DeviceChain.h"
 #include "audio/PluginEffect.h"
 #include "audio/PluginInstrument.h"
+#include "audio/Synth.h"
 #include "Format.h"
 #include "Mixer.h"
 #include "PianoRoll.h"
@@ -59,6 +62,10 @@ DawApp::DawApp(env::Environment &env, UISystem &ui, audio::AudioSystem &audio)
       recording_(std::make_unique<RecordingSession>(session_.store(), audio, midi_, recorder_, *pool_))
 {
     plugins_ = env.find<plugin::PluginManager>();
+    // What the scan found of plugins' sidechain ports, for the Sidechain control and the rules
+    setPluginSidechainLookup([manager = plugins_](const std::string &id) -> uint32_t {
+        return manager ? manager->sidechainChannels(id) : 0u;
+    });
     if (plugins_) {
         const std::vector<std::string> base = settings_.pluginConfig().folders;
         for (const std::string &f : plugins_->config().folders)
@@ -71,6 +78,9 @@ DawApp::DawApp(env::Environment &env, UISystem &ui, audio::AudioSystem &audio)
     recordingController_ = std::make_unique<RecordingController>(
         audio_, metronome_, session_.store(), *recording_, settings_, session_.path(),
         RecordingController::Hooks{[this] { openAudioInput(); }, [this](std::string message) { notify(std::move(message)); }});
+    automationWriter_ = std::make_unique<AutomationWriter>(
+        session_.store(), [this] { return transportBeats(audio_); }, [this] { return audio_.transport().playing(); });
+    automationWriter_->setMode(settings_.automationTouch ? AutomationWriter::Mode::Touch : AutomationWriter::Mode::Latch);
     // Exports render from a copy of the project on their own engine, so they start where the project is
     exporter_ = std::make_unique<Exporter>(
         env_, gui_, audio_, plugins_, *library_, *pool_, session_.store(),
@@ -101,6 +111,7 @@ DawApp::DawApp(env::Environment &env, UISystem &ui, audio::AudioSystem &audio)
                 .addButton("OK", {}, true);
         });
     themeSaved_ = writeTheme(gui_.theme(), themePreset_);
+    refreshWindowIcon();
     buildTitleBar();
     buildBody();
     buildMenus();
@@ -112,6 +123,19 @@ DawApp::DawApp(env::Environment &env, UISystem &ui, audio::AudioSystem &audio)
     recoverable_ = findRecoverable(autosaveRoot(), unixSeconds());
     autosave_ = std::make_unique<AutosaveController>(&env_, autosaveRoot(), [] { return unixSeconds(); });
     autosave_->configure(settings_.autosave, autosaveInterval(), settings_.autosaveVersions);
+}
+
+void DawApp::refreshWindowIcon()
+{
+    const ui::Color base = gui_.theme().baseColor(), accent = gui_.theme().accentColor();
+    auto same = [](const ui::Color &a, const ui::Color &b) { return a.r == b.r && a.g == b.g && a.b == b.b; };
+    if (iconSet_ && same(base, iconBase_) && same(accent, iconAccent_))
+        return;
+    if (setWindowIcon(ui_.window().nativeHandle(), base, accent)) {
+        iconBase_ = base;
+        iconAccent_ = accent;
+        iconSet_ = true;
+    }
 }
 
 double DawApp::autosaveInterval() const
@@ -135,6 +159,10 @@ DawApp::~DawApp()
 {
     // A clean exit: waits for an autosave under way, then removes the session lock
     autosave_.reset();
+    setPluginSidechainLookup({}); // the manager goes before whatever still asks
+    // The executable's own icon takes the look the app ended with (a helper does it once this process is gone)
+    if (iconSet_)
+        scheduleExecutableIcon(iconBase_, iconAccent_);
 }
 
 void DawApp::buildTitleBar()
@@ -172,6 +200,10 @@ void DawApp::buildBody()
     // First each frame: the output peaks, read once for every meter, and the audio graph
     body.add<FrameHook>([this](const Input &input) {
         session_.store().normalizeIds(); // edits made last frame get their ids before history, autosave and the audio see them
+        // The window's icon follows the look, as the Appearance editor changes it: every frame, since the loop
+        // sleeps between changes and a frame is all that notices one (two colours compared; the icon is made
+        // again only when they differ)
+        refreshWindowIcon();
         recordingController_->updateCountIn(); // starts the take when the count-in ends
         // Undo: last frame's edits become a step once nothing is being dragged or typed
         mouseHeld_ = input.down || input.middleDown;
@@ -210,7 +242,11 @@ void DawApp::buildBody()
                     recordingController_->countingIn() || exporter_->queue().active() != nullptr ||
                     downloads_->activeCount() > 0 || preview_->previewing() || library_->anyLoading() || pluginBusy ||
                     pluginPictures || inputLive);
-        const bool settled = !mouseHeld_ && !typing_ && !gesturing && !recording_->recording() && !recording_->finishing();
+        // Automation being written follows the playhead, and is finished once playback stops; the
+        // whole pass is one undo step, since nothing settles while it is under way
+        automationWriter_->update(mouseHeld_);
+        const bool settled = !mouseHeld_ && !typing_ && !gesturing && !recording_->recording() && !recording_->finishing() &&
+                             !automationWriter_->writing();
         if (!restoring_ && session_.recordHistory(settled, !mouseSinceStep_, ui_.window().time()))
             mouseSinceStep_ = false;
         // Autosave: a copy of unsaved changes every so often, and the session lock kept on the project's file
@@ -312,6 +348,11 @@ void DawApp::buildBody()
     TransportHooks hooks;
     hooks.position = [&audio] { return transportBeats(audio); };
     hooks.playing = [&audio] { return audio.transport().playing(); };
+    hooks.automationArmed = [this](int track) { return automationWriter_->armed(track); };
+    hooks.armAutomation = [this](int track, bool on) { automationWriter_->setArmed(track, on); };
+    hooks.masterAutomationArmed = [this] { return automationWriter_->masterArmed(); };
+    hooks.armMasterAutomation = [this](bool on) { automationWriter_->setMasterArmed(on); };
+    hooks.masterAutomationMenu = [this](Vec2 at) { openMasterAutomationMenu(at); };
     hooks.seek = [&audio](double beats) { seekBeats(audio, beats); };
     hooks.openClip = [this] { showEditor(); };
     hooks.audioFor = [this](int track, int clip) { return clipAudio(track, clip); };
@@ -327,7 +368,12 @@ void DawApp::buildBody()
         pickDevice(true, false, track, line);
     };
     hooks.trackMenu = [this](int track, Vec2 at) { openTrackMenu(track, at); };
-    arrangement_ = &arrangementPanel_->add<ArrangementView>(session_.store(), hooks);
+    hooks.deviceParams = [this](const DevicePlace &place) {
+        audio::Device *device = bridge_->deviceAt(project(), place);
+        return device ? device->params() : std::vector<audio::DeviceParam>{};
+    };
+    hooks.automationMenu = [this](int track, Vec2 at) { openAutomationMenu(track, at); };
+    arrangement_ = &arrangementPanel_->add<ArrangementView>(session_.store(), hooks, &folds_);
     arrangement_->setGrow(1.0f);
     ArrangementView &arrangement = *arrangement_;
     tools.add<SmallToggle>("Follow", [&arrangement] { return arrangement.follow(); },
@@ -340,14 +386,16 @@ void DawApp::buildBody()
         .setIcon(Icon::Plus)
         .setShape(Shape::Circle)
         .setSize(Size::Small);
-    // A menu of the two kinds of track
+    // A menu of the kinds of track
     Button &addButton = tools.add<Button>();
     Button *addButtonRaw = &addButton;
     addButton.onClick([this, addButtonRaw] {
         const Rect r = addButtonRaw->rect();
         openContextMenu(gui_,
                         {MenuItem::item("Instrument track", [this] { addTrack(TrackKind::Instrument); }),
-                         MenuItem::item("Audio track", [this] { addTrack(TrackKind::Audio); })},
+                         MenuItem::item("Audio track", [this] { addTrack(TrackKind::Audio); }),
+                         MenuItem::item("Return track", [this] { addTrack(TrackKind::Return); }),
+                         MenuItem::item("Group track", [this] { addTrack(TrackKind::Group); })},
                         {r.x, r.y + r.h + 6.0f});
     });
     addButton.setLabel("Add track").setIcon(Icon::Plus).setSize(Size::Small);
@@ -384,7 +432,8 @@ void DawApp::buildBody()
         return (status.empty() ? std::string() : status + "        ") + t->name + "  /  " + c->name;
     }, TextStyle::Caption, TextTone::Secondary);
 
-    mixer_ = &mixerPanel_->add<MixerView>(gui_, session_.store(), audio_, levels_, bridge_->levels(), [this](TrackKind kind) { addTrack(kind); });
+    mixer_ = &mixerPanel_->add<MixerView>(gui_, session_.store(), audio_, levels_, bridge_->levels(), [this](TrackKind kind) { addTrack(kind); },
+                                              automationWriter_.get(), &folds_);
     mixer_->setGrow(1.0f);
 
     editors_ = &editorPanel_->add<Pages>();
@@ -557,7 +606,10 @@ void DawApp::buildBody()
     auto &stepPage = editors_->add<Container>(Direction::Column);
     stepPage.setAlign(Align::Stretch);
     auto &stepTools = row(stepPage);
+    // Grouped by what they set: the page and the grid (step size, swing); the new steps (gate, velocity,
+    // hearing them); then the clip's loop and the rows
     modeControl(stepTools, 1);
+    stepTools.add<Divider>();
     menuButton(stepTools, [this] {
         if (!steps_)
             return std::string("Step");
@@ -572,6 +624,10 @@ void DawApp::buildBody()
         if (swingRaw->value() != v)
             swingRaw->setValue(v);
     });
+    stepTools.add<LiveLabel>([this] { return steps_ ? format("%.0f%%", steps_->swing() * 100.0) : std::string(); }, TextStyle::Caption,
+                             TextTone::Muted)
+        .setMinSize({30.0f, 0.0f});
+    stepTools.add<Divider>();
     stepTools.add<ScrubField>("Gate", [this] { return format("%.0f%%", steps_->gate() * 100.0); },
                               [this](int count, bool fine) { steps_->setGate(steps_->gate() + count * (fine ? 0.01 : 0.05)); })
         .setValueWidth(40.0f);
@@ -588,6 +644,7 @@ void DawApp::buildBody()
         else
             session_.store().setLoop(project().loopStart, project().loopEnd, on && project().hasLoop());
     });
+    stepTools.add<Divider>();
     menuButton(stepTools, [] { return std::string("Add row"); }, [this] { return stepAddRowMenu(*steps_); }, 0.0f);
 
     // The view is made after its toolbar, so the callbacks check it exists
@@ -619,6 +676,10 @@ void DawApp::buildBody()
         devicesHooks.pick = [this](bool instrument, bool master, int track, Rect anchor) { pickDevice(instrument, master, track, anchor); };
         devicesHooks.latencyText = [this](int track) { return bridge_->latencyText(track); };
         devicesHooks.instrumentStatus = [this](int track) { return bridge_->instrumentStatus(project(), track); };
+        devicesHooks.playhead = [this] { return transportBeats(audio_); };
+        devicesHooks.write = [this](const DevicePlace &place, const audio::DeviceParam &param, double value) {
+            return automationWriter_->touch(place.track, AutomationPlace{false, place}, param.id, automationCurve(param), value);
+        };
         effects_ = &effectsPanel_->add<DevicesView>(gui_, session_.store(), *catalogue_, devicesHooks);
         effects_->setGrow(1.0f);
     }
@@ -673,6 +734,96 @@ void DawApp::setStepMode(bool on)
 {
     // The frame hook shows the page for the selected clip's kind
     stepMode_ = on;
+}
+
+void DawApp::masterAutomationDemo()
+{
+    // The master's lanes shown: its volume dipping and coming back, and a Limiter's ceiling; the
+    // master's writing armed
+    ProjectStore &store = session_.store();
+    store.editMasterEffects() = {audio::effectSetting(audio::EffectType::Limiter)};
+    store.editMasterAutomation().push_back({audio::kVolumeParam, {{0.0, 0.79f}, {8.0, 0.79f}, {12.0, 0.4f}, {24.0, 0.79f}}});
+    store.editMasterEffects()[0].automation.push_back({0, {{0.0, 0.9f}, {16.0, 0.5f}}});
+    arrangement_->showMasterAutomation(true);
+    automationWriter_->setMasterArmed(true);
+}
+
+void DawApp::sidechainDemo()
+{
+    // A pad (the built-in synth holding long notes) with a fast compressor keyed by a Kick track (short
+    // low notes on every beat, muted: only its sound as the compressor hears it), and the Devices tab
+    // showing the pad's chain
+    ProjectStore &store = session_.store();
+    Project &p = store.edit();
+    const int pad = p.addTrack(TrackKind::Instrument), kick = p.addTrack(TrackKind::Instrument);
+    store.normalizeIds();
+    Track &padTrack = p.tracks[static_cast<size_t>(pad)];
+    Track &kickTrack = p.tracks[static_cast<size_t>(kick)];
+    padTrack.name = "Pad";
+    kickTrack.name = "Kick";
+    padTrack.instrument = audio::SynthDevice::setting();
+    kickTrack.instrument = audio::SynthDevice::setting();
+    kickTrack.mute = true;
+    padTrack.clips.push_back(Clip("Pad", 0.0, 16.0, {Note{0.0, 8.0, 57, 0.8f}, Note{8.0, 8.0, 60, 0.8f}}));
+    std::vector<Note> beats;
+    for (int beat = 0; beat < 16; ++beat)
+        beats.push_back(Note{static_cast<double>(beat), 0.25, 36, 0.9f});
+    kickTrack.clips.push_back(Clip("Kick", 0.0, 16.0, beats));
+    audio::DeviceSetting boost = audio::effectSetting(audio::EffectType::Gain);
+    boost.setValue(0, 24.0);
+    kickTrack.effects = {boost};
+    audio::DeviceSetting comp = audio::effectSetting(audio::EffectType::Compressor);
+    comp.setValue(0, -12.0);
+    comp.setValue(1, 20.0);
+    comp.setValue(2, 0.1);
+    comp.setValue(3, 120.0);
+    comp.setValue(4, 0.0);
+    comp.sidechain = kickTrack.id;
+    padTrack.effects = {comp};
+    p.select(pad);
+    showEffects();
+}
+
+void DawApp::foldingDemo()
+{
+    // Two groups nested round some tracks: "Band" holds "Rhythm" (which holds the second and third
+    // tracks) and the fourth track; Rhythm is folded
+    ProjectStore &store = session_.store();
+    Project &p = store.edit();
+    p.addTrack(TrackKind::Group);
+    p.addTrack(TrackKind::Group);
+    const int outer = static_cast<int>(p.tracks.size()) - 2, inner = outer + 1;
+    p.tracks[static_cast<size_t>(outer)].name = "Band";
+    p.tracks[static_cast<size_t>(inner)].name = "Rhythm";
+    store.normalizeIds();
+    const ObjectId band = p.tracks[static_cast<size_t>(outer)].id, rhythm = p.tracks[static_cast<size_t>(inner)].id;
+    p.tracks[static_cast<size_t>(inner)].output = band;
+    p.tracks[1].output = rhythm;
+    p.tracks[2].output = rhythm;
+    p.tracks[3].output = band;
+    p.moveTrack(outer, 1);
+    p.moveTrack(inner, 2);
+    p.select(0);
+    arrangement_->fold(2, true);
+}
+
+void DawApp::flexibleDemo()
+{
+    // The first three tracks go into Group 1, and the first also sends to Group 2 (and to a return), so its
+    // strip reads "To Group 1 + 1" with a G2 send bar; the mixer showing
+    ProjectStore &store = session_.store();
+    Project &p = store.edit();
+    p.addTrack(TrackKind::Return);
+    p.addTrack(TrackKind::Group);
+    p.addTrack(TrackKind::Group);
+    const size_t n = p.tracks.size();
+    store.normalizeIds();
+    const ObjectId ret = p.tracks[n - 3].id, g1 = p.tracks[n - 2].id, g2 = p.tracks[n - 1].id;
+    for (size_t i = 0; i < 3; ++i)
+        p.tracks[i].output = g1;
+    p.tracks[0].sends = {{ret, 0.4f, false}, {g2, 0.7f, false}};
+    p.select(0);
+    showMixer();
 }
 
 void DawApp::stepsDemo()
@@ -830,50 +981,36 @@ void DawApp::undo()
     }
     if (mouseHeld_ || typing_ || restoring_)
         return;
-    const Project *state = session_.history().undo(project(), ui_.window().time());
-    if (!state) {
+    HistoryRestore plan;
+    if (!session_.history().undo(session_.store(), ui_.window().time(), plan)) {
         notify("Nothing to undo");
         return;
     }
     notify("Undo " + session_.history().redoLabel());
     restoring_ = true;
-    ui_.post([this, copy = *state]() mutable { restore(std::move(copy)); });
+    ui_.post([this, plan = std::move(plan)]() mutable { restore(std::move(plan)); });
 }
 
 void DawApp::redo()
 {
     if (recording_->recording() || recording_->finishing() || mouseHeld_ || typing_ || restoring_)
         return;
-    const std::string label = session_.history().redoLabel();
-    const Project *state = session_.history().redo(project());
-    if (!state) {
+    HistoryRestore plan;
+    if (!session_.history().redo(session_.store(), plan)) {
         notify("Nothing to redo");
         return;
     }
-    notify("Redo " + label);
+    notify("Redo " + plan.label);
     restoring_ = true;
-    ui_.post([this, copy = *state]() mutable { restore(std::move(copy)); });
+    ui_.post([this, plan = std::move(plan)]() mutable { restore(std::move(plan)); });
 }
 
-void DawApp::restore(Project state)
+void DawApp::restore(HistoryRestore plan)
 {
     restoring_ = false;
-    // Arming and monitoring aren't part of the history: they stay as they are now, kept by track id
-    for (Track &t : state.tracks) {
-        const Track *now = project().findTrack(t.id);
-        if (now && now->kind == t.kind) {
-            t.armed = now->armed;
-            t.monitor = now->monitor;
-        }
-    }
-    // Nor is the loop
-    state.loopStart = project().loopStart;
-    state.loopEnd = project().loopEnd;
-    state.looping = project().looping;
-    audio_.transport().setTempo(state.tempo);
-    // The store's replace: the history and the saved text stay as they are. The bridge matches the
-    // tracks by id in sync, so a kept track keeps its processor and plugins.
-    session_.store().replace(std::move(state));
+    if (plan.tempo)
+        audio_.transport().setTempo(plan.project.tempo);
+    session_.restoreState(std::move(plan));
     syncTracks();
 }
 
@@ -1076,6 +1213,25 @@ void DawApp::addTrack(TrackKind kind)
     });
 }
 
+void DawApp::groupTrack(int index)
+{
+    ui_.post([this, index] {
+        ProjectStore &store = session_.store();
+        const Track *t = project().track(index);
+        if (!t)
+            return;
+        const ObjectId output = t->output;
+        const int added = store.edit().addTrack(TrackKind::Group);
+        store.normalizeIds(); // the group's id, for the track to go into
+        store.edit().moveTrack(added, index);
+        Track &group = store.editMix(index);
+        group.output = output;
+        const ObjectId id = group.id;
+        store.editMix(index + 1).output = id;
+        store.select(index + 1);
+    });
+}
+
 void DawApp::setDarkMode(bool dark)
 {
     gui_.theme().setDarkMode(dark);
@@ -1111,13 +1267,17 @@ void DawApp::buildMenus()
     menuBar_->addMenu("Edit", {
         MenuItem::item("Undo", [this] { undo(); }, "edit.undo")
             .labelled([this] { return session_.history().canUndo() ? "Undo " + session_.history().undoLabel() : std::string("Undo"); })
-            .when([this] { return session_.history().canUndo() || !sameContent(project(), session_.history().current()); }),
+            .when([this] { return session_.history().canUndo() || !session_.history().matches(project()); }),
         MenuItem::item("Redo", [this] { redo(); }, "edit.redo")
             .labelled([this] { return session_.history().canRedo() ? "Redo " + session_.history().redoLabel() : std::string("Redo"); })
             .when([this] { return session_.history().canRedo(); }),
         MenuItem::divider(),
         MenuItem::item("Add audio track", [this] { addTrack(TrackKind::Audio); }, "track.addAudio"),
         MenuItem::item("Add instrument track", [this] { addTrack(TrackKind::Instrument); }, "track.addInstrument"),
+        MenuItem::item("Add return track", [this] { addTrack(TrackKind::Return); }, "track.addReturn"),
+        MenuItem::item("Add group track", [this] { addTrack(TrackKind::Group); }, "track.addGroup"),
+        MenuItem::item("Group the track", [this] { groupTrack(project().selectedTrack); }, "track.group")
+            .when([this] { return project().track(project().selectedTrack) != nullptr; }),
         MenuItem::item("Delete track", [this] { deleteTrack(project().selectedTrack); }, "track.delete")
             .when([this] { return project().track(project().selectedTrack) != nullptr; }),
         MenuItem::divider(),
@@ -1137,6 +1297,16 @@ void DawApp::buildMenus()
         MenuItem::toggle("Loop", [this] { return project().looping; }, [this] { session_.store().toggleLoop(); }, "transport.loop"),
         MenuItem::toggle("Follow playhead", [&arrangement] { return arrangement.follow(); },
                          [&arrangement] { arrangement.setFollow(!arrangement.follow()); }, "view.follow"),
+        MenuItem::divider(),
+        // Recording automation: written only while a control is held (Touch), or from the first touch
+        // until playback stops (Latch)
+        MenuItem::toggle("Touch automation", [this] { return automationWriter_->mode() == AutomationWriter::Mode::Touch; }, [this] {
+            const bool touch = automationWriter_->mode() != AutomationWriter::Mode::Touch;
+            automationWriter_->setMode(touch ? AutomationWriter::Mode::Touch : AutomationWriter::Mode::Latch);
+            settings_.automationTouch = touch;
+            std::string error;
+            settings_.save(error);
+        }, "transport.touchAutomation"),
     });
     menuBar_->addMenu("View", {
         MenuItem::toggle("Browser", [this] { return browser_ && browser_->shown(); }, [this] { toggleBrowser(); },
@@ -1152,6 +1322,9 @@ void DawApp::buildMenus()
         MenuItem::divider(),
         MenuItem::item("Zoom in", [&arrangement] { arrangement.zoom(1.25f); }, "view.zoomIn"),
         MenuItem::item("Zoom out", [&arrangement] { arrangement.zoom(1.0f / 1.25f); }, "view.zoomOut"),
+        MenuItem::divider(),
+        MenuItem::item("Fold all groups", [&arrangement] { arrangement.foldAll(); }, "view.foldAll"),
+        MenuItem::item("Unfold all groups", [&arrangement] { arrangement.unfoldAll(); }, "view.unfoldAll"),
         MenuItem::divider(),
         MenuItem::toggle("Appearance", [this] { return appearanceOpen(); }, [this] { showAppearance(); },
                          "view.appearance"),
@@ -1197,6 +1370,8 @@ void DawApp::openSettings(const std::string &section)
         items->push_back(&item);
         auto &scroll = pages.add<ScrollView>();
         scroll.setViewHeight(pageHeight);
+        // Every section is the dialog's width, however wide its content would like to be
+        scroll.setFillWidth();
         scroll.content().setAlign(Align::Stretch);
         return scroll.content();
     };

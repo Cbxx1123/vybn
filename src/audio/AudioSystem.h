@@ -10,6 +10,7 @@
 
 #include "AudioProcessor.h"
 #include "DeviceChain.h"
+#include "Routing.h"
 #include "Transport.h"
 #include "env/Daemon.h"
 #include "env/Environment.h"
@@ -87,6 +88,12 @@ public:
     }
     void remove(AudioProcessor &processor);
     size_t processorCount() const { return owned_.size(); }
+    // Where the tracks' sound goes (sends, groups): sent to the audio thread in order with add and
+    // remove, so a routing must name only processors in the graph, and must be replaced before one it
+    // names is removed (removing one the current routing names drops the routing, as a safety).
+    // nullptr: every track straight into the master, as with none. Finished (Routing::finish) and
+    // deleted here once replaced.
+    void setRouting(std::unique_ptr<Routing> routing);
     // Main thread, while nothing is rendering: the pool tracks render on (nullptr for one thread).
     // The scheduler's pool is the live audio thread's (one caller at a time), so an offline engine
     // gives its own. A deviceless system doesn't use the scheduler's pool until it is given one.
@@ -123,6 +130,9 @@ public:
 
     Transport &transport() { return transport_; }
     AudioParam &masterGain() { return masterGain_; } // linear, 0-1.5
+    // The project's master volume (linear, 0-2), after the master effects and before the master gain:
+    // part of the mix, so offline engines (exports) play it too, while the master gain is monitoring
+    AudioParam &masterVolume() { return masterVolume_; }
     // Effects on the master bus, before the master gain (set with apply(), collect() once a frame)
     DeviceChain &masterEffects() { return masterEffects_; }
     // While the device is stopped: prepares every processor for offline renders at `sampleRate`
@@ -151,8 +161,10 @@ public:
 private:
     struct Impl; // miniaudio state, kept out of this header
     struct Command {
-        enum class Type { Add, Remove } type = Type::Add;
+        enum class Type { Add, Remove, Route } type = Type::Add;
         AudioProcessor *processor = nullptr;
+        const Routing *routing = nullptr; // Route
+        uint64_t sequence = 0;            // Route: which setRouting it was
     };
 
     void adopt(std::unique_ptr<AudioProcessor> processor);
@@ -162,6 +174,8 @@ private:
     // Applies queued commands directly, when no audio thread is consuming them
     void applyCommandsHere();
     void deleteRetired();
+    void deleteRoutings();
+    void renderRouted(AudioBlock &block);
 
     // Audio thread (or offline)
     static void callback(void *device, void *output, const void *input, uint32_t frames);
@@ -176,6 +190,11 @@ private:
         auto *job = static_cast<ParallelBlock *>(context);
         job->processors[index]->renderParallel(*job->block);
     }
+    struct RoutedBlock {
+        const Route *routes;
+        const AudioBlock *block;
+    };
+    static void routedJob(void *context, uint32_t index);
 
     env::Environment &env_;
     std::unique_ptr<Impl> impl_;
@@ -197,20 +216,34 @@ private:
 
     // Main thread: every processor, alive until the audio thread has let go of it
     std::vector<std::unique_ptr<AudioProcessor>> owned_;
+    // Main thread: the routings sent, until the audio thread has moved past them
+    struct SentRouting {
+        uint64_t sequence;
+        std::unique_ptr<const Routing> routing;
+    };
+    std::vector<SentRouting> routings_;
+    uint64_t routingsSent_ = 0;
+    std::atomic<uint64_t> routingApplied_{0}; // the last setRouting the audio thread took
     env::SpscQueue<Command, 256> commands_;          // main -> audio
     env::SpscQueue<AudioProcessor *, 256> retired_;  // audio -> main, ready to delete
 
     // Audio thread state
     std::vector<AudioProcessor *> active_; // reserved up front, so adding never allocates
     std::vector<AudioProcessor *> parallel_; // the active ones that render in parallel
+    const Routing *routing_ = nullptr;       // what the tracks play through (null: each into the master)
     env::RealtimePool *pool_ = nullptr;      // the scheduler's, when there is one
     std::array<std::vector<float>, kChannels> scratch_;
     std::array<std::vector<float>, kMaxInputs> inputScratch_;
+    // The master effects' sidechain keys (Routing::masterKeys), read from the tracks once they have rendered
+    static constexpr uint32_t kMaxMasterKeys = kMaxKeys;
+    std::array<std::array<std::vector<float>, kChannels>, kMaxMasterKeys> masterKey_;
     Smoothed gain_;
+    Smoothed volume_;
     double preparedRate_ = 0.0;
 
     Transport transport_;
     AudioParam masterGain_{0.8f, 0.0f, 1.5f};
+    AudioParam masterVolume_{1.0f, 0.0f, 2.0f};
     DeviceChain masterEffects_;
     std::array<std::atomic<float>, kChannels> peaks_{};
     std::array<std::atomic<float>, kMaxInputs> inputPeaks_{};

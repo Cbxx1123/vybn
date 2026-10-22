@@ -1,4 +1,5 @@
 #include "BrowserSelfTest.h"
+#include "Harness.h"
 
 #include <algorithm>
 #include <cmath>
@@ -29,17 +30,6 @@ namespace tests {
 namespace {
 
 namespace fs = std::filesystem;
-
-struct Checker {
-    int failures = 0;
-
-    void check(bool ok, const std::string &what, const std::string &detail = {})
-    {
-        std::printf("%s  %-52s %s\n", ok ? "PASS" : "FAIL", what.c_str(), detail.c_str());
-        if (!ok)
-            ++failures;
-    }
-};
 
 void writeText(const fs::path &path, const std::string &text)
 {
@@ -470,8 +460,7 @@ int runBrowserSelfTest()
     }
 
     fs::remove_all(temp, ec);
-    std::printf("%s: %d failure%s\n", c.failures == 0 ? "OK" : "FAILED", c.failures, c.failures == 1 ? "" : "s");
-    return c.failures == 0 ? 0 : 1;
+    return c.finish("browser");
 }
 
 }

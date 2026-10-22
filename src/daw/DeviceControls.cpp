@@ -2,14 +2,30 @@
 
 #include <cmath>
 
+#include "AutomationLanes.h"
 #include "Widgets.h"
 
 namespace daw {
 
 using namespace ui;
 
+bool paramAutomated(const DeviceAccess &access, const audio::DeviceParam &param)
+{
+    const audio::DeviceSetting *s = access.setting ? access.setting() : nullptr;
+    return s && audio::automated(s->automation, param.id);
+}
+
 double paramValue(const DeviceAccess &access, const audio::DeviceParam &param)
 {
+    // Automated: what plays at the playhead
+    if (access.playhead) {
+        const audio::DeviceSetting *s = access.setting ? access.setting() : nullptr;
+        const audio::AutomationLane *lane = s ? audio::findAutomation(s->automation, param.id) : nullptr;
+        if (lane && !lane->points.empty()) {
+            const audio::ParamCurve curve = automationCurve(param);
+            return curve.value(lane->positionAt(access.playhead(), curve.stepped));
+        }
+    }
     double fallback = param.def;
     if (audio::Device *d = access.device ? access.device() : nullptr)
         if (plugin::Slot *slot = d->slot())
@@ -22,6 +38,9 @@ double paramValue(const DeviceAccess &access, const audio::DeviceParam &param)
 void setParamValue(const DeviceAccess &access, const audio::DeviceParam &param, double value)
 {
     const double clamped = std::clamp(value, param.min, param.max);
+    // Written into its automation while recording it (even a value equal to the project's own)
+    if (access.write && access.write(param, clamped))
+        return;
     // Compared first: a control that hasn't moved edits nothing (NaN stands for "not set")
     const audio::DeviceSetting *now = access.setting ? access.setting() : nullptr;
     if (now && now->value(param.id, std::nan("")) == clamped)
@@ -96,8 +115,63 @@ void addParamControl(Context &context, Container &parent, const DeviceAccess &ac
     cell.add<FrameHook>(
         [access, param, raw](const Input &) { raw->setValue(static_cast<float>(audio::paramToUnit(param, paramValue(access, param)))); });
     if (showValue)
-        cell.add<LiveLabel>([access, param] { return paramText(access, param, paramValue(access, param)); }, TextStyle::Caption,
-                            TextTone::Muted);
+        cell.add<LiveLabel>([access, param] {
+            // An automated value says so: turning the knob changes the value the automation leaves alone
+            const std::string text = paramText(access, param, paramValue(access, param));
+            return paramAutomated(access, param) ? "Auto " + text : text;
+        }, TextStyle::Caption, TextTone::Muted);
+}
+
+void addSidechainControl(Context &context, Container &parent, const DeviceAccess &access)
+{
+    if (!access.sidechain || !access.sidechain().available)
+        return;
+    auto &row = parent.add<Container>(Direction::Row);
+    row.setAlign(Align::Center);
+    row.add<Label>("Sidechain", TextStyle::Caption, TextTone::Muted);
+    auto ids = std::make_shared<std::vector<ObjectId>>();
+    auto note = std::make_shared<std::string>();
+    // The options for the offer: None, then the tracks; the index of the current one
+    auto optionsOf = [ids, note](const SidechainOffer &offer, int &selected) {
+        std::vector<std::string> options{"None"};
+        ids->clear();
+        selected = 0;
+        for (const SidechainSource &source : offer.sources) {
+            ids->push_back(source.id);
+            options.push_back(source.name);
+            if (source.id == offer.current)
+                selected = static_cast<int>(options.size()) - 1;
+        }
+        *note = offer.note;
+        return options;
+    };
+    int selected = 0;
+    const std::vector<std::string> options = optionsOf(access.sidechain(), selected);
+    auto &drop = row.add<Dropdown>(context, options, selected, [access, ids](int i) {
+        const ObjectId id = i > 0 && static_cast<size_t>(i) <= ids->size() ? (*ids)[static_cast<size_t>(i) - 1] : kNoId;
+        const audio::DeviceSetting *now = access.setting ? access.setting() : nullptr;
+        if (now && now->sidechain != id)
+            if (audio::DeviceSetting *s = access.edit ? access.edit() : nullptr)
+                s->sidechain = id;
+    });
+    drop.setSize(Size::Small);
+    Dropdown *raw = &drop;
+    auto seen = std::make_shared<uint64_t>(access.revision ? access.revision() : 0);
+    row.add<FrameHook>([access, raw, optionsOf, seen](const Input &) {
+        // The offer depends on the project alone: not again until something saved has changed
+        if (access.revision) {
+            const uint64_t revision = access.revision();
+            if (revision == *seen)
+                return;
+            *seen = revision;
+        }
+        int now = 0;
+        const std::vector<std::string> wanted = optionsOf(access.sidechain(), now);
+        if (wanted != raw->options())
+            raw->setOptions(wanted);
+        raw->setSelected(now);
+    });
+    row.add<LiveLabel>([note] { return *note; }, TextStyle::Caption, TextTone::Muted);
 }
 
 std::string pluginStatus(audio::Device *device)

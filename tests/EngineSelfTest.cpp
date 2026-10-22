@@ -1,4 +1,5 @@
 #include "EngineSelfTest.h"
+#include "Harness.h"
 
 #include <algorithm>
 #include <atomic>
@@ -27,22 +28,21 @@
 #include "env/Resources.h"
 #include "env/Scheduler.h"
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace tests {
 
 namespace {
 
 namespace fs = std::filesystem;
-
-struct Checker {
-    int failures = 0;
-
-    void check(bool ok, const std::string &what, const std::string &detail = {})
-    {
-        std::printf("%s  %-54s %s\n", ok ? "PASS" : "FAIL", what.c_str(), detail.c_str());
-        if (!ok)
-            ++failures;
-    }
-};
 
 std::string text(const char *pattern, double value)
 {
@@ -103,6 +103,161 @@ std::vector<float> playNote(audio::AudioSystem &system, audio::Sampler &sampler,
         between();
     }
     return out;
+}
+
+// CPU cycles every thread of the process but this one has used, in millions: the pool's workers'
+// work and spinning, without the calling thread's (exact, unlike the process times, which are sampled
+// at the timer tick and miss threads that sleep across it), or 0 where unknown
+double otherThreadsMegacycles()
+{
+#ifdef _WIN32
+    // Looked up, since MinGW's headers hide them below Vista's _WIN32_WINNT
+    using QueryCycles = BOOL(WINAPI *)(HANDLE, PULONG64);
+    const HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+    static const auto process = reinterpret_cast<QueryCycles>(reinterpret_cast<void *>(GetProcAddress(kernel, "QueryProcessCycleTime")));
+    static const auto thread = reinterpret_cast<QueryCycles>(reinterpret_cast<void *>(GetProcAddress(kernel, "QueryThreadCycleTime")));
+    ULONG64 all = 0, mine = 0;
+    if (process && thread && process(GetCurrentProcess(), &all) && thread(GetCurrentThread(), &mine))
+        return static_cast<double>(all - mine) * 1e-6;
+#endif
+    return 0.0;
+}
+
+// Sets the system timer to 1 ms while it lives, so the Pacer's short sleeps don't oversleep a
+// whole 15.6 ms tick and then catch up with batches back to back (which is not how a device paces)
+struct FineTimer {
+#ifdef _WIN32
+    using Period = UINT(WINAPI *)(UINT);
+    HMODULE winmm = LoadLibraryW(L"winmm.dll");
+    Period end = winmm ? reinterpret_cast<Period>(reinterpret_cast<void *>(GetProcAddress(winmm, "timeEndPeriod"))) : nullptr;
+    FineTimer()
+    {
+        if (auto begin = winmm ? reinterpret_cast<Period>(reinterpret_cast<void *>(GetProcAddress(winmm, "timeBeginPeriod"))) : nullptr)
+            begin(1);
+    }
+    ~FineTimer()
+    {
+        if (end)
+            end(1);
+        if (winmm)
+            FreeLibrary(winmm);
+    }
+#endif
+};
+
+double percentile(std::vector<double> values, double p)
+{
+    if (values.empty())
+        return 0.0;
+    std::sort(values.begin(), values.end());
+    return values[std::min(values.size() - 1, static_cast<size_t>(p * static_cast<double>(values.size())))];
+}
+
+// Benchmarks (VIBIN_TEST_BENCH): what the real-time pool costs per batch, back to back (an offline
+// render) and paced like the live audio thread, and what the scheduler's wakes cost
+void benchPoolAndScheduler()
+{
+    using Clock = std::chrono::steady_clock;
+    // About a microsecond of work, as a quiet track's block might be
+    struct Work {
+        std::atomic<uint64_t> sink{0};
+    } work;
+    const env::RealtimePool::JobFn job = [](void *ctx, uint32_t i) {
+        float x = static_cast<float>(i);
+        for (int k = 0; k < 400; ++k)
+            x = x * 0.999f + 0.5f;
+        static_cast<Work *>(ctx)->sink.fetch_add(static_cast<uint64_t>(x), std::memory_order_relaxed);
+    };
+    {
+        env::RealtimePool pool;
+        pool.start(4);
+        for (int b = 0; b < 200; ++b)
+            pool.run(24, job, &work);
+        constexpr int kBatches = 20000;
+        const uint64_t stolenBefore = pool.stolen();
+        double cpu = otherThreadsMegacycles();
+        auto begin = Clock::now();
+        for (int b = 0; b < kBatches; ++b)
+            pool.run(24, job, &work);
+        const double backToBack = seconds(begin) / kBatches * 1e6;
+        const double backCpu = (otherThreadsMegacycles() - cpu) / kBatches * 1e3;
+        const double share = static_cast<double>(pool.stolen() - stolenBefore) / (24.0 * kBatches);
+
+        // Paced at a 256-frame block's period at 48 kHz, as the live audio thread calls it
+        constexpr int kPaced = 300;
+        std::vector<double> paced;
+        FineTimer fine;
+        Pacer pace(std::chrono::microseconds(5333));
+        cpu = otherThreadsMegacycles();
+        int close = 0; // batches that began under a millisecond after the one before (the pacer catching up)
+        auto last = Clock::now();
+        for (int b = 0; b < kPaced; ++b) {
+            pace.wait();
+            const auto t = Clock::now();
+            close += b > 0 && t - last < std::chrono::milliseconds(1);
+            last = t;
+            pool.run(24, job, &work);
+            paced.push_back(seconds(t) * 1e6);
+        }
+        // The pacer's own spinning is in this, the same before and after
+        const double pacedCpu = (otherThreadsMegacycles() - cpu) / kPaced * 1e3;
+
+        pool.setActive(0);
+        begin = Clock::now();
+        for (int b = 0; b < 2000; ++b)
+            pool.run(24, job, &work);
+        const double alone = seconds(begin) / 2000 * 1e6;
+        std::printf("INFO pool back to back: 24 jobs x 4 workers %.1f us a batch (%.0f%% run by workers, %.0f kcycles on workers), "
+                    "one thread %.1f us\n",
+                    backToBack, share * 100.0, backCpu, alone);
+        std::printf("INFO pool paced at 5.3 ms: median %.1f us, p99 %.1f us a batch, %.0f kcycles on workers a period (%d of %d late)\n",
+                    percentile(paced, 0.5), percentile(paced, 0.99), pacedCpu, close, kPaced);
+    }
+    {
+        double serialTime = 0.0, parallelTime = 0.0;
+        mixTones(false, 0, 24, 4 * 48000, serialTime);
+        mixTones(true, 4, 24, 4 * 48000, parallelTime);
+        std::printf("INFO mix 24 tracks, 4 s of audio: %.1f ms on one thread, %.1f ms across 4 workers\n",
+                    serialTime * 1000.0, parallelTime * 1000.0);
+    }
+    {
+        env::Environment environment;
+        env::SchedulerConfig config;
+        config.realtimeWorkers = 0;
+        auto &scheduler = environment.add<env::Scheduler>(config);
+        std::atomic<uint64_t> polls{0};
+        std::atomic<bool> pending{false};
+        const int id = scheduler.addPoller(env::Lane::Disk, [&] {
+            ++polls;
+            return pending.exchange(false);
+        }, 1000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        // A storm of wakes from one thread, as voices asking for chunks do
+        constexpr int kWakes = 200000;
+        const uint64_t pollsBefore = polls;
+        auto begin = Clock::now();
+        for (int i = 0; i < kWakes; ++i)
+            scheduler.wake(env::Lane::Disk);
+        const double wakeNs = seconds(begin) / kWakes * 1e9;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const uint64_t stormPolls = polls - pollsBefore;
+        // A wake's latency, from a sleeping lane to its poller running
+        std::vector<double> latency;
+        Pacer pace(std::chrono::microseconds(1000));
+        for (int i = 0; i < 500; ++i) {
+            pace.wait();
+            pending = true;
+            const auto t = Clock::now();
+            scheduler.wake(env::Lane::Disk);
+            while (pending.load())
+                std::this_thread::yield();
+            latency.push_back(seconds(t) * 1e6);
+        }
+        scheduler.removePoller(id);
+        std::printf("INFO scheduler wake: %.0f ns a call from one thread (%.0f poller runs for %d wakes), "
+                    "wake to poll median %.1f us, p99 %.1f us\n",
+                    wakeNs, static_cast<double>(stormPolls), kWakes, percentile(latency, 0.5), percentile(latency, 0.99));
+    }
 }
 
 }
@@ -178,6 +333,24 @@ int runEngineSelfTest()
         std::atomic<int> alone{0};
         pool.run(8, [](void *ctx, uint32_t) { static_cast<std::atomic<int> *>(ctx)->fetch_add(1); }, &alone);
         c.check(alone == 8, "Real-time pool: with no workers the caller runs them all");
+        // Stopped while its workers spin between quick batches, then started again: wakes left over
+        // from the first run must not unbalance the second's
+        pool.setActive(3);
+        for (int batch = 0; batch < 50; ++batch)
+            pool.run(37, [](void *ctx, uint32_t i) { static_cast<Context *>(ctx)->hits[i].fetch_add(1); }, &context);
+        pool.stop();
+        pool.start(3);
+        int wrong = 0;
+        const uint64_t stolenBefore = pool.stolen();
+        for (int batch = 0; batch < 500; ++batch) {
+            for (auto &h : context.hits)
+                h = 0;
+            pool.run(37, [](void *ctx, uint32_t i) { static_cast<Context *>(ctx)->hits[i].fetch_add(1); }, &context);
+            for (auto &h : context.hits)
+                wrong += h.load() != 1;
+        }
+        c.check(wrong == 0, "Real-time pool: restarted after a stop mid-spin, every job once",
+                text("%.0f jobs run other than once, ", wrong) + text("%.0f run by workers", static_cast<double>(pool.stolen() - stolenBefore)));
         pool.stop();
     }
 
@@ -213,6 +386,40 @@ int runEngineSelfTest()
         const double latency = seconds(begin);
         scheduler.removePoller(id);
         c.check(polls == 1 && latency < 0.5, "Scheduler: a wake runs the Disk lane's poller", text("%.2f ms", latency * 1000.0));
+        // Coalesced wakes lose nothing: two threads each ask 20,000 times, waking the lane every time;
+        // the poller (interval 1 s, so only wakes run it in time) must serve every request in 0.5 s
+        {
+            std::atomic<int> asked{0};
+            // One pass a wake that takes a while (as a disk read does), saying it did nothing, so
+            // requests arriving during it are served only if their wake signals again
+            const int drain = scheduler.addPoller(env::Lane::Disk, [&] {
+                asked.exchange(0);
+                const auto busy = std::chrono::steady_clock::now();
+                while (seconds(busy) < 20e-6)
+                    std::this_thread::yield();
+                return false;
+            }, 1000);
+            std::vector<std::thread> askers;
+            for (int t = 0; t < 2; ++t) {
+                askers.emplace_back([&] {
+                    for (int i = 0; i < 20000; ++i) {
+                        asked.fetch_add(1);
+                        scheduler.wake(env::Lane::Disk);
+                        if (i % 1000 == 0)
+                            std::this_thread::sleep_for(std::chrono::microseconds(200));
+                    }
+                });
+            }
+            for (auto &t : askers)
+                t.join();
+            const auto end = std::chrono::steady_clock::now();
+            while (asked.load() != 0 && seconds(end) < 0.5)
+                std::this_thread::yield();
+            const double left = seconds(end);
+            scheduler.removePoller(drain);
+            c.check(asked.load() == 0, "Scheduler: coalesced wakes serve every request",
+                    text("served %.2f ms after the last", left * 1000.0));
+        }
         env::JobGroup late;
         scheduler.stop(environment);
         scheduler.submit(env::Lane::Background, [&ran] { ++ran; }, &late);
@@ -334,8 +541,8 @@ int runEngineSelfTest()
             // About twice real time: 256 frames are 5.3 ms of audio
             memory.start(environment); // the poller joins the Disk lane
             const uint64_t before = memory.stats().underruns;
-            played = playNote(system, sampler, 60, frames - 4096,
-                              [] { std::this_thread::sleep_for(std::chrono::microseconds(2500)); });
+            Pacer pace(std::chrono::microseconds(2500));
+            played = playNote(system, sampler, 60, frames - 4096, [&pace] { pace.wait(); });
             threadedUnderruns = memory.stats().underruns - before;
             worst = 0.0f;
             for (size_t i = 0; i < reference.size() && i < played.size(); ++i)
@@ -513,17 +720,18 @@ int runEngineSelfTest()
             transport.stop();
             transport.locate(0);
             std::vector<float> block(512), out;
+            Pacer pace(std::chrono::microseconds(2500)); // twice real time: 256 frames are 5.3 ms of audio
             for (int i = 0; i < 8; ++i) {
                 system.renderOffline(block.data(), 256, 48000.0);
                 if (sleep)
-                    std::this_thread::sleep_for(std::chrono::microseconds(2500));
+                    pace.wait();
             }
             transport.play();
             for (uint32_t done = 0; done < 6 * 48000; done += 256) {
                 system.renderOffline(block.data(), 256, 48000.0);
                 out.insert(out.end(), block.begin(), block.end());
                 if (sleep)
-                    std::this_thread::sleep_for(std::chrono::microseconds(2500));
+                    pace.wait();
             }
             transport.stop();
             setClips(nullptr);
@@ -627,8 +835,10 @@ int runEngineSelfTest()
         manager.remove(pool);
     }
 
-    std::printf("\n%s: %d failed\n", c.failures == 0 ? "All passed" : "FAILED", c.failures);
-    return c.failures == 0 ? 0 : 1;
+    if (bench())
+        benchPoolAndScheduler();
+
+    return c.finish("engine");
 }
 
 }

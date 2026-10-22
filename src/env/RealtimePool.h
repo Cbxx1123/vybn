@@ -16,8 +16,15 @@ namespace env {
 // run() never locks or allocates. Jobs are claimed one at a time from a single atomic ticket
 // (the batch's number, its size and the next job, packed together), so a worker waking late
 // can't take a job from the wrong batch, and the caller takes any job no worker has reached yet:
-// it only ever waits for jobs already under way. Workers sleep on a semaphore between batches
-// and run at a raised priority, with denormals flushed, as the audio thread does.
+// it only ever waits for jobs already under way. Workers run at a raised priority, with denormals
+// flushed, as the audio thread does.
+//
+// Between batches a worker sleeps on a semaphore, and run() wakes only workers that are asleep
+// (it counts them), so a batch makes no kernel call when its workers are already awake. When
+// batches come quickly (closer together than kSpinWindowNs, a quarter of a millisecond: an offline render calling back to
+// back), a worker that finishes one spins for the next instead of sleeping, so it starts at once
+// without being woken. At the live audio thread's pace (a block every few milliseconds) batches
+// are far apart, so workers sleep straight away and spin never.
 class RealtimePool {
 public:
     using JobFn = void (*)(void *context, uint32_t index);
@@ -56,7 +63,9 @@ private:
 
     // Claims and runs jobs of the batch in `ticket_` until none are left; returns how many
     uint32_t work();
-    void loop();
+    void loop(uint32_t index);
+    // Spins up to kSpinWindowNs for a batch with jobs left to claim; whether one came (or a stop)
+    bool spinForBatch() const;
 
     std::vector<std::thread> threads_;
     bool realtimePriority_ = true;
@@ -73,6 +82,14 @@ private:
     uint64_t batch_ = 0;
     std::atomic<uint64_t> stolen_{0};
     std::atomic<uint64_t> batches_{0};
+
+    // Waking: workers asleep (or about to be) on wake_, which run() takes from as it wakes them
+    // (see run and loop for why no wake is lost), and how long ago the batch before the latest
+    // one began, which says whether batches come quickly enough to spin for
+    static constexpr int64_t kSpinWindowNs = 250000;
+    alignas(64) std::atomic<uint32_t> sleeping_{0};
+    std::atomic<int64_t> gapNs_{INT64_MAX};
+    int64_t lastRunNs_ = 0; // the caller's
 };
 
 }

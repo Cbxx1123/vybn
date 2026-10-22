@@ -10,6 +10,8 @@
 //   It has a window of its own (CLAP's floating win32 interface): clicking its left half takes
 //   1 dB off, its right half adds 1 dB, sent to the host as a gesture, as a real editor would.
 // - vibin.test.sine: an instrument: sine voices for CLAP or MIDI notes, Level parameter.
+// - vibin.test.duck: a stereo effect with a stereo sidechain input; its output is its input times (1 - the key's peak in the block).
+// - vibin.test.crashinit: crashes when it is initialised; the scan lists it, its sidechain probe dies in a host of its own.
 // - vibin.test.faulty: a stereo pass-through whose Fault parameter makes it misbehave on the next
 //   block: crash (a write through a null pointer), hang (spins forever) or slow (sleeps 60 ms a
 //   block). When it is made it tries to write a file in the user's profile and logs whether it
@@ -50,6 +52,7 @@ struct Base {
     const clap_host *host = nullptr;
     double sampleRate = 48000.0;
     bool hasInput = true;
+    bool hasSidechain = false; // a second, stereo input port that isn't the main one
 
     virtual ~Base() = default;
     virtual bool init() { return true; }
@@ -85,13 +88,18 @@ Base *self(const clap_plugin *p) { return static_cast<Base *>(p->plugin_data); }
 
 // The extensions, forwarding to Base
 const clap_plugin_audio_ports kAudioPorts = {
-    [](const clap_plugin *p, bool isInput) -> uint32_t { return isInput && !self(p)->hasInput ? 0u : 1u; },
+    [](const clap_plugin *p, bool isInput) -> uint32_t {
+        if (!isInput)
+            return 1u;
+        return !self(p)->hasInput ? 0u : (self(p)->hasSidechain ? 2u : 1u);
+    },
     [](const clap_plugin *p, uint32_t index, bool isInput, clap_audio_port_info *info) -> bool {
-        if (index != 0 || (isInput && !self(p)->hasInput))
+        const bool sidechain = isInput && self(p)->hasSidechain && index == 1;
+        if ((index != 0 && !sidechain) || (isInput && !self(p)->hasInput))
             return false;
-        info->id = isInput ? 0 : 1;
-        std::snprintf(info->name, sizeof info->name, "%s", isInput ? "In" : "Out");
-        info->flags = CLAP_AUDIO_PORT_IS_MAIN;
+        info->id = isInput ? (sidechain ? 2 : 0) : 1;
+        std::snprintf(info->name, sizeof info->name, "%s", sidechain ? "Sidechain" : (isInput ? "In" : "Out"));
+        info->flags = sidechain ? 0 : CLAP_AUDIO_PORT_IS_MAIN;
         info->channel_count = 2;
         info->port_type = CLAP_PORT_STEREO;
         info->in_place_pair = CLAP_INVALID_ID;
@@ -624,6 +632,51 @@ struct Faulty : Base {
     }
 };
 
+// --- Duck: a stereo effect with a sidechain input; its output is its input times (1 - the key's peak
+// in the block, at most 1), so a key at full scale silences it and a silent key passes it unchanged
+
+struct Duck : Base {
+    Duck() { hasSidechain = true; }
+
+    clap_process_status process(const clap_process *process) override
+    {
+        readEvents(process->in_events);
+        float peak = 0.0f;
+        if (process->audio_inputs_count >= 2) {
+            const clap_audio_buffer &key = process->audio_inputs[1];
+            for (uint32_t c = 0; c < key.channel_count && c < 2; ++c)
+                for (uint32_t i = 0; i < process->frames_count; ++i)
+                    peak = std::fmax(peak, std::fabs(key.data32[c][i]));
+        }
+        const float gain = 1.0f - std::fmin(1.0f, peak);
+        for (uint32_t c = 0; c < 2; ++c) {
+            const float *in = process->audio_inputs[0].data32[c];
+            float *out = process->audio_outputs[0].data32[c];
+            for (uint32_t i = 0; i < process->frames_count; ++i)
+                out[i] = in[i] * gain;
+        }
+        return CLAP_PROCESS_CONTINUE;
+    }
+};
+
+// --- Crash on init: a stereo pass-through that crashes when it is initialised (made), to check that
+// a plugin that dies while the scan asks about its ports can't cost the scan its descriptors
+
+struct CrashInit : Base {
+    bool init() override
+    {
+        volatile int *nowhere = nullptr;
+        *nowhere = 1;
+        return true;
+    }
+    clap_process_status process(const clap_process *process) override
+    {
+        for (uint32_t c = 0; c < 2; ++c)
+            std::memcpy(process->audio_outputs[0].data32[c], process->audio_inputs[0].data32[c], process->frames_count * sizeof(float));
+        return CLAP_PROCESS_CONTINUE;
+    }
+};
+
 // --- The plugin table
 
 const char *const kEffectFeatures[] = {CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PLUGIN_FEATURE_UTILITY, CLAP_PLUGIN_FEATURE_STEREO, nullptr};
@@ -633,6 +686,8 @@ const clap_plugin_descriptor kDescriptors[] = {
     {CLAP_VERSION_INIT, "vibin.test.gain", "Test Gain", "Vibin", "", "", "", "1.0.0", "A gain for the plugin self-test", kEffectFeatures},
     {CLAP_VERSION_INIT, "vibin.test.sine", "Test Sine", "Vibin", "", "", "", "1.0.0", "Sine voices for the plugin self-test", kInstrumentFeatures},
     {CLAP_VERSION_INIT, "vibin.test.faulty", "Test Faulty", "Vibin", "", "", "", "1.0.0", "Crashes, hangs or stalls on request", kEffectFeatures},
+    {CLAP_VERSION_INIT, "vibin.test.duck", "Test Duck", "Vibin", "", "", "", "1.0.0", "Ducks under its sidechain input", kEffectFeatures},
+    {CLAP_VERSION_INIT, "vibin.test.crashinit", "Test Crash Init", "Vibin", "", "", "", "1.0.0", "Crashes when it is made", kEffectFeatures},
 };
 
 const clap_plugin *create(const clap_host *host, const char *id)
@@ -648,6 +703,12 @@ const clap_plugin *create(const clap_host *host, const char *id)
     } else if (!std::strcmp(id, kDescriptors[2].id)) {
         b = new Faulty;
         desc = &kDescriptors[2];
+    } else if (!std::strcmp(id, kDescriptors[3].id)) {
+        b = new Duck;
+        desc = &kDescriptors[3];
+    } else if (!std::strcmp(id, kDescriptors[4].id)) {
+        b = new CrashInit;
+        desc = &kDescriptors[4];
     } else {
         return nullptr;
     }
