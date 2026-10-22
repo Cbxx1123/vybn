@@ -7,11 +7,11 @@ changing it.
 ## What this is
 
 VYBN, a DAW in C++17 for Windows: a neumorphic UI drawn with Vulkan (GLFW windows), an audio engine
-on miniaudio (WASAPI), CLAP plugins hosted in sandboxed processes, and its own project format (`.vbp`,
-TOML). Instrument and audio tracks, return and group tracks, a tempo map with time signature changes,
-loop recording into take lanes with comping, automation, sidechains, a piano roll, a step sequencer,
-a built-in synth and sampler, a library browser with downloads, undo for every edit, and exports to
-WAV, AIFF, FLAC, MP3 and MIDI.
+on miniaudio (WASAPI), CLAP plugins hosted in sandboxed processes, and its own project format
+(`.vbp`, TOML). Instrument and audio tracks, return and group tracks, a tempo map with time
+signature changes, loop recording into take lanes with comping, markers, MIDI import and file drops,
+automation, sidechains, a piano roll, a step sequencer, a built-in synth and sampler, a library
+browser with downloads, undo for every edit, and exports to WAV, AIFF, FLAC, MP3 and MIDI.
 
 ## Layout
 
@@ -101,5 +101,5 @@ Each module is a static library (`vybn_env`, `vybn_engine`, `vybn_ui`, `vybn_plu
   build and the traps on this machine).
 - `docs/testing.md`: the test harness, tiers, measured times, and the rules for new tests.
 - `docs/design/`: the design notes of the larger features and refactors (undo, automation, routing,
-  stable ids, the step sequencer, the tempo map, takes and comping, the rendering refactors), each
-  with its status and measurements.
+  stable ids, the step sequencer, the tempo map, takes and comping, markers and MIDI import, the
+  rendering refactors), each with its status and measurements.

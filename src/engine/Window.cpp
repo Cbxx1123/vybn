@@ -70,6 +70,7 @@ Window::Window(uint32_t width, uint32_t height, const std::string &title, bool v
     glfwSetCursorPosCallback(window_, &Window::onCursor);
     glfwSetScrollCallback(window_, &Window::onScroll);
     glfwSetWindowRefreshCallback(window_, &Window::onRefresh);
+    glfwSetDropCallback(window_, &Window::onDrop);
 }
 
 Window::~Window()
@@ -548,6 +549,26 @@ void Window::onScroll(GLFWwindow *window, double x, double y)
     e.y = y;
     e.mods = self(window).modifiers();
     self(window).events_.push_back(e);
+}
+
+void Window::onDrop(GLFWwindow *window, int count, const char **paths)
+{
+    Drop drop;
+    for (int i = 0; i < count; ++i) {
+        if (paths[i])
+            drop.paths.emplace_back(paths[i]);
+    }
+    // GLFW moves its cursor to the drop's place before calling this
+    glfwGetCursorPos(window, &drop.x, &drop.y);
+    if (!drop.paths.empty())
+        self(window).drops_.push_back(std::move(drop));
+}
+
+std::vector<Window::Drop> Window::takeDrops()
+{
+    std::vector<Drop> drops = std::move(drops_);
+    drops_.clear();
+    return drops;
 }
 
 void Window::onRefresh(GLFWwindow *window)

@@ -118,13 +118,26 @@ public:
     // Asks for sound files and places them at the playhead: on the selected audio track (or one
     // made for them), one after another
     void importAudio(int track = -1);
-    void importAudioFiles(const std::vector<std::string> &files, int track = -1);
+    // Audio files one after another from beat `at` (-1: the playhead): on `track` when it is an audio
+    // track, else (-1) the selected audio track, else a new one; kNewTrack always a new one
+    static constexpr int kNewTrack = -2;
+    void importAudioFiles(const std::vector<std::string> &files, int track = -1, double at = -1.0);
+    // MIDI files (docs/design/markers-and-import-plan.md): Project > Import MIDI file's dialog, and the
+    // files themselves from beat `at` (-1: the playhead), the first part on `track` when it is an
+    // instrument track, the rest on new tracks; then, when a file's tempo map differs, the question
+    // of whose to keep
+    void importMidi();
+    void importMidiFiles(const std::vector<std::string> &files, int track = -1, double at = -1.0);
+    // Files dropped on the window from Explorer, each frame: audio, MIDI and projects, by where they
+    // landed (the arrangement's track and beat, or the playhead on new tracks)
+    void handleDrops();
     // A generated take imported onto the first audio track and opened in the editor (--demo)
     void importAudioDemo();
     // Records a phrase sent through the MIDI hub onto the Lead track, as if played on a
     // keyboard, then opens the take in the piano roll (--demo recordmidi)
     void recordMidiDemo();
     void takesDemo();
+    void dropDemo();
     // Starts recording onto the armed tracks, or stops (see RecordingController)
     void toggleRecording() { recordingController_->toggleRecording(); }
     bool recording() const { return recording_->recording(); }
@@ -288,6 +301,16 @@ private:
     void openSignatureDialog(int signature);
     // Empty space in the tempo or signature lane, at `beat`: add a change there, reset, hide the lanes
     void openTimingLaneMenu(ui::Vec2 at, double beat, bool tempo);
+    // Markers (docs/design/markers-and-import-plan.md): one added at a beat (named "Marker N"; returns
+    // its id), the playhead to one (by index) or the previous or next, the loop over the section the
+    // playhead is in, a marker's name to edit, its menu, and the list of them all
+    ObjectId addMarker(double beat);
+    void goToMarker(int index);
+    void stepMarker(int step);
+    void loopSection();
+    void renameMarker(ObjectId id);
+    void openMarkerMenu(ObjectId id, double beat, ui::Vec2 at);
+    void openMarkerList();
     // The tempo map's edits shared by those menus and the transport bar: the tempo at a beat (the
     // point in force there), a signature at a bar (a change there, added if there isn't one)
     void setTempoAt(double beat, double bpm);
@@ -366,6 +389,7 @@ private:
     std::string notice_;
     double noticeUntil_ = 0.0;
     std::shared_ptr<std::function<void()>> demoTick_; // recordMidiDemo's, run every frame
+    double dropFlashUntil_ = -1.0; // the arrangement shows where a drop landed until then
     AssetBrowser *browser_ = nullptr;
     bool mouseSinceStep_ = false; // the mouse was used since the last undo step (it isn't merged)
     bool mouseHeld_ = false;      // a button is held (undo waits for the drag to end)

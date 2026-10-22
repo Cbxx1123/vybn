@@ -16,16 +16,24 @@ struct TimingHooks {
     std::function<double(float x)> xBeat;
     std::function<double(double beat, bool free)> snap;
     std::function<double()> position;
+    std::function<void(double beat)> seek;                          // the playhead to a beat
     std::function<void(int point, ui::Vec2 at)> tempoMenu;          // a tempo point's menu
     std::function<void(int signature, ui::Vec2 at)> signatureMenu;  // a signature change's menu
     std::function<void(int point)> editTempo;                       // a point's tempo, typed
     std::function<void(int signature)> editSignature;               // a change's numerator and unit
     // Empty lane space right-clicked at `beat` (`tempo`: in the tempo lane, else the signature lane)
     std::function<void(ui::Vec2 at, double beat, bool tempo)> laneMenu;
+    // Markers: a marker's name to edit, and a marker's menu (kNoId: empty space at `beat`)
+    std::function<void(ObjectId marker)> renameMarker;
+    std::function<void(ObjectId marker, double beat, ui::Vec2 at)> markerMenu;
 };
 
-// The song's tempo map as two lanes across the top of the arrangement, under its ruler, each with a
-// header in the header column. ArrangementView owns it, lays it out, and passes it input first.
+// The song's markers and tempo map as three lanes across the top of the arrangement, under its ruler,
+// each with a header in the header column. ArrangementView owns it, lays it out, and passes it input
+// first.
+// - Markers: a flag per marker with its name. Click one to put the playhead there, drag it to move it
+//   (snapped unless Shift), double-click it to rename it, right-click for its menu. Double-click
+//   empty space to add one there (then name it). The header shows the section the playhead is in.
 // - Signature: a marker at each change ("7/8"). Hovering a bar shows where a change would go;
 //   double-click there to add one (the signature in force, then its editor opens), double-click a
 //   marker to edit it, drag one along the bars, right-click for a menu (common signatures, delete).
@@ -40,11 +48,12 @@ struct TimingHooks {
 // The headers show the signature and the tempo at the playhead and the tempo lane's scale.
 class TimingLanes {
 public:
+    static constexpr float kMarkerHeight = 24.0f;
     static constexpr float kSignatureHeight = 26.0f;
     static constexpr float kTempoHeight = 64.0f;
     static constexpr float kGap = 4.0f;
-    // The height of both lanes and the gap under them
-    static constexpr float height() { return kSignatureHeight + kTempoHeight + 2.0f * kGap; }
+    // The height of the lanes and the gaps under them
+    static constexpr float height() { return kMarkerHeight + kSignatureHeight + kTempoHeight + 3.0f * kGap; }
 
     TimingLanes(ProjectStore &store, TimingHooks hooks);
 
@@ -64,6 +73,7 @@ public:
     // (returns false when nothing removable is)
     int selectedPoint() const;
     int selectedMarker() const;
+    ObjectId selectedFlag() const { return selectedFlag_; } // the song marker selected (kNoId for none)
     bool deleteSelected();
 
 private:
@@ -80,7 +90,17 @@ private:
     ProjectStore &store_;
     TimingHooks hooks_;
     ui::Hooks keys_;
-    ui::Rect signatureHeader_, signatureLane_, tempoHeader_, tempoLane_;
+    ui::Rect markerHeader_, markerLane_, signatureHeader_, signatureLane_, tempoHeader_, tempoLane_;
+    // Song markers: the flag under a point (kNoId for none), from where the flags were last drawn
+    ObjectId flagAt(ui::Vec2 p) const;
+    mutable std::vector<std::pair<ObjectId, ui::Rect>> flagRects_;
+    ObjectId hoverFlag_ = kNoId;
+    ObjectId dragFlag_ = kNoId;     // the flag pressed (moved once dragged past a few pixels)
+    float flagPressX_ = 0.0f;
+    bool flagMoved_ = false;
+    ObjectId selectedFlag_ = kNoId;
+    bool hoverFlags_ = false;       // the mouse over the markers lane
+    double ghostFlagBeat_ = -1.0;   // where a double-click would add a marker (-1 for nowhere)
 
     int hoverPoint_ = -1;
     int hoverMarker_ = -1;
@@ -97,7 +117,7 @@ private:
     int selectedBar_ = -1;
     double lastPress_ = -1.0;
     int lastPressed_ = -2; // what the last press was on (a point, a marker or -1 for empty), for double-clicks
-    bool lastPressTempo_ = false;
+    int lastPressLane_ = -1; // which lane the last press was in: 0 markers, 1 signatures, 2 tempo
 };
 
 }

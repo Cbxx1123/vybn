@@ -40,6 +40,16 @@ public:
     std::vector<InputEvent> takeEvents();
     // Whether any input is waiting to be taken
     bool hasEvents() const { return !events_.empty(); }
+    // Files dragged onto the window from the system (Explorer) and dropped, each drop its paths
+    // (UTF-8) and where the cursor was, in window coordinates. Windows reports a drop only once it
+    // lands: there is no news of a drag while it is held.
+    struct Drop {
+        std::vector<std::string> paths;
+        double x = 0.0, y = 0.0;
+    };
+    std::vector<Drop> takeDrops();
+    // A drop as if dropped from the system, for demos and tests (the system's arrive the same way)
+    void queueDrop(Drop drop) { drops_.push_back(std::move(drop)); }
     // Wakes a waitEvents call on any thread (a daemon posted something for the main thread)
     static void wakeEventLoop();
     // The modifiers held now (Mod bits)
@@ -101,6 +111,7 @@ private:
     static void onCursor(GLFWwindow *window, double x, double y);
     static void onScroll(GLFWwindow *window, double x, double y);
     static void onRefresh(GLFWwindow *window);
+    static void onDrop(GLFWwindow *window, int count, const char **paths);
 #ifdef _WIN32
     // Window procedure for the custom title bar (a WNDPROC, spelled without windows.h)
     static intptr_t __stdcall frameProc(void *hwnd, unsigned int message, uintptr_t wParam, intptr_t lParam);
@@ -108,6 +119,7 @@ private:
 
     GLFWwindow *window_ = nullptr;
     std::vector<InputEvent> events_;
+    std::vector<Drop> drops_;
     bool customTitleBar_ = false;
     bool refreshRequested_ = false;
     Cursor cursor_ = Cursor::Arrow;

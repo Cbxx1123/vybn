@@ -298,6 +298,7 @@ void DawApp::buildBody()
         const std::string message = recording_->update();
         if (!message.empty())
             notify(message);
+        handleDrops();
         // A recording that left takes shows them
         for (ObjectId id : recording_->takeNewTakes()) {
             const int index = project().trackIndex(id);
@@ -399,6 +400,8 @@ void DawApp::buildBody()
     hooks.tempoMenu = [this](int point, Vec2 at) { openTempoMenu(point, at); };
     hooks.signatureMenu = [this](int signature, Vec2 at) { openSignatureMenu(signature, at); };
     hooks.editTempo = [this](int point) { openTempoDialog(point); };
+    hooks.renameMarker = [this](ObjectId id) { renameMarker(id); };
+    hooks.markerMenu = [this](ObjectId id, double beat, Vec2 at) { openMarkerMenu(id, beat, at); };
     hooks.editSignature = [this](int signature) { openSignatureDialog(signature); };
     hooks.timingLaneMenu = [this](Vec2 at, double beat, bool tempo) { openTimingLaneMenu(at, beat, tempo); };
     hooks.timingShown = [this](bool shown) {
@@ -1295,6 +1298,7 @@ void DawApp::buildMenus()
         MenuItem::item("Export...", [this] { openExportDialog(); }, "project.export"),
         MenuItem::divider(),
         MenuItem::item("Import audio file...", [this] { importAudio(); }, "file.importAudio"),
+        MenuItem::item("Import MIDI file...", [this] { importMidi(); }, "file.importMidi"),
         MenuItem::item("Import instrument...", [this] { importInstrument(); }, "file.importInstrument"),
         MenuItem::item("Import plugin...", [this] { importPlugin(); }),
         MenuItem::divider(),
@@ -1330,6 +1334,21 @@ void DawApp::buildMenus()
         MenuItem::item("Return to start", [&transport] { transport.locate(0); }, "transport.toStart"),
         MenuItem::toggle("Record", [this] { return recording_->recording(); }, [this] { toggleRecording(); },
                          "transport.record"),
+        MenuItem::divider(),
+        MenuItem::item("Add marker", [this] {
+            addMarker(transportBeats(audio_));
+            notify(project().markers.empty() ? std::string() : "Marker added: double-click it to name it");
+        }, "markers.add"),
+        MenuItem::item("Previous marker", [this] { stepMarker(-1); }, "markers.previous"),
+        MenuItem::item("Next marker", [this] { stepMarker(1); }, "markers.next"),
+        MenuItem::sub("Go to marker", [this] {
+            std::vector<MenuItem> go;
+            for (int i = 0; i < 9; ++i)
+                go.push_back(MenuItem::item("Marker " + std::to_string(i + 1), [this, i] { goToMarker(i); }, "markers.go" + std::to_string(i + 1)));
+            return go;
+        }()),
+        MenuItem::item("Loop this section", [this] { loopSection(); }, "markers.loop"),
+        MenuItem::item("Markers...", [this] { openMarkerList(); }, "markers.list"),
         MenuItem::divider(),
         MenuItem::toggle("Metronome", [&metronome] { return metronome.enabled.load(); },
                          [&metronome] { metronome.enabled = !metronome.enabled; }, "transport.metronome"),

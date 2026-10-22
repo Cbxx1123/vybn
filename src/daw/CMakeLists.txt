@@ -14,6 +14,7 @@ vybn_module(vybn_daw SOURCES
     io/Autosave.cpp
     io/Json.cpp
     io/MidiExport.cpp
+    io/MidiImport.cpp
     io/ProjectFile.cpp
     io/SynthUserPresets.cpp
     io/Toml.cpp

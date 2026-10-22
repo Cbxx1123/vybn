@@ -261,6 +261,17 @@ std::string writeProject(const Project &project, const std::string &folder)
         out << "loop_end = " << number(project.loopEnd) << "\n";
         out << "looping = " << boolean(project.looping) << "\n";
     }
+    // The markers, each its beat and name (and id)
+    if (!project.markers.empty()) {
+        out << "markers = [\n";
+        for (const Marker &m : project.markers) {
+            out << "  { beat = " << number(m.beat) << ", name = " << quote(m.name);
+            if (m.id != kNoId)
+                out << ", id = " << m.id;
+            out << " },\n";
+        }
+        out << "]\n";
+    }
     out << "# The sample library instruments the tracks play\n";
     out << "instruments = [";
     const std::vector<std::string> used = instrumentsUsed(project);
@@ -820,6 +831,22 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
     r.text(root, "name", "", p.name);
     if (!readTiming(r, root, p.timing))
         return false;
+    // The markers: beats from 0, sorted
+    const toml::Array *markers = r.tables(root, "markers", "");
+    if (!r.ok())
+        return false;
+    for (size_t i = 0; markers && i < markers->size(); ++i) {
+        Marker m;
+        if (!readId(r, (*markers)[i], at("marker", i), m.id))
+            return false;
+        r.real((*markers)[i], "beat", at("marker", i), m.beat);
+        r.text((*markers)[i], "name", at("marker", i), m.name);
+        if (!r.ok())
+            return false;
+        m.beat = std::max(0.0, m.beat);
+        p.markers.push_back(std::move(m));
+    }
+    p.sortMarkers();
     r.whole(root, "bars", "", p.bars);
     r.real(root, "loop_start", "", p.loopStart);
     r.real(root, "loop_end", "", p.loopEnd);

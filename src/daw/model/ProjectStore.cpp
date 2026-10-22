@@ -90,6 +90,14 @@ Project &ProjectStore::editSettings()
     return project_;
 }
 
+std::vector<Marker> &ProjectStore::editMarkers()
+{
+    settle();
+    revision_ = bump();
+    idsDirty_ = true; // markers may have been added
+    return project_.markers;
+}
+
 std::vector<ExportPreset> &ProjectStore::editExportPresets()
 {
     settle();
@@ -228,6 +236,8 @@ void ProjectStore::restore(HistoryRestore plan)
         p.name = fields.name;
         p.bars = fields.bars;
     }
+    if (plan.markers)
+        editMarkers() = fields.markers;
     if (plan.presets)
         editExportPresets() = fields.exportPresets;
     if (plan.metadata)

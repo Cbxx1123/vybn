@@ -107,6 +107,15 @@ TransportBar::TransportBar(ui::Context &context, audio::AudioSystem &audio, audi
     });
     signature_->setLabel("4 / 4").setSize(Size::Small);
 
+    // The section the playhead is in: the marker at or before it
+    auto &section = add<Container>(Direction::Column);
+    section.setAlign(Align::Start);
+    section.add<Label>("Section", TextStyle::Caption, TextTone::Secondary);
+    section.add<LiveLabel>([&audio, &store] {
+        const int at = store.project().markerAt(transportBeats(audio));
+        return at >= 0 ? store.project().markers[static_cast<size_t>(at)].name : std::string("-");
+    }, TextStyle::Subtitle).setMinSize({90.0f, 0.0f});
+
     auto &click = add<Container>(Direction::Column);
     click.setAlign(Align::Start);
     click.add<Label>("Playback", TextStyle::Caption, TextTone::Secondary);

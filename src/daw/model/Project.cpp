@@ -55,6 +55,8 @@ bool Project::normalizeIds(ObjectId &next)
                 next = std::max(next, c.id + 1);
         }
     }
+    for (const Marker &m : markers)
+        next = std::max(next, m.id + 1);
     next = std::max<ObjectId>(next, 1);
 
     bool changed = false;
@@ -95,6 +97,8 @@ bool Project::normalizeIds(ObjectId &next)
                 c.take = found->second;
         }
     }
+    for (Marker &m : markers)
+        give(m.id);
     return changed;
 }
 
@@ -274,6 +278,30 @@ std::vector<ControlLane> cutLanes(std::vector<ControlLane> &lanes, double at)
     return right;
 }
 
+}
+
+int Project::markerAt(double beat) const
+{
+    int found = -1;
+    for (size_t i = 0; i < markers.size(); ++i) {
+        if (markers[i].beat <= beat + 1e-9)
+            found = static_cast<int>(i);
+    }
+    return found;
+}
+
+int Project::markerAfter(double beat) const
+{
+    for (size_t i = 0; i < markers.size(); ++i) {
+        if (markers[i].beat > beat + 1e-9)
+            return static_cast<int>(i);
+    }
+    return -1;
+}
+
+void Project::sortMarkers()
+{
+    std::stable_sort(markers.begin(), markers.end(), [](const Marker &a, const Marker &b) { return a.beat < b.beat; });
 }
 
 void Project::toggleLoop()

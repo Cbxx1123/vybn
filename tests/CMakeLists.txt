@@ -7,6 +7,8 @@ add_library(vybn_selftests STATIC
     EngineSelfTest.cpp
     ExportSelfTest.cpp
     InputSelfTest.cpp
+    MarkersSelfTest.cpp
+    MidiImportSelfTest.cpp
     NoteSelfTest.cpp
     PluginSelfTest.cpp
     ProjectSelfTest.cpp

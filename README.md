@@ -23,7 +23,8 @@ synth, and CLAP plugins in sandboxed processes, drawn in a neumorphic interface 
 - **Tracks.** Instrument tracks (the built-in synth, the sample library, or CLAP plugins), audio
   tracks, return tracks fed by sends, and group tracks that fold.
 - **Arrangement.** Automation lanes, a tempo map with tempo changes, ramps and time-signature changes,
-  and undo for every edit.
+  markers to name the sections and jump between them (Ctrl+Alt+Left/Right, Alt+1-9), and undo for every edit.
+  MIDI files import, and audio, MIDI and project files drag in from Explorer.
 - **Recording.** Audio and MIDI. Loop recording puts a take on each lap into take lanes, and you comp
   the best parts of each take by swiping across them.
 - **Editing.** A piano roll with note tools and an arpeggiator, a step sequencer with swing, and an

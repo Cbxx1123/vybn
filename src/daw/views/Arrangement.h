@@ -60,6 +60,9 @@ struct TransportHooks {
     std::function<void(ui::Vec2 at, double beat, bool tempo)> timingLaneMenu;
     // The lanes were shown or hidden (to remember it)
     std::function<void(bool shown)> timingShown;
+    // Markers: a marker's name to edit, and a marker's menu (kNoId: the markers lane's empty space at `beat`)
+    std::function<void(ObjectId marker)> renameMarker;
+    std::function<void(ObjectId marker, double beat, ui::Vec2 at)> markerMenu;
     // Take lanes: a lane's menu (right-click, opened at `at`), and auditioning one (hearing it
     // instead of the track's comp; kNoId for the comp)
     std::function<void(int track, ObjectId lane, ObjectId take, ui::Vec2 at)> takeMenu;
@@ -185,8 +188,9 @@ private:
 //   shows what a click would choose. The comp's sections in the track's own lane carry their
 //   take's name; Alt+Up and Alt+Down switch the selected one to the take above or below.
 //   Recording that leaves takes shows them (showTakes).
-// - Under the ruler, the tempo and signature lanes (TimingLanes). Hidden, the ruler marks each
-//   signature change ("7/8" by its bar's number) and each tempo change (a dot).
+// - Under the ruler, the markers, tempo and signature lanes (TimingLanes). Hidden, the ruler shows
+//   each marker's flag (click it to put the playhead there) and marks each signature change ("7/8"
+//   by its bar's number) and each tempo change (a dot).
 // - The wheel scrolls the tracks; Shift or a sideways wheel scrolls in time, as does the bar
 //   under the lanes. zoom() changes the scale.
 // It follows the playhead while the transport plays.
@@ -207,6 +211,11 @@ public:
     int trackAt(ui::Vec2 p) const;
     // Highlights where a drop would go (-1 for nowhere), with a hint in the empty space
     void setDropTarget(int row, std::string hint = {});
+    // Where a drop at `p` lands: the track (trackAt) and the beat under it on the arrangement's grid
+    // (-1 when it isn't over the lanes)
+    void dropPlace(ui::Vec2 p, int &track, double &beat) const;
+    // The middle of a track's own row at a beat, for demos
+    ui::Vec2 pointAt(int track, double beat) const;
     bool follow() const { return follow_; }
     // Whether a track's automation lanes are shown (kept by the track's id, not saved), and showing them
     bool automationShown(int track) const;
@@ -412,6 +421,8 @@ private:
     bool timingShown_ = true;
     ui::Rect timingChip() const; // the corner chip
     bool chipHovered_ = false;
+    // With the global lanes hidden, the markers' flags on the ruler (where they were last drawn)
+    mutable std::vector<std::pair<double, ui::Rect>> rulerFlags_;
 };
 
 }

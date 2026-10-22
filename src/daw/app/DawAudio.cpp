@@ -2,6 +2,7 @@
 #include "daw/app/DawApp.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -19,6 +20,9 @@
 #include "daw/views/PianoRoll.h"
 #include "daw/model/Routing.h"
 #include "daw/model/Takes.h"
+#include "daw/io/MidiExport.h"
+#include "daw/io/MidiImport.h"
+#include "audio/Synth.h"
 #include "daw/views/TransportBar.h"
 #include "audio/AudioFile.h"
 #include "audio/Memory.h"
@@ -214,12 +218,12 @@ void DawApp::importAudio(int track)
     chooseFiles(std::move(options), [this, track](std::vector<std::string> files) { importAudioFiles(files, track); });
 }
 
-void DawApp::importAudioFiles(const std::vector<std::string> &files, int track)
+void DawApp::importAudioFiles(const std::vector<std::string> &files, int track, double at)
 {
     // Onto the given track, else the selected audio track, else a new one
     const Track *target = project().track(track);
     int index = track;
-    if (!target || target->kind != TrackKind::Audio) {
+    if ((!target || target->kind != TrackKind::Audio) && track != kNewTrack) {
         index = project().selectedTrack;
         target = project().track(index);
     }
@@ -228,7 +232,7 @@ void DawApp::importAudioFiles(const std::vector<std::string> &files, int track)
         index = added.addTrack(TrackKind::Audio);
         added.tracks[static_cast<size_t>(index)].name = fs::path(files.front()).stem().string();
     }
-    double beat = std::round(transportBeats(audio_));
+    double beat = at >= 0.0 ? at : std::round(transportBeats(audio_));
     std::string errors;
     int added = -1;
     for (const std::string &file : files) {
@@ -252,6 +256,150 @@ void DawApp::importAudioFiles(const std::vector<std::string> &files, int track)
         session_.store().select(index, added);
     if (!errors.empty())
         Dialog::open(gui_, "Some files couldn't be imported", errors).setWidth(520.0f).addButton("OK", {}, true);
+}
+
+// Importing MIDI
+
+void DawApp::importMidi()
+{
+    ui::FileDialogOptions options;
+    options.title = "Import MIDI";
+    options.filters = {{"MIDI files (*.mid, *.midi)", "*.mid;*.midi"}, {"All files", "*.*"}};
+    options.multiple = true;
+    options.action = "Import";
+    options.remember = "midi";
+    options.folder = engine::knownFolder(engine::KnownFolder::Music);
+    chooseFiles(std::move(options), [this](std::vector<std::string> files) {
+        const Track *t = project().track(project().selectedTrack);
+        importMidiFiles(files, t && t->kind == TrackKind::Instrument ? project().selectedTrack : -1);
+    });
+}
+
+void DawApp::importMidiFiles(const std::vector<std::string> &files, int track, double at)
+{
+    const double beat = at >= 0.0 ? at : std::round(transportBeats(audio_));
+    std::string errors;
+    size_t notes = 0, parts = 0;
+    int first = -1;
+    MidiFile timed; // the first file with a tempo map of its own
+    bool hasTiming = false;
+    for (const std::string &path : files) {
+        MidiFile file;
+        std::string error;
+        if (!readMidiFile(path, file, error)) {
+            errors += (errors.empty() ? "" : "\n") + error;
+            continue;
+        }
+        if (file.parts.empty()) {
+            errors += (errors.empty() ? "" : "\n") + fs::u8path(path).filename().u8string() + " has no notes";
+            continue;
+        }
+        Project &p = session_.store().edit();
+        const std::string name = file.name.empty() ? fs::u8path(path).stem().u8string() : file.name;
+        const int used = daw::importMidi(p, file, beat, track, audio::SynthDevice::setting(), name);
+        if (first < 0)
+            first = used;
+        track = -1; // a second file goes on new tracks
+        notes += file.noteCount();
+        parts += file.parts.size();
+        if (!hasTiming && (!file.tempo.empty() || !file.signatures.empty())) {
+            timed = std::move(file);
+            hasTiming = true;
+        }
+    }
+    if (first >= 0) {
+        const Track &t = project().tracks[static_cast<size_t>(first)];
+        session_.store().select(first, static_cast<int>(t.clips.size()) - 1);
+        notify("Imported " + std::to_string(notes) + (notes == 1 ? " note" : " notes") + " on " + std::to_string(parts) +
+               (parts == 1 ? " track" : " tracks"));
+    }
+    if (!errors.empty())
+        Dialog::open(gui_, "Some files couldn't be imported", errors).setWidth(520.0f).addButton("OK", {}, true);
+    // The file's tempo and signatures, when they differ from the project's: whose to keep
+    if (!hasTiming)
+        return;
+    const audio::TempoMap theirs = fileTiming(project().timing, timed, beat);
+    if (theirs == project().timing)
+        return;
+    const audio::TempoMap &now = project().timing;
+    const std::string file = (timed.tempo.empty() ? std::string() : format("%.4g BPM", timed.tempo.front().bpm)) +
+                             (timed.signatures.empty() ? std::string() : (timed.tempo.empty() ? "" : " in ") +
+                                                                            std::to_string(timed.signatures.front().numerator) + "/" +
+                                                                            std::to_string(timed.signatures.front().denominator)) +
+                             (timed.tempo.size() + timed.signatures.size() > 2 ? ", with changes" : "");
+    const std::string mine = format("%.4g BPM", now.bpmAt(beat)) + " in " + std::to_string(now.signatureAt(beat).numerator) + "/" +
+                             std::to_string(now.signatureAt(beat).denominator);
+    Dialog &dialog = Dialog::open(gui_, "Use the file's tempo?",
+                                  "The MIDI file is at " + file + "; the project is at " + mine + ". The notes stay on their beats either way.");
+    dialog.setWidth(520.0f);
+    dialog.addButton("Keep the project's", {});
+    dialog.addButton("Use the file's", [this, theirs] { session_.store().setTiming(theirs); }, true);
+}
+
+// Files dropped on the window
+
+void DawApp::handleDrops()
+{
+    // Where the arrangement showed a drop landing goes after a moment
+    if (dropFlashUntil_ >= 0.0 && ui_.window().time() > dropFlashUntil_) {
+        dropFlashUntil_ = -1.0;
+        arrangement_->setDropTarget(-1);
+    }
+    // One drop a frame: what it adds is laid out before the next is placed by where it landed
+    std::vector<engine::Window::Drop> drops = ui_.window().takeDrops();
+    for (size_t i = 1; i < drops.size(); ++i)
+        ui_.window().queueDrop(std::move(drops[i]));
+    if (drops.size() > 1)
+        drops.resize(1);
+    for (engine::Window::Drop &drop : drops) {
+        // The drop's place in the UI's pixels (the window reports window coordinates)
+        int fbWidth = 0, fbHeight = 0, winWidth = 0, winHeight = 0;
+        ui_.window().framebufferSize(fbWidth, fbHeight);
+        ui_.window().size(winWidth, winHeight);
+        const Vec2 at{static_cast<float>(drop.x) * (winWidth > 0 ? static_cast<float>(fbWidth) / winWidth : 1.0f),
+                      static_cast<float>(drop.y) * (winHeight > 0 ? static_cast<float>(fbHeight) / winHeight : 1.0f)};
+        std::vector<std::string> sounds, midi, projects, other;
+        for (const std::string &path : drop.paths) {
+            std::string extension = fs::u8path(path).extension().u8string();
+            for (char &ch : extension)
+                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            if (extension == ".mid" || extension == ".midi")
+                midi.push_back(path);
+            else if (extension == ".vbp")
+                projects.push_back(path);
+            else if (extension == ".wav" || extension == ".flac" || extension == ".mp3") // what the pool reads (kAudioFilePatterns)
+                sounds.push_back(path);
+            else
+                other.push_back(path);
+        }
+        // A project: opened as Project > Open would (asking about unsaved changes), nothing else with it
+        if (!projects.empty()) {
+            const std::string path = projects.front();
+            ui_.post([this, path] { confirmDiscard([this, path] { openProjectFile(path); }); });
+            continue;
+        }
+        // The track and beat under the drop on the arrangement, if it's there
+        int track = -1;
+        double beat = -1.0;
+        arrangement_->dropPlace(at, track, beat);
+        const Track *onto = project().track(track);
+        if (!sounds.empty()) {
+            const bool fits = onto && onto->kind == TrackKind::Audio;
+            const int count = static_cast<int>(project().tracks.size());
+            importAudioFiles(sounds, fits ? track : kNewTrack, beat);
+            arrangement_->setDropTarget(fits ? track : count, fits ? std::string() : "New audio track");
+            dropFlashUntil_ = ui_.window().time() + 0.6;
+        }
+        if (!midi.empty()) {
+            const bool fits = onto && onto->kind == TrackKind::Instrument;
+            importMidiFiles(midi, fits ? track : -1, beat);
+            arrangement_->setDropTarget(fits ? track : -1);
+            dropFlashUntil_ = ui_.window().time() + 0.6;
+        }
+        if (!other.empty())
+            notify(fs::u8path(other.front()).filename().u8string() +
+                   (other.size() > 1 ? " and others" : "") + " can't be dropped here: drop audio files, MIDI files or a project");
+    }
 }
 
 void DawApp::importAudioDemo()
@@ -291,6 +439,60 @@ void DawApp::importAudioDemo()
         }
         showEditor();
     });
+}
+
+void DawApp::dropDemo()
+{
+    // A WAV dropped on the Drums track at bar 5, and a MIDI file of two parts at 96 BPM in 3/4 on the
+    // Bass track at bar 3, as if dragged in from Explorer
+    Project song;
+    song.name = "Dropped song";
+    song.timing = audio::TempoMap(96.0, 3, 4);
+    Track piano;
+    piano.name = "Piano";
+    piano.kind = TrackKind::Instrument;
+    Track bass = piano;
+    bass.name = "Bass line";
+    Clip chords("Chords", 0.0, 12.0);
+    Clip line("Line", 0.0, 12.0);
+    for (int bar = 0; bar < 4; ++bar) {
+        for (int key : {60, 64, 67})
+            chords.notes.push_back({bar * 3.0, 2.5, key + (bar % 2) * 2, 0.7f});
+        line.notes.push_back({bar * 3.0, 1.0, 36 + (bar % 2) * 2, 0.9f});
+        line.notes.push_back({bar * 3.0 + 1.5, 1.0, 43, 0.8f});
+    }
+    piano.clips.push_back(chords);
+    bass.clips.push_back(line);
+    song.tracks = {piano, bass};
+    const std::string midi = (fs::temp_directory_path() / "VYBN demo drop.mid").u8string();
+    const std::string wav = (fs::temp_directory_path() / "VYBN demo drop.wav").u8string();
+    std::string error;
+    std::vector<float> tone(48000 * 2);
+    for (size_t i = 0; i < tone.size(); ++i)
+        tone[i] = static_cast<float>(0.3 * std::exp(-static_cast<double>(i) / 30000.0) * std::sin(2.0 * 3.14159265358979 * 110.0 * i / 48000.0));
+    if (!writeMidiFile(song, {}, midi, error) || !audio::writeWavFile(wav, tone.data(), tone.size(), 1, 48000.0, error)) {
+        notify(error);
+        return;
+    }
+    // Where the tracks are on screen, in the window's coordinates (the drop's)
+    int fbWidth = 0, fbHeight = 0, winWidth = 0, winHeight = 0;
+    ui_.window().framebufferSize(fbWidth, fbHeight);
+    ui_.window().size(winWidth, winHeight);
+    const float sx = fbWidth > 0 ? static_cast<float>(winWidth) / fbWidth : 1.0f, sy = fbHeight > 0 ? static_cast<float>(winHeight) / fbHeight : 1.0f;
+    auto dropAt = [&](const std::string &path, const std::string &name, double beat) {
+        const int track = [&] {
+            for (size_t i = 0; i < project().tracks.size(); ++i) {
+                if (project().tracks[i].name == name)
+                    return static_cast<int>(i);
+            }
+            return 0;
+        }();
+        const Vec2 p = arrangement_->pointAt(track, beat);
+        ui_.window().queueDrop({{path}, p.x * sx, p.y * sy});
+    };
+    // The WAV first: it adds no track, so the MIDI drop's place under it stays put
+    dropAt(wav, "Drums", project().timing.barStart(4));
+    dropAt(midi, "Bass", project().timing.barStart(2));
 }
 
 void DawApp::takesDemo()
@@ -1450,6 +1652,180 @@ void DawApp::openTimingLaneMenu(Vec2 at, double beat, bool tempo)
     items.push_back(MenuItem::divider());
     items.push_back(MenuItem::item("Hide the tempo and signature lanes", [this] { arrangement_->showTiming(false); }, "view.timing"));
     openContextMenu(gui_, items, at);
+}
+
+// Markers
+
+ObjectId DawApp::addMarker(double beat)
+{
+    beat = std::clamp(beat, 0.0, project().lengthBeats());
+    std::vector<Marker> &markers = session_.store().editMarkers();
+    const std::string name = "Marker " + std::to_string(markers.size() + 1);
+    markers.push_back({kNoId, beat, name});
+    std::stable_sort(markers.begin(), markers.end(), [](const Marker &a, const Marker &b) { return a.beat < b.beat; });
+    session_.store().normalizeIds();
+    for (const Marker &m : project().markers) {
+        if (m.beat == beat && m.name == name)
+            return m.id;
+    }
+    return kNoId;
+}
+
+void DawApp::goToMarker(int index)
+{
+    if (index < 0 || static_cast<size_t>(index) >= project().markers.size()) {
+        notify("There is no marker " + std::to_string(index + 1));
+        return;
+    }
+    const Marker &m = project().markers[static_cast<size_t>(index)];
+    seekBeats(audio_, m.beat);
+    notify(m.name);
+}
+
+void DawApp::stepMarker(int step)
+{
+    // From the playhead: the next marker after it, or the one before it (a little before, so a
+    // playhead on a marker steps past it, and a playing one isn't caught by the one it just left)
+    const double at = transportBeats(audio_);
+    int index = -1;
+    if (step > 0) {
+        index = project().markerAfter(at + 1e-6);
+    } else {
+        const double slack = audio_.transport().playing() ? 1.0 : 1e-6;
+        index = project().markerAt(at - slack);
+    }
+    if (index < 0) {
+        // Past the last marker: the end of the song; before the first: its start
+        seekBeats(audio_, step > 0 ? project().lengthBeats() : 0.0);
+        return;
+    }
+    goToMarker(index);
+}
+
+void DawApp::loopSection()
+{
+    const double at = transportBeats(audio_);
+    const int before = project().markerAt(at);
+    const int after = project().markerAfter(at);
+    const double start = before >= 0 ? project().markers[static_cast<size_t>(before)].beat : 0.0;
+    const double end = after >= 0 ? project().markers[static_cast<size_t>(after)].beat : project().lengthBeats();
+    if (end <= start)
+        return;
+    session_.store().setLoop(start, end, true);
+    notify("Looping " + (before >= 0 ? project().markers[static_cast<size_t>(before)].name : std::string("the start")));
+}
+
+void DawApp::renameMarker(ObjectId id)
+{
+    const auto &markers = project().markers;
+    const auto found = std::find_if(markers.begin(), markers.end(), [id](const Marker &m) { return m.id == id; });
+    if (found == markers.end())
+        return;
+    Dialog &dialog = Dialog::open(gui_, "Marker", "At " + barsBeats(found->beat, project().timing) + ".");
+    dialog.setWidth(380.0f);
+    auto &field = labelled(dialog.body(), "Name").add<TextField>("Marker name");
+    field.setText(found->name).setSize(Size::Small).setGrow(1.0f);
+    field.onChange([this, id](const std::string &text) {
+        const auto &all = project().markers;
+        const auto at = std::find_if(all.begin(), all.end(), [id](const Marker &m) { return m.id == id; });
+        if (at != all.end() && !text.empty() && at->name != text)
+            session_.store().editMarkers()[static_cast<size_t>(at - all.begin())].name = text;
+    });
+    field.onSubmit([&dialog](const std::string &) { dialog.close(); });
+    field.focus();
+    field.selectAll();
+    dialog.addButton("Done", {}, true);
+}
+
+void DawApp::openMarkerMenu(ObjectId id, double beat, Vec2 at)
+{
+    const auto &markers = project().markers;
+    const auto found = std::find_if(markers.begin(), markers.end(), [id](const Marker &m) { return m.id == id; });
+    std::vector<MenuItem> items;
+    if (found == markers.end()) {
+        items.push_back(MenuItem::item("Add marker here", [this, beat] { renameMarker(addMarker(beat)); }));
+        items.push_back(MenuItem::item("Add marker at the playhead", [this] { renameMarker(addMarker(transportBeats(audio_))); }));
+        items.push_back(MenuItem::item("Markers...", [this] { openMarkerList(); }, "markers.list"));
+        openContextMenu(gui_, items, at);
+        return;
+    }
+    const double where = found->beat;
+    items.push_back(MenuItem::item("Rename...", [this, id] { renameMarker(id); }));
+    items.push_back(MenuItem::item("Move the playhead here", [this, where] { seekBeats(audio_, where); }));
+    items.push_back(MenuItem::item("Loop this section", [this, where] {
+        seekBeats(audio_, where);
+        const int after = project().markerAfter(where);
+        const double end = after >= 0 ? project().markers[static_cast<size_t>(after)].beat : project().lengthBeats();
+        if (end > where)
+            session_.store().setLoop(where, end, true);
+    }));
+    items.push_back(MenuItem::item("Move to the playhead", [this, id] {
+        const auto &all = project().markers;
+        const auto at = std::find_if(all.begin(), all.end(), [id](const Marker &m) { return m.id == id; });
+        if (at == all.end())
+            return;
+        std::vector<Marker> &edited = session_.store().editMarkers();
+        edited[static_cast<size_t>(at - all.begin())].beat = std::max(0.0, transportBeats(audio_));
+        std::stable_sort(edited.begin(), edited.end(), [](const Marker &a, const Marker &b) { return a.beat < b.beat; });
+    }));
+    items.push_back(MenuItem::divider());
+    items.push_back(MenuItem::item("Delete marker", [this, id] {
+        const auto &all = project().markers;
+        const auto at = std::find_if(all.begin(), all.end(), [id](const Marker &m) { return m.id == id; });
+        if (at != all.end()) {
+            std::vector<Marker> &edited = session_.store().editMarkers();
+            edited.erase(edited.begin() + (at - all.begin()));
+        }
+    }));
+    openContextMenu(gui_, items, at);
+}
+
+void DawApp::openMarkerList()
+{
+    Dialog &dialog = Dialog::open(gui_, "Markers", "Click Go to put the playhead on one; edit a name in place. Alt+1 to Alt+9 go to the first nine.");
+    dialog.setWidth(520.0f);
+    Container &body = dialog.body();
+    if (project().markers.empty())
+        body.add<Label>("No markers yet. Add one at the playhead with Ctrl+M, or double-click the Markers lane.", TextStyle::Caption,
+                        TextTone::Muted);
+    // A row per marker: its number and place, its name to edit, Go and Delete (rows follow a marker by id)
+    for (size_t i = 0; i < project().markers.size() && i < 64; ++i) {
+        const Marker m = project().markers[i];
+        auto &row = body.add<Container>(Direction::Row);
+        row.setAlign(Align::Center);
+        row.add<Label>(std::to_string(i + 1) + "   " + barsBeats(m.beat, project().timing), TextStyle::Caption, TextTone::Secondary)
+            .setMinSize({110.0f, 0.0f});
+        auto &name = row.add<TextField>("Marker name");
+        name.setText(m.name).setSize(Size::Small).setGrow(1.0f);
+        const ObjectId id = m.id;
+        name.onChange([this, id](const std::string &text) {
+            const auto &all = project().markers;
+            const auto at = std::find_if(all.begin(), all.end(), [id](const Marker &k) { return k.id == id; });
+            if (at != all.end() && !text.empty() && at->name != text)
+                session_.store().editMarkers()[static_cast<size_t>(at - all.begin())].name = text;
+        });
+        row.add<Button>([this, id] {
+            for (const Marker &k : project().markers) {
+                if (k.id == id)
+                    seekBeats(audio_, k.beat);
+            }
+        }).setLabel("Go").setSize(Size::Small);
+        row.add<Button>([this, id, &dialog] {
+            const auto &all = project().markers;
+            const auto at = std::find_if(all.begin(), all.end(), [id](const Marker &k) { return k.id == id; });
+            if (at != all.end()) {
+                std::vector<Marker> &edited = session_.store().editMarkers();
+                edited.erase(edited.begin() + (at - all.begin()));
+            }
+            dialog.close();
+            ui_.post([this] { openMarkerList(); }); // the list again, without it
+        }).setIcon(Icon::Close).setShape(Shape::Circle).setSize(Size::Small);
+    }
+    dialog.addButton("Add at the playhead", [this] {
+        addMarker(transportBeats(audio_));
+        ui_.post([this] { openMarkerList(); });
+    });
+    dialog.addButton("Done", {}, true);
 }
 
 void DawApp::openProjectSettings()
