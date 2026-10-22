@@ -1,6 +1,7 @@
 #include "daw/audio/Recording.h"
 
 #include "daw/model/NoteTools.h"
+#include "daw/model/Takes.h"
 
 #include <algorithm>
 #include <chrono>
@@ -80,6 +81,15 @@ bool RecordingSession::start(const std::string &takeFolder, std::string &why, do
     audio::Transport &transport = audio_.transport();
     const double rate = audio_.sampleRate() > 0 ? audio_.sampleRate() : 48000.0;
     const double beat = project().timing.beatAtSample(static_cast<double>(transport.position()), rate);
+    // Loop recording, when the transport loops and the take starts before the loop's end
+    looping_ = transport.looping() && transport.loopEnd() > transport.loopStart() && beat < transport.loopEnd();
+    loopStartBeat_ = transport.loopStart();
+    loopEndBeat_ = transport.loopEnd();
+    loopStartSample_ = transport.sampleOf(loopStartBeat_, rate);
+    loopEndSample_ = transport.sampleOf(loopEndBeat_, rate);
+    startLap_ = transport.laps();
+    for (Target &t : targets_)
+        t.lap = startLap_;
     // MIDI clips exist from the start, from the bar the take starts in
     for (Target &t : targets_) {
         if (t.audio)
@@ -170,6 +180,8 @@ void RecordingSession::midi(const audio::StampedMidi &m)
     for (Target &t : targets_) {
         if (t.audio)
             continue;
+        if (looping_ && m.lap > t.lap)
+            lapMidi(t, m.lap);
         const size_t key = msg.data1;
         if (msg.isNoteOn()) {
             if (t.heldStart[key] >= 0.0)
@@ -229,6 +241,27 @@ void RecordingSession::growAudio(size_t newFrames)
             }
         }
         t.preview->frames = total;
+        // Loop recording: a pass ends where the loop wrapped. The take's frame f was heard at
+        // transport sample start + f - latency, so the first wrap is (loop end - start + latency)
+        // frames in, and each lap a loop's length later.
+        if (looping_ && recorder_.started() && recorder_.startPosition() < loopEndSample_ && loopEndSample_ > loopStartSample_) {
+            const size_t latency = static_cast<size_t>(audio_.roundTripFrames());
+            const size_t lap = static_cast<size_t>(loopEndSample_ - loopStartSample_);
+            for (;;) {
+                const size_t boundary = t.passNames.empty()
+                                            ? static_cast<size_t>(loopEndSample_ - recorder_.startPosition()) + latency
+                                            : t.passFrame + lap;
+                if (total < boundary)
+                    break;
+                if (const Clip *clip = clipOf(t)) {
+                    const double length = std::max(1.0 / 64.0, project().beatsFor(clip->start, boundary / rate - clip->offset));
+                    editClipOf(t)->length = length;
+                }
+                endPass(t);
+                startPass(t, loopStartBeat_, boundary / rate);
+                t.passFrame = boundary;
+            }
+        }
         if (const Clip *clip = clipOf(t)) {
             // Only when the length really moves (this runs every frame of an audio take)
             const double length = std::max(1.0 / 64.0, project().beatsFor(clip->start, total / rate - clip->offset));
@@ -264,10 +297,15 @@ std::string RecordingSession::update()
         const double rate = audio_.sampleRate() > 0 ? audio_.sampleRate() : 48000.0;
         const audio::TempoMap &timing = project().timing;
         const double beat = timing.beatAtSample(static_cast<double>(audio_.transport().position()), rate);
-        const double barEnd = timing.barStart(timing.barAt(beat) + 1);
+        double barEnd = timing.barStart(timing.barAt(beat) + 1);
+        if (looping_)
+            barEnd = std::min(barEnd, loopEndBeat_); // a lap's pass ends at the loop's end
+        const uint32_t lap = audio_.transport().laps();
         for (Target &t : targets_) {
             if (t.audio)
                 continue;
+            if (looping_ && lap > t.lap)
+                lapMidi(t, lap);
             if (const Clip *clip = clipOf(t)) {
                 const double length = std::max(clip->length, barEnd - t.clipStart);
                 if (length != clip->length)
@@ -319,29 +357,46 @@ void RecordingSession::stop()
     for (Target &t : targets_) {
         if (t.audio)
             continue;
+        if (looping_)
+            lapMidi(t, audio_.transport().laps());
         for (int k = 0; k < 128; ++k)
             endNote(t, k, beat);
         const Clip *clip = clipOf(t);
-        if (!project().track(t.track) || !clip)
+        if (!project().track(t.track))
             continue;
-        if (clip->notes.empty() && clip->controls.empty()) {
-            // Nothing was played: no clip
+        if (clip && clip->notes.empty() && clip->controls.empty()) {
+            // Nothing was played in the last pass: no clip
             Track &track = store_.editTrack(t.track);
             track.clips.erase(track.clips.begin() + t.clip);
-            if (project().selectedTrack == t.track && project().selectedClip >= t.clip)
+            t.clip = -1;
+            if (project().selectedTrack == t.track && project().selectedClip >= 0)
                 store_.select(t.track, -1);
-            continue;
+        } else if (clip) {
+            Clip *edited = editClipOf(t);
+            // The controllers' runs of messages, thinned to the points their curves need
+            for (ControlLane &lane : edited->controls)
+                thinControlPoints(lane, 1.0f / 254.0f);
+            double end = beat;
+            for (const Note &n : edited->notes)
+                end = std::max(end, t.clipStart + n.start + n.length);
+            // To the bar line at or after the end, at least a bar (within the loop, looping)
+            const double barEnd = timing.barStart(timing.barAt(end - 1e-9) + 1);
+            double clipEnd = std::max(timing.barStart(timing.barAt(t.clipStart) + 1), barEnd);
+            if (looping_ && t.clipStart < loopEndBeat_)
+                clipEnd = std::min(clipEnd, loopEndBeat_);
+            edited->length = std::max(1.0 / 64.0, clipEnd - t.clipStart);
         }
-        Clip *edited = editClipOf(t);
-        // The controllers' runs of messages, thinned to the points their curves need
-        for (ControlLane &lane : edited->controls)
-            thinControlPoints(lane, 1.0f / 254.0f);
-        double end = beat;
-        for (const Note &n : edited->notes)
-            end = std::max(end, t.clipStart + n.start + n.length);
-        // To the bar line at or after the end, at least a bar
-        const double barEnd = timing.barStart(timing.barAt(end - 1e-9) + 1);
-        edited->length = std::max(timing.barStart(timing.barAt(t.clipStart) + 1), barEnd) - t.clipStart;
+        // The finished passes' controllers too
+        Track &track = store_.editTrack(t.track);
+        for (TakeLane &lane : track.takeLanes) {
+            if (std::find(t.passNames.begin(), t.passNames.end(), lane.name) == t.passNames.end())
+                continue;
+            for (Clip &c : lane.clips) {
+                for (ControlLane &curve : c.controls)
+                    thinControlPoints(curve, 1.0f / 254.0f);
+            }
+        }
+        fold(t);
     }
     if (audioTargets_) {
         armPending_ = false;
@@ -375,6 +430,9 @@ std::string RecordingSession::finish()
         if (frames == 0) {
             Track &edited = store_.editTrack(t.track);
             edited.clips.erase(edited.clips.begin() + t.clip);
+            edited.takeLanes.erase(std::remove_if(edited.takeLanes.begin(), edited.takeLanes.end(), [&t](const TakeLane &lane) {
+                return std::find(t.passNames.begin(), t.passNames.end(), lane.name) != t.passNames.end();
+            }), edited.takeLanes.end());
             message = "Nothing came in from the input";
             continue;
         }
@@ -401,6 +459,14 @@ std::string RecordingSession::finish()
         Clip &edited = *editClipOf(t);
         edited.audioFile = path;
         edited.length = std::max(1.0 / 64.0, project().beatsFor(edited.start, frames / rate - edited.offset));
+        // Every pass is the one file, at its own offset
+        for (TakeLane &lane : store_.editTrack(t.track).takeLanes) {
+            if (std::find(t.passNames.begin(), t.passNames.end(), lane.name) == t.passNames.end())
+                continue;
+            for (Clip &c : lane.clips)
+                c.audioFile = path;
+        }
+        fold(t);
     }
     if (recorder_.dropped() > 0)
         message = "The input fell behind: " + std::to_string(recorder_.dropped() * 1000 / static_cast<uint64_t>(rate)) +
@@ -410,6 +476,104 @@ std::string RecordingSession::finish()
     take_.shrink_to_fit();
     recorder_.releaseMemory();
     return message;
+}
+
+void RecordingSession::endPass(Target &t)
+{
+    const int index = clipIndex(t);
+    if (index < 0)
+        return;
+    Track &track = store_.editTrack(t.track);
+    Clip pass = track.clips[static_cast<size_t>(index)];
+    track.clips.erase(track.clips.begin() + index);
+    if (project().selectedTrack == t.track && project().selectedClip >= 0)
+        store_.select(t.track, -1);
+    t.passNames.push_back(pass.name);
+    TakeLane lane;
+    lane.name = pass.name;
+    lane.clips.push_back(std::move(pass));
+    track.takeLanes.insert(track.takeLanes.begin(), std::move(lane));
+    t.clip = -1;
+}
+
+void RecordingSession::startPass(Target &t, double start, double offset)
+{
+    Track &track = store_.editTrack(t.track);
+    Clip clip;
+    clip.name = t.clipName = "Take " + std::to_string(++takeNumber_);
+    clip.start = t.clipStart = start;
+    clip.offset = offset;
+    const audio::TempoMap &timing = project().timing;
+    clip.length = t.audio ? 1.0 / 64.0 : std::max(1.0 / 64.0, std::min(timing.barStart(timing.barAt(start) + 1), loopEndBeat_) - start);
+    track.clips.push_back(clip);
+    t.clip = static_cast<int>(track.clips.size()) - 1;
+}
+
+void RecordingSession::lapMidi(Target &t, uint32_t lap)
+{
+    while (t.lap < lap) {
+        // The pass ends at the loop's end, notes held over it too
+        for (int k = 0; k < 128; ++k)
+            endNote(t, k, loopEndBeat_);
+        if (const Clip *clip = clipOf(t)) {
+            const double length = std::max(1.0 / 64.0, loopEndBeat_ - t.clipStart);
+            if (clip->length != length)
+                editClipOf(t)->length = length;
+        }
+        endPass(t);
+        startPass(t, loopStartBeat_, 0.0);
+        ++t.lap;
+    }
+}
+
+void RecordingSession::fold(Target &t)
+{
+    if (!project().track(t.track))
+        return;
+    Track &track = store_.editTrack(t.track);
+    // The passes in the order they were played: the finished ones from their lanes, then the last
+    std::vector<Clip> passes;
+    for (const std::string &name : t.passNames) {
+        auto lane = std::find_if(track.takeLanes.begin(), track.takeLanes.end(),
+                                 [&name](const TakeLane &l) { return l.name == name && l.clips.size() == 1; });
+        if (lane == track.takeLanes.end())
+            continue; // deleted while recording
+        passes.push_back(lane->clips.front());
+        track.takeLanes.erase(lane);
+    }
+    const int index = clipIndex(t);
+    if (index >= 0) {
+        passes.push_back(track.clips[static_cast<size_t>(index)]);
+        track.clips.erase(track.clips.begin() + index);
+    }
+    t.passNames.clear();
+    t.clip = -1;
+    // A MIDI pass with nothing played in it isn't a take
+    if (!t.audio)
+        passes.erase(std::remove_if(passes.begin(), passes.end(), [](const Clip &c) { return c.notes.empty() && c.controls.empty(); }),
+                     passes.end());
+    if (passes.empty())
+        return;
+    if (project().selectedTrack == t.track)
+        store_.select(t.track, -1);
+    if (foldTakes(track, std::move(passes), project().timing))
+        newTakes_.push_back(track.id);
+}
+
+std::vector<ObjectId> RecordingSession::takeNewTakes()
+{
+    std::vector<ObjectId> tracks = std::move(newTakes_);
+    newTakes_.clear();
+    return tracks;
+}
+
+const audio::AudioData *RecordingSession::trackPreview(int track) const
+{
+    for (const Target &t : targets_) {
+        if (t.audio && t.track == track)
+            return t.preview.get();
+    }
+    return nullptr;
 }
 
 const audio::AudioData *RecordingSession::preview(int track, int clip) const

@@ -24,6 +24,7 @@ constexpr float kMasterHeight = 56.0f; // the master's row, which holds no clips
 constexpr float kBarHeight = 10.0f; // the scroll bar under the lanes
 constexpr float kGap = 10.0f;
 constexpr float kLaneHeight = 56.0f; // an automation lane
+constexpr float kTakeHeight = 52.0f; // a take lane
 constexpr float kAddHeight = 30.0f;  // the strip under a track's lanes that adds one
 constexpr float kIndent = 12.0f;     // a header's indent for each group it is inside
 constexpr float kLanePad = 7.0f;     // between a lane's edge and its curve's top and bottom
@@ -130,7 +131,8 @@ void TrackName::draw(DrawList &list, const Theme &theme) const
 
 TrackHeader::TrackHeader(ProjectStore &store, int index, const TransportHooks &hooks, std::function<bool()> automationShown,
                          std::function<void(bool)> showAutomation, std::function<bool()> folded,
-                         std::function<void(bool)> fold, std::function<int()> foldedCount)
+                         std::function<void(bool)> fold, std::function<int()> foldedCount,
+                         std::function<bool()> takesShown, std::function<void(bool)> showTakes)
     : Container(Direction::Row), store_(store), index_(index), chooseInstrument_(hooks.chooseInstrument)
 {
     setAlign(Align::Center);
@@ -161,6 +163,10 @@ TrackHeader::TrackHeader(ProjectStore &store, int index, const TransportHooks &h
         const int inside = foldedCount ? foldedCount() : 0;
         if (inside > 0)
             text += std::string(text.empty() ? "" : "  /  ") + std::to_string(inside) + (inside == 1 ? " track folded" : " tracks folded");
+        // A track with takes, how many
+        const Track *t = store.project().track(index);
+        if (t && !t->takeLanes.empty())
+            text += std::string(text.empty() ? "" : "  /  ") + std::to_string(t->takeLanes.size()) + (t->takeLanes.size() == 1 ? " take" : " takes");
         return text;
     }, TextStyle::Caption, TextTone::Secondary);
     add<Spacer>();
@@ -189,6 +195,8 @@ TrackHeader::TrackHeader(ProjectStore &store, int index, const TransportHooks &h
     if (!(self && self->bus())) // buses record nothing
         toggles.push_back({"R", "Record arm", engine::Key::R, armGet, armSet});
     toggles.push_back({"A", "Automation lanes", engine::Key::A, std::move(automationShown), std::move(showAutomation)});
+    if (takesShown && showTakes && !(self && self->bus()))
+        toggles.push_back({"T", "Take lanes", engine::Key::T, std::move(takesShown), std::move(showTakes)});
     if (hooks.automationArmed && hooks.armAutomation) {
         auto armed = hooks.automationArmed;
         auto arm = hooks.armAutomation;
@@ -313,7 +321,8 @@ void ArrangementView::rebuild()
             [this, index](bool on) { showAutomation(index, on); },
             group ? std::function<bool()>([this, index] { return folded(index); }) : std::function<bool()>(),
             group ? std::function<void(bool)>([this, index](bool on) { fold(index, on); }) : std::function<void(bool)>(),
-            group ? std::function<int()>([this, id] { return foldedCount(project().trackIndex(id)); }) : std::function<int()>()));
+            group ? std::function<int()>([this, id] { return foldedCount(project().trackIndex(id)); }) : std::function<int()>(),
+            [this, index] { return takesShown(index); }, [this, index](bool on) { showTakes(index, on); }));
     }
     masterHeader_ = std::make_unique<MasterHeader>(
         transport_, [this] { return openMaster_; }, [this](bool on) { showMasterAutomation(on); });
@@ -438,7 +447,9 @@ void ArrangementView::layoutRows()
         }
         row.open = openAutomation_.count(project().tracks[i].id) > 0;
         row.lanes = row.open ? automationRows(project(), static_cast<int>(i)) : std::vector<AutomationRow>{};
-        row.height = kTrackHeight + (row.open ? static_cast<float>(row.lanes.size()) * kLaneHeight + kAddHeight : 0.0f);
+        row.takes = openTakes_.count(project().tracks[i].id) ? project().tracks[i].takeLanes.size() : 0;
+        row.height = kTrackHeight + static_cast<float>(row.takes) * kTakeHeight +
+                     (row.open ? static_cast<float>(row.lanes.size()) * kLaneHeight + kAddHeight : 0.0f);
         top += row.height;
     }
     master_.top = top;
@@ -456,7 +467,10 @@ const ArrangementView::Row *ArrangementView::rowOf(int track) const
 
 float ArrangementView::headHeight(int track) const
 {
-    return isMaster(track) ? kMasterHeight : kTrackHeight;
+    if (isMaster(track))
+        return kMasterHeight;
+    const Row *row = rowOf(track);
+    return kTrackHeight + (row ? static_cast<float>(row->takes) * kTakeHeight : 0.0f);
 }
 
 int ArrangementView::laneRowAt(float y) const
@@ -750,10 +764,12 @@ void ArrangementView::handleInput(const Input &input)
         if (input.pressed)
             showTiming(!timingShown_);
     }
-    // The tempo and signature lanes, then the automation lanes and their headers, take the input over them
+    // The tempo and signature lanes, then the take lanes, then the automation lanes and their
+    // headers, take the input over them
     if (timingShown_)
         timing_->handleInput(input);
-    const bool inLanes = handleLaneInput(input);
+    const bool inTakes = handleTakeInput(input);
+    const bool inLanes = handleLaneInput(input) || inTakes;
 
     // What's under the mouse in the lanes
     hoveredTrack_ = -1;
@@ -813,7 +829,7 @@ void ArrangementView::handleInput(const Input &input)
     else if (band.contains(input.mouse) || ruler_.contains(input.mouse))
         input.setCursor(engine::Cursor::Hand);
 
-    if (input.pressed && !lanePress_) {
+    if (input.pressed && !lanePress_ && !takePress_) {
         if (band.contains(input.mouse)) {
             loopPress_ = xBeat(input.mouse.x);
             loopPressX_ = input.mouse.x;
@@ -984,6 +1000,8 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
     }
     const TextTone tone = t.mute ? TextTone::Muted : selected ? TextTone::Accent : TextTone::Primary;
     list.add(theme.text(clip.name, {textX, r.y + 6.0f, r.w, px}, TextStyle::Caption, tone, TextAlign::Start));
+    if (clip.take != kNoId)
+        drawTakeBadge(list, theme, track, clip, r);
 
     // Audio clips show their waveform (the take so far, while recording); instrument clips their
     // notes
@@ -1129,6 +1147,18 @@ uint64_t ArrangementView::contentKey(bool recording) const
     fp.add(timingShown_);
     if (timingShown_)
         fp.add(timing_->key());
+    // The take lanes' hover and drag
+    fp.add(takeTrack_);
+    fp.add(takeLane_);
+    fp.add(hoverFrom_);
+    fp.add(hoverTo_);
+    fp.add(takeDrag_);
+    fp.add(boundaryAt_);
+    // Which lane each track with its takes shown is heard from
+    for (size_t i = 0; i < rows_.size(); ++i) {
+        if (rows_[i].takes > 0)
+            fp.add(transport_.auditioned ? transport_.auditioned(static_cast<int>(i)) : kNoId);
+    }
     // Layout and view
     fp.add(rect_);
     fp.add(headerArea_);
@@ -1259,6 +1289,7 @@ void ArrangementView::drawContent(DrawList &list, const Theme &theme) const
         list.add(theme.ink({well_.x, y, well_.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.25f));
     }
     list.add(theme.ink({well_.x, rowTop(tracks) + rowHeight(tracks), well_.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.25f));
+    drawTakeLanes(list, theme);
     drawLanes(list, theme);
     // A folded group's row shows where the tracks folded into it have clips: the spans of all their
     // clips, merged, as blocks in the accent with a thin edge, centred in the row
@@ -1369,8 +1400,10 @@ void ArrangementView::draw(DrawList &list, const Theme &theme) const
         for (int level = 0; level < d; ++level)
             list.add(theme.accent({headerArea_.x + 4.0f + kIndent * static_cast<float>(level), top, 2.0f, h}, Shape::Pill, 0.35f));
     }
-    if (!lifted)
+    if (!lifted) {
+        drawTakeHeaders(list, theme);
         drawLaneHeaders(list, theme);
+    }
     list.popClip();
     if (timingShown_)
         timing_->drawHeaders(list, theme);
@@ -1417,6 +1450,58 @@ void ArrangementView::draw(DrawList &list, const Theme &theme) const
 }
 
 // Automation lanes
+
+Rect ArrangementView::takeLaneRect(int track, size_t lane) const
+{
+    return {well_.x, rowTop(track) + kTrackHeight + static_cast<float>(lane) * kTakeHeight, well_.w, kTakeHeight};
+}
+
+Rect ArrangementView::takeHeaderRect(int track, size_t lane) const
+{
+    const float in = kIndent * static_cast<float>(depth(track));
+    return {headerArea_.x + in, rowTop(track) + kTrackHeight + static_cast<float>(lane) * kTakeHeight, headerArea_.w - in, kTakeHeight};
+}
+
+Rect ArrangementView::takeButtonRect(int track, size_t lane, int button) const
+{
+    const Rect h = takeHeaderRect(track, lane);
+    return {h.x + h.w - 30.0f - static_cast<float>(2 - button) * 26.0f, h.y + h.h * 0.5f - 10.0f, 20.0f, 20.0f};
+}
+
+bool ArrangementView::takeLaneAt(Vec2 p, int &track, size_t &lane) const
+{
+    if (!headerArea_.contains(p) && !well_.contains(p))
+        return false;
+    track = rowAt(p.y);
+    const Row *row = rowOf(track);
+    if (track < 0 || !row || row->takes == 0)
+        return false;
+    const float into = p.y - rowTop(track) - kTrackHeight;
+    if (into < 0.0f || into >= static_cast<float>(row->takes) * kTakeHeight)
+        return false;
+    lane = static_cast<size_t>(into / kTakeHeight);
+    return true;
+}
+
+bool ArrangementView::takesShown(int track) const
+{
+    const Track *t = project().track(track);
+    return t && openTakes_.count(t->id) > 0;
+}
+
+void ArrangementView::showTakes(int track, bool shown)
+{
+    const Track *t = project().track(track);
+    if (!t)
+        return;
+    if (shown)
+        openTakes_.insert(t->id);
+    else
+        openTakes_.erase(t->id);
+    layoutRows();
+    clampScroll();
+    Component::treeChanged(); // the headers move
+}
 
 Rect ArrangementView::laneRect(int track, size_t lane) const
 {

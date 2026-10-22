@@ -197,6 +197,7 @@ void ProjectStore::restore(HistoryRestore plan)
             t.effects = std::move(change.track.effects);
             t.clips = std::move(change.track.clips);
             t.automation = std::move(change.track.automation);
+            t.takeLanes = std::move(change.track.takeLanes);
         }
         if (change.mix) {
             Track &t = editMix(index);

@@ -41,8 +41,12 @@ public:
     // Once a frame. Returns a message worth showing (a failure, lost audio), or empty.
     std::string update();
 
-    // For drawing: the overview of a clip being recorded, or null
+    // For drawing: the overview of a clip being recorded, or null; and of the audio being recorded on
+    // a track (every pass of it, which take lanes show at their offsets), or null
     const audio::AudioData *preview(int track, int clip) const;
+    const audio::AudioData *trackPreview(int track) const;
+    // The tracks (by id) whose recordings left takes since the last call, so their lanes can show
+    std::vector<ObjectId> takeNewTakes();
     bool isRecording(int track, int clip) const;
     // Every MIDI message seen, for an activity light
     uint64_t midiMessages() const { return midiMessages_; }
@@ -62,6 +66,12 @@ private:
         std::shared_ptr<audio::AudioData> preview;
         float runLow = 0.0f, runHigh = 0.0f;
         uint32_t runFrames = 0;
+        // Loop recording: each lap is a pass. The current pass is the clip above; the finished ones
+        // wait in lanes of their own, named as their clips (passNames, in order), until the recording
+        // ends and every pass is folded into takes (foldTakes).
+        std::vector<std::string> passNames;
+        uint32_t lap = 0;     // the transport's lap the current pass is in
+        size_t passFrame = 0; // audio: the take's frame where the current pass starts
     };
 
     const Project &project() const { return store_.project(); }
@@ -71,6 +81,14 @@ private:
     // The same clip, for changing (nothing is counted as changed when there is none)
     Clip *editClipOf(Target &t);
     double beatOf(const audio::StampedMidi &m) const;
+    // A pass ends: its clip moves into a lane of its own; the next starts at `start` (audio: `offset`
+    // seconds into the take)
+    void endPass(Target &t);
+    void startPass(Target &t, double start, double offset);
+    // MIDI: passes end at the loop's end until the target is in `lap`
+    void lapMidi(Target &t, uint32_t lap);
+    // The recording on this target is over: its passes become takes (or a plain clip)
+    void fold(Target &t);
     void midi(const audio::StampedMidi &m);
     void endNote(Target &t, int key, double beat);
     void growAudio(size_t newFrames);
@@ -93,6 +111,13 @@ private:
     uint32_t takeChannels_ = 0;
     uint64_t midiMessages_ = 0;
     int takeNumber_ = 0;
+    // Loop recording: whether the transport loops over the take, the loop in beats and samples, and
+    // the lap it started in
+    bool looping_ = false;
+    double loopStartBeat_ = 0.0, loopEndBeat_ = 0.0;
+    uint64_t loopStartSample_ = 0, loopEndSample_ = 0;
+    uint32_t startLap_ = 0;
+    std::vector<ObjectId> newTakes_;
 };
 
 }

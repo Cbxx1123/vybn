@@ -80,7 +80,20 @@ struct Clip {
     double fadeIn = 0.0;   // seconds
     double fadeOut = 0.0;
 
+    // In the track's own lane, a comp section: the take (a clip in one of the track's take lanes)
+    // it was cut from (docs/design/takes-plan.md). kNoId for an ordinary clip, and in a take lane.
+    ObjectId take = kNoId;
+
     bool hasAudio() const { return !audioFile.empty(); }
+    double end() const { return start + length; }
+};
+
+// Recorded passes kept under a track, which don't play: the track's comp (its own clips) is cut
+// from them (Takes.h). A lane's clips don't overlap, sorted by start.
+struct TakeLane {
+    ObjectId id = kNoId; // from the same counter as clip ids, unique among them
+    std::string name;
+    std::vector<Clip> clips;
 };
 
 // Audio and instrument tracks make sound; return and group tracks (buses) take other tracks' instead:
@@ -130,6 +143,8 @@ struct Track {
     // it sent to return tracks, one send per return at most. Mix fields (editMix), like the gain.
     ObjectId output = kNoId;
     std::vector<Send> sends;
+    // Audio and instrument tracks: the takes recorded on it, newest first. Content, like clips.
+    std::vector<TakeLane> takeLanes;
 
     bool bus() const { return isBus(kind); }
 };

@@ -18,6 +18,7 @@
 #include "daw/views/Mixer.h"
 #include "daw/views/PianoRoll.h"
 #include "daw/model/Routing.h"
+#include "daw/model/Takes.h"
 #include "daw/views/TransportBar.h"
 #include "audio/AudioFile.h"
 #include "audio/Memory.h"
@@ -290,6 +291,66 @@ void DawApp::importAudioDemo()
         }
         showEditor();
     });
+}
+
+void DawApp::takesDemo()
+{
+    // Three passes over two bars, as loop recording leaves them: an audio track's in one file (plucks
+    // that differ pass to pass), and the Lead track's melodies; each comped from all three
+    const double rate = 48000.0;
+    const audio::TempoMap &timing = project().timing;
+    const double passSeconds = timing.secondsAt(8.0);
+    const size_t passFrames = static_cast<size_t>(passSeconds * rate);
+    std::vector<float> samples(passFrames * 3, 0.0f);
+    const double notes[3][4] = {{220.0, 261.63, 329.63, 293.66}, {246.94, 293.66, 349.23, 329.63}, {196.0, 261.63, 392.0, 349.23}};
+    for (int pass = 0; pass < 3; ++pass) {
+        for (int pluck = 0; pluck < 8; ++pluck) {
+            const size_t start = pass * passFrames + static_cast<size_t>(timing.secondsAt(pluck) * rate);
+            const double f = notes[pass][pluck % 4];
+            for (size_t i = 0; start + i < samples.size() && i < static_cast<size_t>(rate * 0.45); ++i) {
+                const double t = i / rate;
+                samples[start + i] += static_cast<float>((0.25 + 0.1 * pass) * std::exp(-t * 6.0) * std::sin(2.0 * 3.14159265358979 * f * t));
+            }
+        }
+    }
+    const std::string path = (fs::temp_directory_path() / "VYBN demo takes.wav").string();
+    std::string error;
+    if (!audio::writeWavFile(path, samples.data(), samples.size(), 1, rate, error)) {
+        notify(error);
+        return;
+    }
+    pool_->addRecording(path, rate, 1, std::move(samples));
+    ObjectId id = 900000; // above the demo's ids; normalizeIds keeps them
+    for (size_t i = 0; i < project().tracks.size(); ++i) {
+        const Track &t = project().tracks[i];
+        if (t.kind != TrackKind::Audio && t.name != "Lead")
+            continue;
+        const bool audio = t.kind == TrackKind::Audio;
+        editTakes(static_cast<int>(i), [&](Track &tr) {
+            tr.clips.erase(std::remove_if(tr.clips.begin(), tr.clips.end(), [](const Clip &c) { return c.start < 8.0; }), tr.clips.end());
+            for (int pass = 0; pass < 3; ++pass) {
+                Clip take("Take " + std::to_string(pass + 1), 0.0, 8.0);
+                take.id = ++id;
+                if (audio) {
+                    take.audioFile = path;
+                    take.offset = pass * passSeconds;
+                } else {
+                    const int melody[3][8] = {{69, 72, 76, 74, 72, 69, 67, 69}, {69, 71, 72, 76, 79, 76, 74, 72}, {64, 67, 69, 72, 71, 69, 67, 64}};
+                    for (int n = 0; n < 8; ++n)
+                        take.notes.push_back({static_cast<double>(n), 0.9, melody[pass][n], 0.8f});
+                }
+                tr.takeLanes.insert(tr.takeLanes.begin(), TakeLane{++id, take.name, {take}});
+            }
+            // The comp: the third pass's opening, the first's middle, the second's end
+            compRange(tr, 0.0, 2.0, tr.takeLanes[0].clips[0].id, timing);
+            compRange(tr, 2.0, 5.0, tr.takeLanes[2].clips[0].id, timing);
+            compRange(tr, 5.0, 8.0, tr.takeLanes[1].clips[0].id, timing);
+            return true;
+        });
+        arrangement_->showTakes(static_cast<int>(i), true);
+        if (audio)
+            break;
+    }
 }
 
 void DawApp::recordMidiDemo()
@@ -576,6 +637,96 @@ void DawApp::openMasterAutomationMenu(Vec2 at)
     openContextMenu(gui_, items, at);
 }
 
+void DawApp::editTakes(int track, const std::function<bool(Track &)> &change)
+{
+    const Track *t = project().track(track);
+    if (!t)
+        return;
+    Track copy = *t;
+    if (!change(copy))
+        return;
+    Track &edited = session_.store().editTrack(track);
+    edited.clips = std::move(copy.clips);
+    edited.takeLanes = std::move(copy.takeLanes);
+}
+
+void DawApp::openTakeMenu(int track, ObjectId lane, ObjectId take, Vec2 at)
+{
+    const Track *t = project().track(track);
+    const TakeLane *found = t ? findLane(*t, lane) : nullptr;
+    if (!found)
+        return;
+    const ObjectId trackId = t->id;
+    std::vector<MenuItem> items;
+    if (take != kNoId) {
+        items.push_back(MenuItem::item("Use this take", [this, track, take] {
+            editTakes(track, [this, take](Track &tr) {
+                const Clip *c = findTake(tr, take);
+                return c && compRange(tr, c->start, c->end(), take, project().timing);
+            });
+        }));
+    }
+    items.push_back(MenuItem::item(take != kNoId ? "Use the whole lane" : "Use this lane",
+                                   [this, track, lane] { editTakes(track, [this, lane](Track &tr) { return useLane(tr, lane, project().timing); }); }));
+    items.push_back(MenuItem::toggle("Listen to this lane", [this, trackId, lane] { return bridge_->audition(trackId) == lane; },
+                                     [this, trackId, lane] { bridge_->setAudition(trackId, bridge_->audition(trackId) == lane ? kNoId : lane); }));
+    items.push_back(MenuItem::divider());
+    items.push_back(MenuItem::item("Rename...", [this, track, lane] {
+        const Track *tr = project().track(track);
+        const TakeLane *l = tr ? findLane(*tr, lane) : nullptr;
+        if (!l)
+            return;
+        Dialog &dialog = Dialog::open(gui_, "Rename take lane");
+        dialog.setWidth(380.0f);
+        auto &field = labelled(dialog.body(), "Name").add<TextField>("Take name");
+        field.setText(l->name).setSize(Size::Small);
+        field.onChange([this, track, lane](const std::string &text) {
+            if (text.empty())
+                return;
+            editTakes(track, [lane, text](Track &tr) {
+                TakeLane *edited = findLane(tr, lane);
+                if (!edited || edited->name == text)
+                    return false;
+                edited->name = text;
+                return true;
+            });
+        });
+        field.onSubmit([&dialog](const std::string &) { dialog.close(); });
+        field.focus();
+        field.selectAll();
+        dialog.addButton("Done", {}, true);
+    }));
+    // Its takes as ordinary clips on a track of their own, below this one
+    items.push_back(MenuItem::item("Move to a new track", [this, track, lane] {
+        const Track *tr = project().track(track);
+        const TakeLane *l = tr ? findLane(*tr, lane) : nullptr;
+        if (!l)
+            return;
+        Track fresh = *tr;
+        fresh.id = kNoId;
+        fresh.name = tr->name + " " + l->name;
+        fresh.armed = false;
+        fresh.solo = false;
+        fresh.takeLanes.clear();
+        fresh.clips = l->clips;
+        for (Clip &c : fresh.clips) {
+            c.id = kNoId;
+            c.take = kNoId;
+        }
+        fresh.automation.clear();
+        Project &p = session_.store().edit();
+        p.tracks.insert(p.tracks.begin() + track + 1, std::move(fresh));
+        p.select(track + 1);
+    }));
+    items.push_back(MenuItem::divider());
+    items.push_back(MenuItem::item("Delete take lane", [this, track, trackId, lane] {
+        if (bridge_->audition(trackId) == lane)
+            bridge_->setAudition(trackId, kNoId);
+        editTakes(track, [lane](Track &tr) { return removeLane(tr, lane); });
+    }));
+    openContextMenu(gui_, items, at);
+}
+
 void DawApp::openTrackMenu(int track, Vec2 at)
 {
     const Track *t = project().track(track);
@@ -688,6 +839,17 @@ void DawApp::openTrackMenu(int track, Vec2 at)
     }
     items.push_back(MenuItem::sub("Output", outputs));
     items.push_back(MenuItem::item("Group the track", [this, track] { groupTrack(track); }, "track.group"));
+    // Its takes: shown or not, the comp made final, takes the comp doesn't use cleared away
+    if (!t->takeLanes.empty()) {
+        items.push_back(MenuItem::divider());
+        items.push_back(MenuItem::toggle("Take lanes", [this, track] { return arrangement_->takesShown(track); },
+                                         [this, track] { arrangement_->showTakes(track, !arrangement_->takesShown(track)); }));
+        items.push_back(MenuItem::item("Delete unused takes", [this, track] { editTakes(track, [](Track &tr) { return deleteUnusedTakes(tr); }); }));
+        items.push_back(MenuItem::item("Flatten comp", [this, track] {
+            bridge_->setAudition(project().tracks[static_cast<size_t>(track)].id, kNoId);
+            editTakes(track, [](Track &tr) { return flattenComp(tr); });
+        }));
+    }
     items.push_back(MenuItem::divider());
     items.push_back(MenuItem::item("Delete track", [this, track] { deleteTrack(track); }));
     openContextMenu(gui_, items, at);

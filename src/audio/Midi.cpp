@@ -170,7 +170,7 @@ void MidiHub::process(AudioBlock &block)
     auto take = [&](const MidiMessage &m) {
         if (eventCount_ < events_.size())
             events_[eventCount_++] = m;
-        stamped_.push({m, t.position, t.playing, t.sampleRate});
+        stamped_.push({m, t.position, t.playing, t.sampleRate, t.lap});
     };
     MidiMessage m;
     while (virtual_.pop(m))

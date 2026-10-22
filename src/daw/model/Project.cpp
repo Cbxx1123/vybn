@@ -3,6 +3,7 @@
 #include "daw/model/Routing.h"
 
 #include <algorithm>
+#include <map>
 #include <set>
 
 #include "audio/Effects.h"
@@ -48,6 +49,11 @@ bool Project::normalizeIds(ObjectId &next)
         next = std::max(next, t.id + 1);
         for (const Clip &c : t.clips)
             next = std::max(next, c.id + 1);
+        for (const TakeLane &lane : t.takeLanes) {
+            next = std::max(next, lane.id + 1);
+            for (const Clip &c : lane.clips)
+                next = std::max(next, c.id + 1);
+        }
     }
     next = std::max<ObjectId>(next, 1);
 
@@ -60,15 +66,33 @@ bool Project::normalizeIds(ObjectId &next)
         }
         trackIds.insert(t.id);
     }
-    // Clip ids are unique across the whole project, not per track
+    // Clip ids are unique across the whole project, not per track; take lanes and the takes in them
+    // share the counter. A comp section's take keeps naming the take it was cut from.
     std::set<ObjectId> clipIds;
+    auto give = [&](ObjectId &id) {
+        if (id == kNoId || clipIds.count(id)) {
+            id = next++;
+            changed = true;
+        }
+        clipIds.insert(id);
+    };
     for (Track &t : tracks) {
-        for (Clip &c : t.clips) {
-            if (c.id == kNoId || clipIds.count(c.id)) {
-                c.id = next++;
-                changed = true;
+        for (Clip &c : t.clips)
+            give(c.id);
+        // A take given a fresh id (a duplicated track's) takes its sections in this track with it
+        std::map<ObjectId, ObjectId> renamed;
+        for (TakeLane &lane : t.takeLanes) {
+            give(lane.id);
+            for (Clip &c : lane.clips) {
+                const ObjectId was = c.id;
+                give(c.id);
+                if (c.id != was && was != kNoId)
+                    renamed[was] = c.id;
             }
-            clipIds.insert(c.id);
+        }
+        for (Clip &c : t.clips) {
+            if (const auto found = renamed.find(c.take); found != renamed.end())
+                c.take = found->second;
         }
     }
     return changed;

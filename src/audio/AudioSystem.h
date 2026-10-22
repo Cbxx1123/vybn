@@ -153,6 +153,9 @@ public:
     // `input` is interleaved input for the same frames (`inputChannels` of them), or null.
     bool renderOffline(float *out, uint32_t frames, double sampleRate = 48000.0, const float *input = nullptr,
                        uint32_t inputChannels = 0);
+    // A deviceless engine only: the input channels its offline renders are given, so what asks
+    // inputChannels() (recording) sees an input. For tests.
+    void setOfflineInputs(uint32_t channels);
 
     void start(env::Environment &env) override;
     void tick(env::Environment &env) override;

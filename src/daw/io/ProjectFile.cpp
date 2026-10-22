@@ -1,5 +1,7 @@
 #include "daw/io/ProjectFile.h"
 
+#include "daw/model/Takes.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -305,13 +307,17 @@ std::string writeProject(const Project &project, const std::string &folder)
             writeDevice(out, "[tracks.instrument]", t.instrument);
         for (const audio::DeviceSetting &d : t.effects)
             writeDevice(out, "[[tracks.effects]]", d);
-        for (const Clip &c : t.clips) {
-            out << "\n[[tracks.clips]]\n";
+        // A clip under `header`: the track's own ("[[tracks.clips]]", a comp section with its take) or a
+        // take lane's
+        auto writeClip = [&](const Clip &c, const char *header) {
+            out << "\n" << header << "\n";
             if (c.id != kNoId)
                 out << "id = " << c.id << "\n";
             out << "name = " << quote(c.name) << "\n";
             out << "start = " << number(c.start) << "\n";
             out << "length = " << number(c.length) << "\n";
+            if (c.take != kNoId)
+                out << "take = " << c.take << "\n";
             if (!instrument) {
                 if (c.hasAudio()) {
                     out << "audio_file = " << quote(relativeTo(c.audioFile, folder)) << "\n";
@@ -320,7 +326,7 @@ std::string writeProject(const Project &project, const std::string &folder)
                     out << "fade_in = " << number(c.fadeIn) << "\n";
                     out << "fade_out = " << number(c.fadeOut) << "\n";
                 }
-                continue;
+                return;
             }
             // Controller lanes: each its points as {beat, value}
             if (!c.controls.empty()) {
@@ -336,7 +342,7 @@ std::string writeProject(const Project &project, const std::string &folder)
             }
             if (c.notes.empty()) {
                 out << "notes = []\n";
-                continue;
+                return;
             }
             out << "notes = [\n";
             for (const Note &n : c.notes) {
@@ -344,6 +350,17 @@ std::string writeProject(const Project &project, const std::string &folder)
                     << ", velocity = " << number(n.velocity) << (n.muted ? ", muted = true" : "") << " },\n";
             }
             out << "]\n";
+        };
+        for (const Clip &c : t.clips)
+            writeClip(c, "[[tracks.clips]]");
+        // The take lanes, the newest first, each with its takes
+        for (const TakeLane &lane : t.takeLanes) {
+            out << "\n[[tracks.take_lanes]]\n";
+            if (lane.id != kNoId)
+                out << "id = " << lane.id << "\n";
+            out << "name = " << quote(lane.name) << "\n";
+            for (const Clip &c : lane.clips)
+                writeClip(c, "[[tracks.take_lanes.clips]]");
         }
     }
     for (const audio::DeviceSetting &d : project.masterEffects)
@@ -894,15 +911,19 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
         const toml::Array *clips = r.tables(tv, "clips", where);
         if (!r.ok())
             return false;
-        for (size_t ci = 0; clips && !t.bus() && ci < clips->size(); ++ci) { // buses hold no clips
-            const toml::Value &cv = (*clips)[ci];
-            const std::string clipWhere = where + at("clip", ci);
-            Clip c;
+        // A clip (the track's own, or a take lane's) from its table; false when it is refused
+        auto readClip = [&](const toml::Value &cv, const std::string &clipWhere, Clip &c) -> bool {
             if (!readId(r, cv, clipWhere, c.id))
                 return false;
             r.text(cv, "name", clipWhere, c.name);
             r.real(cv, "start", clipWhere, c.start);
             r.real(cv, "length", clipWhere, c.length);
+            // A comp section's take: an id, kept only when the track has that take (checked below)
+            if (const toml::Value *take = cv.at("take")) {
+                if (take->type() != toml::Type::Integer || take->integer() <= 0 || take->integer() > 4294967295LL)
+                    return r.fail(clipWhere + "take must be a take's id");
+                c.take = static_cast<ObjectId>(take->integer());
+            }
             if (t.kind == TrackKind::Audio) {
                 r.text(cv, "audio_file", clipWhere, c.audioFile);
                 r.real(cv, "offset", clipWhere, c.offset);
@@ -970,7 +991,42 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
                 if (!taken)
                     c.controls.push_back(std::move(lane));
             }
+            return true;
+        };
+        for (size_t ci = 0; clips && !t.bus() && ci < clips->size(); ++ci) { // buses hold no clips
+            Clip c;
+            if (!readClip((*clips)[ci], where + at("clip", ci), c))
+                return false;
             t.clips.push_back(std::move(c));
+        }
+        // Take lanes, each with its takes
+        const toml::Array *lanes = r.tables(tv, "take_lanes", where);
+        if (!r.ok())
+            return false;
+        for (size_t li = 0; lanes && !t.bus() && li < lanes->size(); ++li) {
+            const toml::Value &lv = (*lanes)[li];
+            const std::string laneWhere = where + at("take lane", li);
+            TakeLane lane;
+            if (!readId(r, lv, laneWhere, lane.id))
+                return false;
+            r.text(lv, "name", laneWhere, lane.name);
+            const toml::Array *takes = r.tables(lv, "clips", laneWhere);
+            if (!r.ok())
+                return false;
+            for (size_t ci = 0; takes && ci < takes->size(); ++ci) {
+                Clip c;
+                if (!readClip((*takes)[ci], laneWhere + at("take", ci), c))
+                    return false;
+                c.take = kNoId; // a take is never a section of another
+                lane.clips.push_back(std::move(c));
+            }
+            std::stable_sort(lane.clips.begin(), lane.clips.end(), [](const Clip &x, const Clip &y) { return x.start < y.start; });
+            t.takeLanes.push_back(std::move(lane));
+        }
+        // A section whose take isn't there is an ordinary clip
+        for (Clip &c : t.clips) {
+            if (c.take != kNoId && !findTake(t, c.take))
+                c.take = kNoId;
         }
         p.tracks.push_back(std::move(t));
     }

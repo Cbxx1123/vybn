@@ -3,6 +3,7 @@
 
 #include "BridgeSelfTest.h"
 #include "RoutingSelfTest.h"
+#include "TakesSelfTest.h"
 #include "TempoSelfTest.h"
 
 #include <algorithm>
@@ -2428,6 +2429,7 @@ id = "vibin.synth"
     c.failures += runBridgeChecks();
     c.failures += runRoutingChecks();
     c.failures += runTempoChecks();
+    c.failures += runTakesChecks();
 
     return c.finish("project");
 }

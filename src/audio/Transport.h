@@ -48,6 +48,8 @@ public:
 
     bool playing() const { return playing_.load(std::memory_order_relaxed); }
     uint64_t position() const { return position_.load(std::memory_order_relaxed); }
+    // How many times playback has jumped back to the loop's start (loop recording counts its passes by it)
+    uint32_t laps() const { return laps_.load(std::memory_order_acquire); }
 
     // Main thread: the tempo map, published when it differs from the last; a constant tempo is
     // a map with one point
@@ -97,6 +99,7 @@ public:
         state.sampleRate = sampleRate;
         state.map = map_;
         state.tempo = map_->bpmAt(state.beatAt(0));
+        state.lap = laps();
         return state;
     }
     // Audio thread: how many of `frames` to render before the loop's end, where the block must
@@ -115,8 +118,10 @@ public:
             return;
         uint64_t next = state.position + frames;
         uint64_t start = 0, end = 0;
-        if (loopSamples(state, start, end) && state.position < end && next >= end)
+        if (loopSamples(state, start, end) && state.position < end && next >= end) {
             next = start;
+            laps_.fetch_add(1, std::memory_order_release);
+        }
         position_.store(next, std::memory_order_relaxed);
     }
 
@@ -148,6 +153,7 @@ private:
     std::vector<Retired> retired_;            // main thread
     std::atomic<const TempoMap *> published_{nullptr};
     std::atomic<uint64_t> blocks_{0};  // blocks begun
+    std::atomic<uint32_t> laps_{0};
     const TempoMap *map_ = nullptr;    // audio thread: the map in use
 };
 

@@ -18,6 +18,7 @@ struct TransportState {
     double tempo = 120.0;  // beats per minute at the block's start
     double sampleRate = 48000.0;
     const TempoMap *map = nullptr; // the tempo map; none: `tempo` throughout
+    uint32_t lap = 0;              // the transport's laps of the loop so far (Transport::laps)
 
     // Beats since the start of the timeline at `frame` frames into the block
     double beatAt(double frame) const

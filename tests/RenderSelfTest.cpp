@@ -46,6 +46,7 @@
 #include "daw/views/PianoRoll.h"
 #include "daw/model/Project.h"
 #include "daw/model/ProjectStore.h"
+#include "daw/model/Takes.h"
 #include "daw/model/Routing.h"
 #include "daw/app/Settings.h"
 #include "daw/views/StepSequencer.h"
@@ -2253,6 +2254,144 @@ Picture sceneTempo()
     }, 0, nullptr);
 }
 
+// The demo project with three MIDI takes on the Lead track (index 2) over two bars, newest first, the
+// comp cut from all three: the third take's opening, the first's middle, the second's end
+daw::Project takesProject()
+{
+    daw::Project project = daw::demoProject();
+    daw::Track &lead = project.tracks[2];
+    lead.clips.clear();
+    const int melody[3][8] = {{69, 72, 76, 74, 72, 69, 67, 69}, {69, 71, 72, 76, 79, 76, 74, 72}, {64, 67, 69, 72, 71, 69, 67, 64}};
+    for (int pass = 0; pass < 3; ++pass) {
+        daw::Clip take("Take " + std::to_string(pass + 1), 0.0, 8.0);
+        take.id = 900001 + static_cast<daw::ObjectId>(pass);
+        for (int n = 0; n < 8; ++n)
+            take.notes.push_back({static_cast<double>(n), 0.9, melody[pass][n], 0.8f});
+        lead.takeLanes.insert(lead.takeLanes.begin(), daw::TakeLane{900011 + static_cast<daw::ObjectId>(pass), take.name, {take}});
+    }
+    daw::compRange(lead, 0.0, 2.0, 900003, project.timing);
+    daw::compRange(lead, 2.0, 5.0, 900001, project.timing);
+    daw::compRange(lead, 5.0, 8.0, 900002, project.timing);
+    return project;
+}
+
+// With `after`, one more frame is run after the picture (the cache scenes)
+Picture renderTakes(ui::FrameStats *after)
+{
+    daw::ProjectStore store(takesProject()); // outlives the context
+    return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
+        auto &view = context.root().add<daw::ArrangementView>(store, quietTransport());
+        view.showTiming(false);
+        view.showTakes(2, true);
+        stretch(view);
+    }, 0, nullptr, after);
+}
+
+Picture sceneTakes()
+{
+    return renderTakes(nullptr);
+}
+
+// Comping in the take lanes, by input handed to the view as above: under the ruler (30), the Lead
+// track's row is the third (76 each), its take lanes (52 each) under it, newest first.
+void takeEditChecks(Checker &c)
+{
+    engine::Window window(1200, 520, "VYBN takes test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::ProjectStore store(takesProject());
+    daw::ObjectId heard = daw::kNoId, menuLane = daw::kNoId;
+    daw::TransportHooks hooks = quietTransport();
+    hooks.auditioned = [&heard](int) { return heard; };
+    hooks.audition = [&heard](int, daw::ObjectId lane) { heard = lane; };
+    hooks.takeMenu = [&menuLane](int, daw::ObjectId lane, daw::ObjectId, ui::Vec2) { menuLane = lane; };
+    ui::Context context(window, renderer, theme);
+    auto &view = context.root().add<daw::ArrangementView>(store, hooks);
+    view.showTiming(false);
+    stretch(view);
+    view.showTakes(2, true);
+    for (int i = 0; i < 4; ++i) {
+        context.update();
+        context.buildFrame();
+    }
+    const ui::Rect r = view.rect();
+    const float wellX = r.x + 278.0f, lanesTop = r.y + 30.0f + 3 * 76.0f;
+    auto beatX = [wellX](double beat) { return wellX + static_cast<float>(beat) * 22.0f; };
+    auto laneY = [lanesTop](int lane) { return lanesTop + 52.0f * static_cast<float>(lane) + 26.0f; };
+    double now = 10.0;
+    auto send = [&](ui::Vec2 at, bool down, bool pressed, bool secondary = false) {
+        ui::Input in;
+        in.mouse = at;
+        in.down = down;
+        in.pressed = pressed;
+        in.secondaryPressed = secondary;
+        in.time = now;
+        view.handleInput(in);
+        view.arrange(view.rect(), theme);
+        now += 0.5;
+    };
+    auto comp = [&store] {
+        std::string text;
+        for (const daw::Clip &clip : store.project().tracks[2].clips)
+            text += std::to_string(clip.take % 10) + "@" + std::to_string(static_cast<int>(clip.start)) + "-" + std::to_string(static_cast<int>(clip.end())) + " ";
+        return text;
+    };
+
+    // A click in the second lane (take 2) over beat 3 switches the section there (2-5) to it
+    send({beatX(3.3), laneY(1)}, true, true);
+    send({beatX(3.3), laneY(1)}, false, false);
+    c.check(comp() == "3@0-2 2@2-8 ", "Take lanes: a click switches the section under it", comp());
+
+    // A swipe across the bottom lane (take 1) from beat 1 to 4 comps that range from it
+    send({beatX(1.0), laneY(2)}, true, true);
+    send({beatX(2.5), laneY(2)}, true, false);
+    send({beatX(4.0), laneY(2)}, true, false);
+    send({beatX(4.0), laneY(2)}, false, false);
+    c.check(comp() == "3@0-1 1@1-4 2@4-8 ", "Take lanes: a swipe comps the range it crosses", comp());
+
+    // Swiping back while still held gives back what the swipe took
+    send({beatX(6.0), laneY(0)}, true, true);
+    send({beatX(7.5), laneY(0)}, true, false);
+    send({beatX(6.5), laneY(0)}, true, false);
+    send({beatX(6.5), laneY(0)}, false, false);
+    c.check(comp() == "3@0-1 1@1-4 2@4-6 3@6-7 2@7-8 ", "Take lanes: swiping back gives the comp back", comp());
+
+    // A double-click on the top take: all of it
+    const double first = now;
+    send({beatX(5.2), laneY(0)}, true, true);
+    send({beatX(5.2), laneY(0)}, false, false);
+    now = first + 0.2;
+    send({beatX(5.2), laneY(0)}, true, true);
+    send({beatX(5.2), laneY(0)}, false, false);
+    c.check(comp() == "3@0-8 ", "Take lanes: a double-click uses the whole take", comp());
+
+    // A boundary drags: comp 2-4 from take 1, then pull its left edge to beat 3
+    send({beatX(2.0), laneY(2)}, true, true);
+    send({beatX(4.0), laneY(2)}, true, false);
+    send({beatX(4.0), laneY(2)}, false, false);
+    send({beatX(2.0), laneY(1)}, true, true);
+    send({beatX(3.0), laneY(1)}, true, false);
+    send({beatX(3.0), laneY(1)}, false, false);
+    c.check(comp() == "3@0-3 1@3-4 3@4-8 ", "Take lanes: a boundary moves when dragged", comp());
+
+    // The header: listen to a lane, use it all, its menu, delete it
+    const float buttonY = laneY(1);
+    const float headerRight = r.x + 268.0f;
+    send({headerRight - 20.0f - 52.0f, buttonY}, true, true); // listen
+    send({headerRight - 20.0f - 52.0f, buttonY}, false, false);
+    const bool listening = heard == 900012;
+    send({headerRight - 20.0f - 26.0f, buttonY}, true, true); // use
+    send({headerRight - 20.0f - 26.0f, buttonY}, false, false);
+    const bool used = comp() == "2@0-8 ";
+    send({r.x + 100.0f, buttonY}, false, false, true); // menu
+    send({headerRight - 20.0f, buttonY}, true, true); // delete
+    send({headerRight - 20.0f, buttonY}, false, false);
+    const daw::Track &lead = store.project().tracks[2];
+    c.check(listening && used && menuLane == 900012 && lead.takeLanes.size() == 2 && lead.clips[0].take == daw::kNoId && heard == daw::kNoId,
+            "Take lanes: a lane's header listens, uses, opens its menu and deletes", comp());
+}
+
 // The same song with the lanes hidden: the ruler marks the signature changes by their bars' numbers
 // and each tempo change with a dot, and the corner chip offers the lanes
 Picture sceneTempoHidden()
@@ -3292,6 +3431,7 @@ const CacheScene kCacheScenes[] = {
     {"arrangement", [](ui::FrameStats *after) { return renderArrangement(0, nullptr, after); }},
     {"master", renderMaster},
     {"folding", renderFolding},
+    {"takes", renderTakes},
     {"waveforms", [](ui::FrameStats *after) { return renderWaveforms(0, nullptr, after); }},
     {"pianoroll", [](ui::FrameStats *after) { return renderPianoRoll(0, nullptr, after); }},
     {"steps", [](ui::FrameStats *after) { return renderSteps(0, nullptr, after); }},
@@ -3340,6 +3480,7 @@ const SceneEntry kScenes[] = {
     {"automation", sceneAutomation},
     {"tempo", sceneTempo},
     {"tempo-hidden", sceneTempoHidden},
+    {"takes", sceneTakes},
     {"master", sceneMaster},
     {"folding", sceneFolding},
     {"mixer", sceneMixer},
@@ -3524,6 +3665,7 @@ int runRenderSelfTest(int argc, char **argv)
         timed("automationEditChecks", [&] { automationEditChecks(editing); });
         timed("masterEditChecks", [&] { masterEditChecks(editing); });
         timed("tempoEditChecks", [&] { tempoEditChecks(editing); });
+        timed("takeEditChecks", [&] { takeEditChecks(editing); });
         timed("foldChecks", [&] { foldChecks(editing); });
         timed("foldUiChecks", [&] { foldUiChecks(editing); });
         timed("foldMixerChecks", [&] { foldMixerChecks(editing); });
