@@ -157,63 +157,63 @@ add_executable(main
     src/ui/Keymap.cpp
     src/ui/Signals.cpp
     # The DAW's UI, built from the UI layer
-    src/daw/Project.cpp
-    src/daw/Toml.cpp
-    src/daw/ProjectFile.cpp
-    src/daw/Actions.cpp
-    src/daw/ShortcutsEditor.cpp
-    src/daw/Settings.cpp
-    src/daw/Library.cpp
-    src/daw/DeviceCatalogue.cpp
-    src/daw/Widgets.cpp
-    src/daw/Arpeggiator.cpp
-    src/daw/Arrangement.cpp
-    src/daw/Mixer.cpp
-    src/daw/DevicesPanel.cpp
-    src/daw/DevicePicker.cpp
-    src/daw/DeviceView.cpp
-    src/daw/DeviceControls.cpp
-    src/daw/SynthView.cpp
-    src/daw/SynthUserPresets.cpp
-    src/daw/AppIcon.cpp
-    src/daw/Splash.cpp
-    src/daw/PianoRoll.cpp
-    src/daw/NoteTools.cpp
-    src/daw/History.cpp
-    src/daw/ExportModel.cpp
-    src/daw/MidiExport.cpp
-    src/daw/RenderJob.cpp
-    src/daw/TransportBar.cpp
-    src/daw/AudioBridge.cpp
-    src/daw/AutomationLanes.cpp
-    src/daw/Routing.cpp
-    src/daw/AutomationWriter.cpp
-    src/daw/Autosave.cpp
-    src/daw/PreviewPlayer.cpp
-    src/daw/PianoRollMenus.cpp
-    src/daw/StepSequence.cpp
-    src/daw/StepSequencer.cpp
-    src/daw/StepMenus.cpp
-    src/daw/ProjectSession.cpp
-    src/daw/ProjectStore.cpp
-    src/daw/DawApp.cpp
-    src/daw/DawAudio.cpp
-    src/daw/DawSaving.cpp
-    src/daw/AudioPool.cpp
-    src/daw/Recording.cpp
-    src/daw/AudioEditor.cpp
-    src/daw/Json.cpp
-    src/daw/Archive.cpp
-    src/daw/Online.cpp
-    src/daw/Browser.cpp
-    src/daw/DawBrowser.cpp
-    src/daw/Exporter.cpp
-    src/daw/ExportDialog.cpp
-    src/daw/ExportsPanel.cpp
-    src/daw/RecordingController.cpp
-    src/daw/DawPlugins.cpp
-    src/daw/PluginEditor.cpp
-    src/daw/Appearance.cpp
+    src/daw/model/Project.cpp
+    src/daw/io/Toml.cpp
+    src/daw/io/ProjectFile.cpp
+    src/daw/app/Actions.cpp
+    src/daw/views/ShortcutsEditor.cpp
+    src/daw/app/Settings.cpp
+    src/daw/library/Library.cpp
+    src/daw/library/DeviceCatalogue.cpp
+    src/daw/widgets/Widgets.cpp
+    src/daw/views/Arpeggiator.cpp
+    src/daw/views/Arrangement.cpp
+    src/daw/views/Mixer.cpp
+    src/daw/views/DevicesPanel.cpp
+    src/daw/views/DevicePicker.cpp
+    src/daw/views/DeviceView.cpp
+    src/daw/views/DeviceControls.cpp
+    src/daw/views/SynthView.cpp
+    src/daw/io/SynthUserPresets.cpp
+    src/daw/app/AppIcon.cpp
+    src/daw/app/Splash.cpp
+    src/daw/views/PianoRoll.cpp
+    src/daw/model/NoteTools.cpp
+    src/daw/model/History.cpp
+    src/daw/model/ExportModel.cpp
+    src/daw/io/MidiExport.cpp
+    src/daw/audio/RenderJob.cpp
+    src/daw/views/TransportBar.cpp
+    src/daw/audio/AudioBridge.cpp
+    src/daw/model/AutomationLanes.cpp
+    src/daw/model/Routing.cpp
+    src/daw/audio/AutomationWriter.cpp
+    src/daw/io/Autosave.cpp
+    src/daw/library/PreviewPlayer.cpp
+    src/daw/views/PianoRollMenus.cpp
+    src/daw/model/StepSequence.cpp
+    src/daw/views/StepSequencer.cpp
+    src/daw/views/StepMenus.cpp
+    src/daw/model/ProjectSession.cpp
+    src/daw/model/ProjectStore.cpp
+    src/daw/app/DawApp.cpp
+    src/daw/app/DawAudio.cpp
+    src/daw/app/DawSaving.cpp
+    src/daw/audio/AudioPool.cpp
+    src/daw/audio/Recording.cpp
+    src/daw/views/AudioEditor.cpp
+    src/daw/io/Json.cpp
+    src/daw/library/Archive.cpp
+    src/daw/library/Online.cpp
+    src/daw/views/Browser.cpp
+    src/daw/app/DawBrowser.cpp
+    src/daw/audio/Exporter.cpp
+    src/daw/views/ExportDialog.cpp
+    src/daw/views/ExportsPanel.cpp
+    src/daw/audio/RecordingController.cpp
+    src/daw/app/DawPlugins.cpp
+    src/daw/views/PluginEditor.cpp
+    src/daw/app/Appearance.cpp
     # Plugins: the app's side of the sandboxed CLAP hosts
     src/plugin/Sandbox.cpp
     src/plugin/Instance.cpp
@@ -252,7 +252,7 @@ endif()
 
 if(WIN32)
     # The executable's icon: the app's mark in the default look. Made by `output/main --write-icon
-    # assets/icon/vibin.ico` (keep it in step with src/daw/AppIcon.cpp); a change to it rebuilds the resource.
+    # assets/icon/vibin.ico` (keep it in step with src/daw/app/AppIcon.cpp); a change to it rebuilds the resource.
     set(VIBIN_ICON_FILE "${CMAKE_SOURCE_DIR}/assets/icon/vibin.ico")
     configure_file(src/win/vibin.rc.in "${CMAKE_BINARY_DIR}/vibin.rc" @ONLY)
     if(MSVC)

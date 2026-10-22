@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "daw/NoteTools.h"
+#include "daw/model/NoteTools.h"
 #include "StepSelfTest.h"
 
 namespace tests {

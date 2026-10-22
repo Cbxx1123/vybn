@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "daw/StepSequence.h"
+#include "daw/model/StepSequence.h"
 
 namespace tests {
 

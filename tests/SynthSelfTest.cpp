@@ -17,7 +17,7 @@
 #include "audio/Synth.h"
 #include "audio/SynthPresets.h"
 #include "audio/SynthTables.h"
-#include "daw/SynthUserPresets.h"
+#include "daw/io/SynthUserPresets.h"
 
 namespace tests {
 

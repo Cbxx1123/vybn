@@ -14,10 +14,10 @@
 
 #include "audio/AudioFile.h"
 #include "audio/SampleSet.h"
-#include "daw/Archive.h"
-#include "daw/Json.h"
-#include "daw/Library.h"
-#include "daw/Online.h"
+#include "daw/library/Archive.h"
+#include "daw/io/Json.h"
+#include "daw/library/Library.h"
+#include "daw/library/Online.h"
 #include "env/Environment.h"
 
 // stb's zlib compressor, to make deflated zip entries
