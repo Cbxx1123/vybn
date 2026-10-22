@@ -1,8 +1,8 @@
-// vibin-plugin-host.exe: runs one CLAP plugin for the app, sandboxed. The app starts it (in a job
+// vybn-plugin-host.exe: runs one CLAP plugin for the app, sandboxed. The app starts it (in a job
 // object and, where Windows allows, an AppContainer with no capabilities) and hands it, as
 // inherited handles on the command line:
 //
-//   vibin-plugin-host <control-in> <control-out> <shared-memory> <process-event> <done-event>
+//   vybn-plugin-host <control-in> <control-out> <shared-memory> <process-event> <done-event>
 //
 // Control messages (plugin/Protocol.h) arrive on control-in and are answered on control-out, on
 // this program's main thread, which is the plugin's main thread. The plugin's audio thread waits
@@ -275,8 +275,8 @@ const void *hostExtension(const clap_host *, const char *id)
 const clap_host kHost = {
     CLAP_VERSION_INIT,
     nullptr,
-    "Vibin",
-    "Vibin",
+    "VYBN",
+    "VYBN",
     "",
     "1.0",
     hostExtension,
@@ -862,11 +862,11 @@ void handleGuiEmbed(uint32_t sequence, Reader &r)
         wc.lpfnWndProc = frameProc;
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
-        wc.lpszClassName = L"VibinPluginFrame";
+        wc.lpszClassName = L"VybnPluginFrame";
         registered = RegisterClassW(&wc) != 0;
     }
     // Invisible but taking the mouse: the app shows the picture beneath it
-    loaded.frameWindow = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, L"VibinPluginFrame", L"",
+    loaded.frameWindow = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, L"VybnPluginFrame", L"",
                                          WS_POPUP | WS_CLIPCHILDREN, kAwayX, kAwayY, 640, 400, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!loaded.frameWindow) {
         closeGui();
@@ -1101,7 +1101,7 @@ void handleGuiOpen(uint32_t sequence)
         return fail(sequence, "This plugin has no window of its own");
     if (!loaded.guiCreated) {
         if (!loaded.gui->is_api_supported(loaded.plugin, CLAP_WINDOW_API_WIN32, true))
-            return fail(sequence, "This plugin's interface only opens inside a host's window, which Vibin doesn't offer yet");
+            return fail(sequence, "This plugin's interface only opens inside a host's window, which VYBN doesn't offer yet");
         if (!loaded.gui->create(loaded.plugin, CLAP_WINDOW_API_WIN32, true))
             return fail(sequence, "The plugin couldn't make its window");
         loaded.guiCreated = true;

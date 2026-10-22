@@ -565,7 +565,7 @@ void impulseChecks(Checker &c, env::Environment &environment)
 // Through the bridge, with the built-in synth holding a note: levels against the same track alone
 void bridgeChecks(Checker &c, env::Environment &environment)
 {
-    const std::string dir = (std::filesystem::temp_directory_path() / "vibin-routing-selftest").u8string();
+    const std::string dir = (std::filesystem::temp_directory_path() / "vybn-routing-selftest").u8string();
     std::error_code ec;
     std::filesystem::remove_all(std::filesystem::u8path(dir), ec);
     std::filesystem::create_directories(std::filesystem::u8path(dir), ec);
@@ -921,7 +921,7 @@ void flexiblePlanChecks(Checker &c)
 // Through the bridge: a synth track feeding two groups, groups fed by an output and a send, and up to 64 sends
 void flexibleEngineChecks(Checker &c, env::Environment &environment)
 {
-    const std::string dir = (std::filesystem::temp_directory_path() / "vibin-routing-selftest").u8string();
+    const std::string dir = (std::filesystem::temp_directory_path() / "vybn-routing-selftest").u8string();
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::u8path(dir), ec);
     daw::Settings settings;
@@ -1089,7 +1089,7 @@ void masterAutomationChecks(Checker &c, env::Environment &environment)
     }
 
     // The engine, through the bridge: a lane silent until beat 4, then at unity, against no lane
-    const std::string dir = (std::filesystem::temp_directory_path() / "vibin-routing-selftest").u8string();
+    const std::string dir = (std::filesystem::temp_directory_path() / "vybn-routing-selftest").u8string();
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::u8path(dir), ec);
     daw::Settings settings;
@@ -1358,7 +1358,7 @@ Dips measureDips(audio::AudioSystem &engine)
 
 void sidechainEngineChecks(Checker &c, env::Environment &environment)
 {
-    const std::string dir = (std::filesystem::temp_directory_path() / "vibin-sidechain-selftest").u8string();
+    const std::string dir = (std::filesystem::temp_directory_path() / "vybn-sidechain-selftest").u8string();
     std::error_code ec;
     std::filesystem::remove_all(std::filesystem::u8path(dir), ec);
     std::filesystem::create_directories(std::filesystem::u8path(dir), ec);
@@ -1489,7 +1489,7 @@ void sidechainDelayChecks(Checker &c, env::Environment &environment)
 // The gate's level while a kick sounds and between the notes, keyed and not
 void sidechainGateChecks(Checker &c, env::Environment &environment)
 {
-    const std::string dir = (std::filesystem::temp_directory_path() / "vibin-sidechain-gate").u8string();
+    const std::string dir = (std::filesystem::temp_directory_path() / "vybn-sidechain-gate").u8string();
     std::error_code ec;
     std::filesystem::remove_all(std::filesystem::u8path(dir), ec);
     std::filesystem::create_directories(std::filesystem::u8path(dir), ec);
@@ -1539,7 +1539,7 @@ void sidechainGateChecks(Checker &c, env::Environment &environment)
 void benchChecks(Checker &c, env::Environment &environment)
 {
     if (!bench()) {
-        c.skip("Routing bench", "set VIBIN_TEST_BENCH to time it");
+        c.skip("Routing bench", "set VYBN_TEST_BENCH to time it");
         return;
     }
     // One return bus taking in 24 sends (half before the fader), on this thread alone: what the sends
@@ -1585,7 +1585,7 @@ void benchChecks(Checker &c, env::Environment &environment)
     }
 
     daw::Settings settings;
-    settings.libraryPath = (std::filesystem::temp_directory_path() / "vibin-routing-selftest").u8string();
+    settings.libraryPath = (std::filesystem::temp_directory_path() / "vybn-routing-selftest").u8string();
     daw::InstrumentLibrary library(environment, settings);
     daw::AudioPool pool(environment);
     auto time = [&](int mode) {

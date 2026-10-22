@@ -107,7 +107,7 @@ std::string keybindsPath()
 std::string writeKeybinds(const ui::Keymap &keymap)
 {
     std::ostringstream out;
-    out << "# Vibin keyboard shortcuts: the ones changed from the defaults.\n";
+    out << "# VYBN keyboard shortcuts: the ones changed from the defaults.\n";
     out << "# Each action lists its keys, such as \"Ctrl+Shift+S\" or \"Space\"; [] means none.\n";
     out << "[keys]\n";
     for (const auto &[id, chords] : keymap.overrides()) {

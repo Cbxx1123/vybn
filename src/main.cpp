@@ -49,7 +49,7 @@
 //                  by the kick; with --plugin-folder output/plugins),
 //                  flexible (three tracks into Group 1, one also sending to Group 2 and a return, the
 //                  mixer showing, playing).
-//                  Both autosave into a fresh temp folder unless VIBIN_AUTOSAVE_ROOT names one.
+//                  Both autosave into a fresh temp folder unless VYBN_AUTOSAVE_ROOT names one.
 //     PROJECT.vbp  open this project instead of the demo
 
 #include <algorithm>
@@ -91,21 +91,21 @@
 #include "ui/UI.h"
 
 // --demo versions and recovery keep their autosaves in a folder of their own (unless
-// VIBIN_AUTOSAVE_ROOT names one), so the user's own are never touched. Recovery also leaves behind a
+// VYBN_AUTOSAVE_ROOT names one), so the user's own are never touched. Recovery also leaves behind a
 // session that ended without closing: the demo project with a changed tempo, autosaved ten minutes
 // ago by a process that is no longer running.
 void prepareAutosaveDemo(const std::string &demo)
 {
     namespace fs = std::filesystem;
-    const char *set = std::getenv("VIBIN_AUTOSAVE_ROOT");
+    const char *set = std::getenv("VYBN_AUTOSAVE_ROOT");
     std::string root = set ? set : "";
     if (root.empty()) {
-        root = (fs::temp_directory_path() / ("vibin-demo-" + demo + "-" + std::to_string(daw::currentProcessId()))).string();
+        root = (fs::temp_directory_path() / ("vybn-demo-" + demo + "-" + std::to_string(daw::currentProcessId()))).string();
         std::error_code ec;
         fs::remove_all(root, ec);
         fs::create_directories(root, ec);
 #ifdef _WIN32
-        _putenv_s("VIBIN_AUTOSAVE_ROOT", root.c_str());
+        _putenv_s("VYBN_AUTOSAVE_ROOT", root.c_str());
 #endif
     }
     if (demo != "recovery")
@@ -166,7 +166,7 @@ int main(int argc, char **argv)
         if (arg == "--render-selftest")
             return tests::runRenderSelfTest(argc, argv);
         if (arg == "--write-icon" && i + 1 < argc) {
-            // The executable's icon (assets/icon/vibin.ico, embedded by src/win/vibin.rc), in the default look
+            // The executable's icon (assets/icon/vybn.ico, embedded by src/win/vybn.rc), in the default look
             const ui::Theme look = daw::studioTheme(true);
             std::string error;
             if (!daw::writeIconFile(argv[i + 1], look.baseColor(), look.accentColor(), error)) {
@@ -228,6 +228,7 @@ int main(int argc, char **argv)
         // pool's too), so it goes first and outlives them all. Audio comes next so it outlives the
         // UI that shows it, then the memory manager, whose clock is the audio callbacks. The UI
         // draws into the windowing system's windows.
+        daw::Settings::moveFromOldName(); // the user's folders from before the rename, once
         const daw::Settings prefs = daw::Settings::load();
         env::Environment environment;
         auto &scheduler = environment.add<env::Scheduler>();
@@ -251,7 +252,7 @@ int main(int argc, char **argv)
         environment.add<audio::MemoryManager>(memory);
         engine::Renderer::setOverlaysAllowed(prefs.graphicsOverlays);
         environment.add<engine::WindowSystem>();
-        auto &ui = environment.add<ui::UISystem>("Vibin", static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+        auto &ui = environment.add<ui::UISystem>("VYBN", static_cast<uint32_t>(width), static_cast<uint32_t>(height),
                                                  daw::studioTheme(dark), true);
 
         if (demo == "versions" || demo == "recovery")
@@ -349,7 +350,7 @@ int main(int argc, char **argv)
                     app.sidechainDemo();
                     const int pad = static_cast<int>(app.project().tracks.size()) - 2;
                     const daw::ObjectId kick = app.project().tracks.back().id;
-                    audio::DeviceSetting duck = pluginDevice("vibin.test.duck", "Test Duck");
+                    audio::DeviceSetting duck = pluginDevice("vybn.test.duck", "Test Duck");
                     duck.sidechain = kick;
                     app.store().editTrack(pad).effects = {duck};
                     audio.transport().play();
@@ -375,9 +376,9 @@ int main(int argc, char **argv)
                     // test plugins), a built-in one between them, and the Devices tab showing. The
                     // faulty one is set to crash, so its card shows how a crash is reported.
                     app.store().select(0);
-                    std::vector<audio::DeviceSetting> chain = {pluginDevice("vibin.test.gain", "Test Gain"),
+                    std::vector<audio::DeviceSetting> chain = {pluginDevice("vybn.test.gain", "Test Gain"),
                                                                audio::effectSetting(audio::EffectType::Equalizer),
-                                                               pluginDevice("vibin.test.faulty", "Test Faulty")};
+                                                               pluginDevice("vybn.test.faulty", "Test Faulty")};
                     chain[0].setValue(1, -4.5);
                     chain[0].setValue(4, 128.0); // its latency: the other tracks are held back to match
                     chain[2].setValue(1, 1.0);   // its Fault: crash at its first block
@@ -386,17 +387,17 @@ int main(int argc, char **argv)
                 }
                 else if (demo == "plugininstrument") {
                     // The test sine plugin playing the Lead track, its card on the Devices tab
-                    audio::DeviceSetting instrument = pluginDevice("vibin.test.sine", "Test Sine");
+                    audio::DeviceSetting instrument = pluginDevice("vybn.test.sine", "Test Sine");
                     instrument.setValue(1, 0.35);
                     app.store().editTrack(2).instrument = instrument;
-                    app.store().editTrack(2).effects = {pluginDevice("vibin.test.gain", "Test Gain")};
+                    app.store().editTrack(2).effects = {pluginDevice("vybn.test.gain", "Test Gain")};
                     app.store().select(2);
                     app.showEffects();
                 }
                 else if (demo == "synth") {
                     // The built-in synthesizer playing the Lead track, at its initial values, and the Devices tab showing
                     audio::DeviceSetting instrument = audio::SynthDevice::setting();
-                    instrument.name = "Vibin Synth";
+                    instrument.name = "VYBN Synth";
                     app.store().editTrack(2).instrument = instrument;
                     app.store().select(2);
                     app.showEffects();

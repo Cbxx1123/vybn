@@ -46,7 +46,7 @@ double secondsSince(std::chrono::steady_clock::time_point since)
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - since).count();
 }
 
-// Benchmarks (VIBIN_TEST_BENCH): what dispatching costs through a Signal, the event bus and the
+// Benchmarks (VYBN_TEST_BENCH): what dispatching costs through a Signal, the event bus and the
 // environment's posted actions
 void benchDispatch()
 {

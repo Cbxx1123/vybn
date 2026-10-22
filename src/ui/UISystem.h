@@ -128,7 +128,7 @@ private:
     void prepareSpare();
     // Counts one tick of the main window, presented or skipped, into the frame rate
     void countFrame(double now, bool presented);
-    // With VIBIN_FRAME_STATS set (any value but 0), adds the main window's frame to a running
+    // With VYBN_FRAME_STATS set (any value but 0), adds the main window's frame to a running
     // total and once a second prints its averages to stderr, one line:
     // "FRAME 60.0/s presented 59.0/s | update 0.41 ms (layout 0.30) build 1.20 ms submit 0.35 ms |
     //  surfaces 640 texts 95 glyphs 480 images 0 lines 0 plots 0 (0 values) batches 0 |
@@ -153,7 +153,7 @@ private:
     uint64_t secondDrawn_ = 0;
     uint64_t secondSkipped_ = 0;
     double secondStart_ = -1.0; // window time the current count began, or -1 before the first tick
-    // VIBIN_FRAME_STATS: whether it is on (read once), and the sums since the last line
+    // VYBN_FRAME_STATS: whether it is on (read once), and the sums since the last line
     int statsEnabled_ = -1;
     double statsStart_ = -1.0;
     FrameStats statsSum_;

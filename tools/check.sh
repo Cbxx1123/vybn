@@ -9,7 +9,7 @@ for f in "$@"; do
         -isystem "$ROOT/build/_deps/stb-src" -isystem "$ROOT/build/_deps/miniaudio-src" \
         -isystem "$ROOT/build/_deps/clap-src/include" -isystem "C:/VulkanSDK/1.3.250.1/Include" \
         -DMA_ENABLE_ONLY_SPECIFIC_BACKENDS -DMA_ENABLE_WASAPI -DMA_NO_ENGINE -DMA_NO_NODE_GRAPH -DMA_NO_RESOURCE_MANAGER \
-        -DENGINE_SHADER_DIR='"output/shaders"' -DENGINE_ASSET_DIR='"assets"' -DENGINE_TEST_PLUGIN='"plugins"' -DVIBIN_TEST_DIR='"tests"' \
+        -DENGINE_SHADER_DIR='"output/shaders"' -DENGINE_ASSET_DIR='"assets"' -DENGINE_TEST_PLUGIN='"plugins"' -DVYBN_TEST_DIR='"tests"' \
         "$f" && echo "OK   $f" || { echo "FAIL $f"; status=1; }
 done
 exit $status

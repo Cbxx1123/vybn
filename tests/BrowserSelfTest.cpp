@@ -143,7 +143,7 @@ std::string makeZip(const std::vector<ZipEntry> &entries)
 int runBrowserSelfTest()
 {
     Checker c;
-    const fs::path temp = fs::temp_directory_path() / "vibin-browser-selftest";
+    const fs::path temp = fs::temp_directory_path() / "vybn-browser-selftest";
     std::error_code ec;
     fs::remove_all(temp, ec);
     fs::create_directories(temp);

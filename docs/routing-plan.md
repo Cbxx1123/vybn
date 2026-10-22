@@ -90,7 +90,7 @@ Built as above, with these changes from the plan:
 - Fixed on the way: a clip dragged onto another track only lands on one of its own kind (an
   instrument clip could be dropped onto an audio track).
 
-Measured (`VIBIN_TEST_BENCH=1 output/main --project-selftest`, the Debug build at -O0): 4 s of 24
+Measured (`VYBN_TEST_BENCH=1 output/vybn --project-selftest`, the Debug build at -O0): 4 s of 24
 synth tracks take about 160 ms plain and 245-255 ms with every track sending to 4 returns (96 sends,
 half pre-fader) and going into 2 groups (+50%, from +150% with the serial routing). A track with no
 sends costs what it did. The bench's sends are all live; a send turned down costs nothing once settled.

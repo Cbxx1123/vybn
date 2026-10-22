@@ -160,7 +160,7 @@ std::string themePath() { return (fs::u8path(Settings::filePath()).parent_path()
 std::string writeTheme(const Theme &theme, const std::string &preset)
 {
     std::ostringstream out;
-    out << "# Vibin's look, from View > Appearance\n";
+    out << "# VYBN's look, from View > Appearance\n";
     out << "preset = " << toml::quote(preset) << "\n";
     out << "dark = " << (theme.isDark() ? "true" : "false") << "\n";
     out << "base = " << toml::quote(hexText(theme.baseColor())) << "\n";

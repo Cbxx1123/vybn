@@ -508,7 +508,7 @@ void OnlineCatalogue::preview(const OnlineItem &item, std::function<void(const s
         done({}, "No preview for this one");
         return;
     }
-    const fs::path folder = fs::temp_directory_path() / "Vibin" / "previews";
+    const fs::path folder = fs::temp_directory_path() / "VYBN" / "previews";
     std::string ext = extensionOf(item.preview);
     const fs::path file = folder / (safeFileName(item.source + "-" + item.id) + (ext.empty() ? ".mp3" : ext));
     std::error_code ec;
@@ -677,7 +677,7 @@ void Downloads::install(Job &job, const std::string &file, const std::string &un
         note << "Licence: " << item.license << "\n";
     if (!item.page.empty())
         note << "From " << item.page << "\n";
-    note << "Downloaded with Vibin from " << item.source << ".\n";
+    note << "Downloaded with VYBN from " << item.source << ".\n";
 
     if (item.kind == AssetKind::Sample) {
         const std::string name = fs::u8path(item.fileName).stem().string();
@@ -707,7 +707,7 @@ void Downloads::install(Job &job, const std::string &file, const std::string &un
                 error = "It has no .sfz file or note-named samples to play";
         }
         if (error.empty()) {
-            writeFile(root / "Vibin source.txt", note.str());
+            writeFile(root / "VYBN source.txt", note.str());
             job.installed = item.kind == AssetKind::Instrument
                                 ? library_.installInstrument(root.string(), item.name, item.category, error)
                                 : library_.installSamples(root.string(), item.name, item.category, error);

@@ -118,7 +118,7 @@ DawApp::DawApp(env::Environment &env, UISystem &ui, audio::AudioSystem &audio)
     buildBrowser();
     session_.history().reset(project());
     // Autosave: every so often while the project has unsaved changes. Settings give the interval;
-    // VIBIN_AUTOSAVE_SECONDS (a test hook) overrides it in seconds.
+    // VYBN_AUTOSAVE_SECONDS (a test hook) overrides it in seconds.
     // Looked for before the controller writes its own session lock over the last session's
     recoverable_ = findRecoverable(autosaveRoot(), unixSeconds());
     autosave_ = std::make_unique<AutosaveController>(&env_, autosaveRoot(), [] { return unixSeconds(); });
@@ -141,7 +141,7 @@ void DawApp::refreshWindowIcon()
 double DawApp::autosaveInterval() const
 {
     double seconds = settings_.autosaveMinutes * 60.0;
-    if (const char *override = std::getenv("VIBIN_AUTOSAVE_SECONDS")) {
+    if (const char *override = std::getenv("VYBN_AUTOSAVE_SECONDS")) {
         if (std::atof(override) > 0.0)
             seconds = std::atof(override);
     }
@@ -172,7 +172,7 @@ void DawApp::buildTitleBar()
     TitleBar &bar = ui_.titleBar();
     bar.setRaised(true, 12.0f);
     bar.add<LogoMark>();
-    bar.add<Label>("Vibin", TextStyle::Body, TextTone::Primary);
+    bar.add<Label>("VYBN", TextStyle::Body, TextTone::Primary);
     menuBar_ = &bar.add<MenuBar>(gui_);
     bar.add<Spacer>();
     bar.add<ProjectBadge>([this] { return project().name; }, [this] { return session_.modified(); });
@@ -268,7 +268,7 @@ void DawApp::buildBody()
             levels_.peak[c] = audio_.takePeak(c);
         metronome_.beatsPerBar = project().beatsPerBar;
         session_.store().setTempo(audio_.transport().tempo()); // the tempo is edited on the transport
-        // The store's safety net (only with VIBIN_VERIFY_STORE=1): changes its revisions didn't count
+        // The store's safety net (only with VYBN_VERIFY_STORE=1): changes its revisions didn't count
         if (env_.frame() % 60 == 0)
             session_.verify();
         // Unsaved changes: the project as it would be saved, against the file, a few times a second
@@ -1043,7 +1043,7 @@ void DawApp::openProject()
         confirmDiscard([this] {
             ui::FileDialogOptions options;
             options.title = "Open project";
-            options.filters = {{"Vibin projects (*.vbp)", "*.vbp"}, {"All files", "*.*"}};
+            options.filters = {{"VYBN projects (*.vbp)", "*.vbp"}, {"All files", "*.*"}};
             options.folder = projectsFolder();
             options.remember = "project";
             chooseFiles(std::move(options), [this](std::vector<std::string> files) { openProjectFile(files.front()); });
@@ -1106,7 +1106,7 @@ void DawApp::save(bool ask, std::function<void()> after)
     ui::FileDialogOptions options;
     options.title = "Save project";
     options.save = true;
-    options.filters = {{"Vibin projects (*.vbp)", "*.vbp"}};
+    options.filters = {{"VYBN projects (*.vbp)", "*.vbp"}};
     options.folder = projectsFolder();
     options.name = project().name;
     options.extension = kProjectExtension;
@@ -1536,7 +1536,7 @@ void DawApp::openSettings(const std::string &section)
             if (!std::filesystem::exists(path, ec)) {
                 std::filesystem::create_directories(path.parent_path(), ec);
                 std::ofstream out(path, std::ios::binary);
-                out << "# Where Vibin's browser finds things to download. Changes take effect when Vibin next starts.\n"
+                out << "# Where VYBN's browser finds things to download. Changes take effect when VYBN next starts.\n"
                        "# type = \"github\" (an organisation's repositories, each an SFZ instrument), \"freesound\",\n"
                        "# or \"catalogue\" (a TOML file or web address with [[items]]: name, kind, url, category,\n"
                        "# license, author, page, description, size, preview).\n\n";
@@ -1614,7 +1614,7 @@ void DawApp::showAppearance()
 
 void DawApp::showAbout()
 {
-    Dialog &dialog = Dialog::open(gui_, "About Vibin",
+    Dialog &dialog = Dialog::open(gui_, "About VYBN",
                                   "A digital audio workstation on a neumorphic UI engine, Vulkan and miniaudio.");
     dialog.body().add<Label>("Inter font, SIL Open Font License", TextStyle::Caption, TextTone::Muted);
     dialog.addButton("Close", {}, true);

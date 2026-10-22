@@ -92,10 +92,10 @@ bool httpGet(const HttpRequest &request, const std::function<bool(const char *, 
     const bool secure = parts.nScheme == INTERNET_SCHEME_HTTPS;
 
     // Windows 8.1 and later find the system's proxy themselves; older ones use the default
-    Handle session(WinHttpOpen(L"Vibin/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+    Handle session(WinHttpOpen(L"VYBN/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
                                WINHTTP_NO_PROXY_BYPASS, 0));
     if (!session)
-        session.h = WinHttpOpen(L"Vibin/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+        session.h = WinHttpOpen(L"VYBN/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
                                 WINHTTP_NO_PROXY_BYPASS, 0);
     if (!session) {
         error = systemError("Opening the connection");

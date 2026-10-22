@@ -32,7 +32,7 @@ uint64_t DrawCache::fullKey(const DrawList &list, const Theme &theme, const Rect
 bool DrawCache::verifying()
 {
     static const bool on = [] {
-        const char *value = std::getenv("VIBIN_VERIFY_CACHE");
+        const char *value = std::getenv("VYBN_VERIFY_CACHE");
         return value != nullptr && std::strcmp(value, "0") != 0;
     }();
     return on;

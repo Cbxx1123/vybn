@@ -168,7 +168,7 @@ tolerance after packing (8-bit colours may move a channel by 1).
 | Q docs | `CLAUDE.md` | the UIRenderer, DrawList, Prim and shader paragraphs rewritten; the self-test listed; build notes for the new shaders |
 | R review | files the orchestrator names | fixes from the orchestrator's review (comments, names, dead code) |
 
-The orchestrator runs every demo with `VIBIN_FRAME_STATS=1`, looks at screenshots of `menu`,
+The orchestrator runs every demo with `VYBN_FRAME_STATS=1`, looks at screenshots of `menu`,
 `settings`, `synth`, `pianoroll`, `steps`, `effects`, `browser` and `export`, and commits.
 
 ## Risks

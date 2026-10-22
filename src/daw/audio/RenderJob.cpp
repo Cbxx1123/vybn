@@ -804,7 +804,7 @@ RenderJob::~RenderJob()
 
 void RenderJob::makeTempFolder()
 {
-    tempFolder_ = (std::filesystem::temp_directory_path() / std::filesystem::u8path("Vibin export") /
+    tempFolder_ = (std::filesystem::temp_directory_path() / std::filesystem::u8path("VYBN export") /
                    std::to_string(id_))
                       .u8string();
     std::error_code ec;

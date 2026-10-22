@@ -248,7 +248,7 @@ private:
     void restoreVersion(const std::string &folder, const AutosaveVersion &version, const std::string &path);
     void confirmDeleteVersion(const std::string &folder, const AutosaveVersion &version, const std::string &path,
                               const std::string &name);
-    // Autosave's interval in seconds (Settings, or VIBIN_AUTOSAVE_SECONDS for tests)
+    // Autosave's interval in seconds (Settings, or VYBN_AUTOSAVE_SECONDS for tests)
     double autosaveInterval() const;
     // Pushes the settings' autosave choices to the controller and saves them
     void applyAutosaveSettings();

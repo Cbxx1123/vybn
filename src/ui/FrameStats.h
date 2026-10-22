@@ -5,7 +5,7 @@
 
 namespace ui {
 
-// What one window's last frame cost, for Settings > Metrics, VIBIN_FRAME_STATS and the render
+// What one window's last frame cost, for Settings > Metrics, VYBN_FRAME_STATS and the render
 // self-test. Times are milliseconds of CPU on the main thread.
 struct FrameStats {
     // Context::update: layout, input, keys and posted actions (layoutMs is its share and

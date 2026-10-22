@@ -108,13 +108,13 @@ long long currentProcessId()
 
 std::string autosaveRoot()
 {
-    const std::string override = environment("VIBIN_AUTOSAVE_ROOT");
+    const std::string override = environment("VYBN_AUTOSAVE_ROOT");
     if (!override.empty())
         return override;
     std::string base = environment("LOCALAPPDATA");
     if (base.empty())
         base = (fs::path(environment("HOME")) / ".cache").string();
-    return (fs::path(base) / "Vibin" / "Autosave").string();
+    return (fs::path(base) / "VYBN" / "Autosave").string();
 }
 
 double unixSeconds()
@@ -160,7 +160,7 @@ std::string versionFileName(double time)
 
 std::string writeManifest(const AutosaveManifest &manifest)
 {
-    std::string out = "# Vibin autosave versions\n";
+    std::string out = "# VYBN autosave versions\n";
     out += "format = 1\n";
     out += "path = " + toml::quote(manifest.path) + "\n";
     out += "name = " + toml::quote(manifest.name) + "\n";
@@ -289,7 +289,7 @@ std::vector<AutosaveVersion> rotate(std::vector<AutosaveVersion> &versions, int 
 
 std::string writeSessionLock(const SessionLock &lock)
 {
-    std::string out = "# Vibin session lock: the session that is running\n";
+    std::string out = "# VYBN session lock: the session that is running\n";
     out += "pid = " + std::to_string(lock.pid) + "\n";
     out += "started = " + toml::number(lock.started) + "\n";
     out += "key = " + toml::quote(lock.key) + "\n";
@@ -346,7 +346,7 @@ bool processRunning(long long pid)
         if (slash != std::wstring::npos)
             name = name.substr(slash + 1);
         std::transform(name.begin(), name.end(), name.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-        running = name == L"main.exe" || name == L"main-dev.exe";
+        running = name == L"vybn.exe" || name == L"vybn-dev.exe";
     }
     CloseHandle(process);
     return running;

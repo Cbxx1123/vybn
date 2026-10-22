@@ -187,7 +187,7 @@ void UISystem::prepareSpare()
     // Spares and windows in use together stay within the pool's size
     if (windows_.size() > kSpares)
         return;
-    UIWindow &w = create("Vibin", kSpareWidth, kSpareHeight, context().theme(), false, true);
+    UIWindow &w = create("VYBN", kSpareWidth, kSpareHeight, context().theme(), false, true);
     w.spare = true;
     spareAfter_ = env_.frame() + 20;
 }
@@ -195,7 +195,7 @@ void UISystem::prepareSpare()
 void UISystem::prepareSpares(const std::function<void()> &between)
 {
     while (windows_.size() <= kSpares) {
-        UIWindow &w = create("Vibin", kSpareWidth, kSpareHeight, context().theme(), false, true);
+        UIWindow &w = create("VYBN", kSpareWidth, kSpareHeight, context().theme(), false, true);
         w.spare = true;
         if (between)
             between();
@@ -238,7 +238,7 @@ void UISystem::countFrame(double now, bool presented)
 void UISystem::reportStats(double now)
 {
     if (statsEnabled_ < 0) {
-        const char *value = std::getenv("VIBIN_FRAME_STATS");
+        const char *value = std::getenv("VYBN_FRAME_STATS");
         statsEnabled_ = value && std::strcmp(value, "0") != 0 ? 1 : 0;
     }
     if (statsEnabled_ == 0)

@@ -24,7 +24,7 @@ class ProjectSession;
 // says which session is running, so the next start can offer to recover what a crash left.
 // Everything here is in plain files; the writes run on a background job, never the main thread.
 
-// %LOCALAPPDATA%\Vibin\Autosave, or the folder named by VIBIN_AUTOSAVE_ROOT (tests and demos use it
+// %LOCALAPPDATA%\VYBN\Autosave, or the folder named by VYBN_AUTOSAVE_ROOT (tests and demos use it
 // so the user's own folder is never touched)
 std::string autosaveRoot();
 
@@ -84,7 +84,7 @@ std::string writeSessionLock(const SessionLock &lock);
 bool parseSessionLock(const std::string &text, SessionLock &lock, std::string &error);
 
 // Whether a lock left behind by a session that has ended can be recovered: its process is no
-// longer a running Vibin, and its folder has an automatic version newer than the project's file
+// longer a running VYBN, and its folder has an automatic version newer than the project's file
 // (or any, for a project never saved, which has no file: projectFileTime is 0). `newestAutosave`
 // is 0 when there is none.
 bool isRecoverable(const SessionLock &lock, double now, bool processRunning, double newestAutosave,
@@ -93,7 +93,7 @@ bool isRecoverable(const SessionLock &lock, double now, bool processRunning, dou
 // This process's id (the session lock names it)
 long long currentProcessId();
 
-// Whether a process is a running copy of the app (main.exe or main-dev.exe). Windows only; elsewhere
+// Whether a process is a running copy of the app (vybn.exe or vybn-dev.exe). Windows only; elsewhere
 // it says no.
 bool processRunning(long long pid);
 

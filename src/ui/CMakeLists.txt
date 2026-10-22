@@ -1,4 +1,4 @@
-vibin_module(vibin_ui SOURCES
+vybn_module(vybn_ui SOURCES
     Components.cpp
     Context.cpp
     Controls.cpp
@@ -19,4 +19,4 @@ vibin_module(vibin_ui SOURCES
     UIRenderer.cpp
     UISystem.cpp
 )
-target_link_libraries(vibin_ui PUBLIC vibin_engine PRIVATE vibin_stb)
+target_link_libraries(vybn_ui PUBLIC vybn_engine PRIVATE vybn_stb)

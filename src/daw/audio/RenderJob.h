@@ -223,7 +223,7 @@ struct RenderPassRun;
 // The outputs of a pass are grouped by sample rate, tap and mute rule, so a pass is one render
 // through the engine. Each audio output is finished on its own job as soon as its pass ends, so it
 // can run while the next pass renders. MIDI outputs are written straight from the project snapshot.
-// The job's temp folder (<temp>/Vibin export/<id>) is removed when it finishes.
+// The job's temp folder (<temp>/VYBN export/<id>) is removed when it finishes.
 class RenderJob {
 public:
     enum State { Preparing, Rendering, Finalizing, Done, Failed, Cancelled };

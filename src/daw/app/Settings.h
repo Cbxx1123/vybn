@@ -11,7 +11,7 @@ struct PluginConfig;
 namespace daw {
 
 // The user's preferences, kept in a small key=value file in their profile
-// (%APPDATA%\Vibin\settings.ini on Windows) so they outlive the project.
+// (%APPDATA%\VYBN\settings.ini on Windows) so they outlive the project.
 struct Settings {
     // The sample library: imported instruments go in its Instruments folder, recordings of
     // unsaved projects in its Recordings folder, and projects default to its Projects folder
@@ -58,14 +58,16 @@ struct Settings {
     std::string stepSequencerView;
     static constexpr const char *kNoInput = "none";
 
-    static std::string sampleCachePath(); // %LOCALAPPDATA%\Vibin\Sample cache
-    static std::string pluginsPath();     // %LOCALAPPDATA%\Vibin\Plugins: imported plugins
+    static std::string sampleCachePath(); // %LOCALAPPDATA%\VYBN\Sample cache
+    static std::string pluginsPath();     // %LOCALAPPDATA%\VYBN\Plugins: imported plugins
     // The plugin folders to scan (the standard CLAP folders, the imported plugins' and the
     // user's) and how plugins run
     plugin::PluginConfig pluginConfig() const;
 
-    static std::string defaultLibraryPath(); // Documents\Vibin Library
+    static std::string defaultLibraryPath(); // Documents\VYBN Library (or the old "Vibin Library", if it is there)
     static std::string filePath();
+    // The app was called Vibin: its folders in %APPDATA% and %LOCALAPPDATA% are renamed to VYBN, once
+    static void moveFromOldName();
     // Reads the file; missing keys keep their defaults
     static Settings load();
     bool save(std::string &error) const;

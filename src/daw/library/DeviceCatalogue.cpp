@@ -112,7 +112,7 @@ void DeviceCatalogue::refresh()
     {
         CatalogueEntry e;
         e.device = audio::SynthDevice::setting();
-        e.device.name = "Vibin Synth";
+        e.device.name = "VYBN Synth";
         e.instrument = true;
         e.category = "Synths";
         e.source = "Built-in";
@@ -128,7 +128,7 @@ void DeviceCatalogue::refresh()
         e.preset = preset.name;
         e.instrument = true;
         e.category = preset.category == "Bass" || preset.category == "Keys" ? preset.category : "Synths";
-        e.source = "Vibin Synth";
+        e.source = "VYBN Synth";
         e.description = preset.description;
         instruments.push_back(std::move(e));
     }

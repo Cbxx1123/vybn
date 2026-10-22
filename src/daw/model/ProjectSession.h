@@ -38,7 +38,7 @@ public:
     // Compares the project as it would be saved with the saved text: once a few times a second
     void checkModified();
 
-    // Safety net for the store (off unless the environment variable VIBIN_VERIFY_STORE is 1): once
+    // Safety net for the store (off unless the environment variable VYBN_VERIFY_STORE is 1): once
     // every few frames, a change to the project that its revisions didn't count is printed to stderr
     void verify();
 

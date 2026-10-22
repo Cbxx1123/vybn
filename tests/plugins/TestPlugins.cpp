@@ -1,7 +1,7 @@
-// vibin-test-plugins.clap: the CLAP plugins the plugin self-test loads through the sandbox. Plain
+// vybn-test-plugins.clap: the CLAP plugins the plugin self-test loads through the sandbox. Plain
 // CLAP, no helpers, so it also shows the least a plugin has to do.
 //
-// - vibin.test.gain: a stereo gain effect. Parameters: Gain (dB, -60 to +12), Mute (stepped) and
+// - vybn.test.gain: a stereo gain effect. Parameters: Gain (dB, -60 to +12), Mute (stepped) and
 //   Peak (read-only: the plugin reports each block's output peak as a parameter change, which is
 //   how the self-test sees changes coming back from a plugin). Saves Gain and Mute as its state.
 //   Latency (0-4096 frames, stepped) delays its sound by that much and reports it through the
@@ -9,10 +9,10 @@
 //   changes while inactive), for the delay compensation checks.
 //   It has a window of its own (CLAP's floating win32 interface): clicking its left half takes
 //   1 dB off, its right half adds 1 dB, sent to the host as a gesture, as a real editor would.
-// - vibin.test.sine: an instrument: sine voices for CLAP or MIDI notes, Level parameter.
-// - vibin.test.duck: a stereo effect with a stereo sidechain input; its output is its input times (1 - the key's peak in the block).
-// - vibin.test.crashinit: crashes when it is initialised; the scan lists it, its sidechain probe dies in a host of its own.
-// - vibin.test.faulty: a stereo pass-through whose Fault parameter makes it misbehave on the next
+// - vybn.test.sine: an instrument: sine voices for CLAP or MIDI notes, Level parameter.
+// - vybn.test.duck: a stereo effect with a stereo sidechain input; its output is its input times (1 - the key's peak in the block).
+// - vybn.test.crashinit: crashes when it is initialised; the scan lists it, its sidechain probe dies in a host of its own.
+// - vybn.test.faulty: a stereo pass-through whose Fault parameter makes it misbehave on the next
 //   block: crash (a write through a null pointer), hang (spins forever) or slow (sleeps 60 ms a
 //   block). When it is made it tries to write a file in the user's profile and logs whether it
 //   could, so the self-test sees the sandbox stop it.
@@ -199,13 +199,13 @@ struct Gain : Base {
             wc.hInstance = instance;
             wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
             wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-            wc.lpszClassName = L"VibinTestGainEditor";
+            wc.lpszClassName = L"VybnTestGainEditor";
             registered = RegisterClassW(&wc) != 0;
         }
         if (parent)
-            window = CreateWindowExW(0, L"VibinTestGainEditor", L"", WS_CHILD | WS_VISIBLE, 0, 0, 420, 140, parent, nullptr, instance, nullptr);
+            window = CreateWindowExW(0, L"VybnTestGainEditor", L"", WS_CHILD | WS_VISIBLE, 0, 0, 420, 140, parent, nullptr, instance, nullptr);
         else
-            window = CreateWindowExW(0, L"VibinTestGainEditor", L"Test Gain", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT,
+            window = CreateWindowExW(0, L"VybnTestGainEditor", L"Test Gain", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT,
                                      CW_USEDEFAULT, 420, 140, nullptr, nullptr, instance, nullptr);
         if (window)
             SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
@@ -562,7 +562,7 @@ struct Faulty : Base {
         }
         // And beside its own file, which a folder granted for writing allows
         if (!pluginFolder.empty()) {
-            const std::string own = pluginFolder + "\\vibin-sandbox-probe.tmp";
+            const std::string own = pluginFolder + "\\vybn-sandbox-probe.tmp";
             HANDLE beside = CreateFileA(own.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
             if (beside == INVALID_HANDLE_VALUE) {
                 logTo(host, CLAP_LOG_INFO, "probe-own-folder: write denied");
@@ -572,7 +572,7 @@ struct Faulty : Base {
                 logTo(host, CLAP_LOG_INFO, "probe-own-folder: write allowed");
             }
         }
-        const std::string path = std::string(profile) + "\\vibin-sandbox-probe.tmp";
+        const std::string path = std::string(profile) + "\\vybn-sandbox-probe.tmp";
         HANDLE file = CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
         if (file == INVALID_HANDLE_VALUE) {
             logTo(host, CLAP_LOG_INFO, "probe: write denied");
@@ -683,11 +683,11 @@ const char *const kEffectFeatures[] = {CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, CLAP_PL
 const char *const kInstrumentFeatures[] = {CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_SYNTHESIZER, CLAP_PLUGIN_FEATURE_STEREO, nullptr};
 
 const clap_plugin_descriptor kDescriptors[] = {
-    {CLAP_VERSION_INIT, "vibin.test.gain", "Test Gain", "Vibin", "", "", "", "1.0.0", "A gain for the plugin self-test", kEffectFeatures},
-    {CLAP_VERSION_INIT, "vibin.test.sine", "Test Sine", "Vibin", "", "", "", "1.0.0", "Sine voices for the plugin self-test", kInstrumentFeatures},
-    {CLAP_VERSION_INIT, "vibin.test.faulty", "Test Faulty", "Vibin", "", "", "", "1.0.0", "Crashes, hangs or stalls on request", kEffectFeatures},
-    {CLAP_VERSION_INIT, "vibin.test.duck", "Test Duck", "Vibin", "", "", "", "1.0.0", "Ducks under its sidechain input", kEffectFeatures},
-    {CLAP_VERSION_INIT, "vibin.test.crashinit", "Test Crash Init", "Vibin", "", "", "", "1.0.0", "Crashes when it is made", kEffectFeatures},
+    {CLAP_VERSION_INIT, "vybn.test.gain", "Test Gain", "VYBN", "", "", "", "1.0.0", "A gain for the plugin self-test", kEffectFeatures},
+    {CLAP_VERSION_INIT, "vybn.test.sine", "Test Sine", "VYBN", "", "", "", "1.0.0", "Sine voices for the plugin self-test", kInstrumentFeatures},
+    {CLAP_VERSION_INIT, "vybn.test.faulty", "Test Faulty", "VYBN", "", "", "", "1.0.0", "Crashes, hangs or stalls on request", kEffectFeatures},
+    {CLAP_VERSION_INIT, "vybn.test.duck", "Test Duck", "VYBN", "", "", "", "1.0.0", "Ducks under its sidechain input", kEffectFeatures},
+    {CLAP_VERSION_INIT, "vybn.test.crashinit", "Test Crash Init", "VYBN", "", "", "", "1.0.0", "Crashes when it is made", kEffectFeatures},
 };
 
 const clap_plugin *create(const clap_host *host, const char *id)

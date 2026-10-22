@@ -27,6 +27,7 @@
 #include "audio/SampleSet.h"
 #include "audio/Sampler.h"
 #include "audio/Track.h"
+#include "daw/app/Settings.h"
 #include "env/Environment.h"
 #include "env/RealtimePool.h"
 
@@ -666,11 +667,10 @@ int runAudioSelfTest()
     render(system, 0.01);
     player.collect();
 
-    // The guitar from the sample library, if it has been imported
-    const char *home = std::getenv("USERPROFILE");
-    const std::string guitar = std::string(home ? home : "") + "/Documents/Vibin Library/Instruments/Spanish Classical Guitar";
+    // The guitar from the sample library (the default folder, as the app finds it), if it has been imported
+    const std::string guitar = daw::Settings::defaultLibraryPath() + "/Instruments/Spanish Classical Guitar";
     std::string error;
-    if (std::shared_ptr<audio::SampleSet> set = home ? audio::loadInstrumentFolder(guitar, error) : nullptr) {
+    if (std::shared_ptr<audio::SampleSet> set = audio::loadInstrumentFolder(guitar, error)) {
         c.check(set->zones.size() >= 40, "Guitar library instrument loads", number("%.0f zones", static_cast<double>(set->zones.size())) +
                                                                                 number(", %.1f MB", set->bytes() / 1e6));
         sampler.setSampleSet(set);
@@ -803,7 +803,7 @@ int runAudioSelfTest()
     // mid-file and crossfaded, with the disk served between blocks
     {
         namespace fs = std::filesystem;
-        const fs::path folder = fs::temp_directory_path() / "vibin-clip-stream-selftest";
+        const fs::path folder = fs::temp_directory_path() / "vybn-clip-stream-selftest";
         std::error_code ec;
         fs::remove_all(folder, ec);
         fs::create_directories(folder, ec);
@@ -904,7 +904,7 @@ int runAudioSelfTest()
     }
     {
         std::error_code ec;
-        std::filesystem::remove_all(std::filesystem::temp_directory_path() / "vibin-clip-stream-selftest", ec);
+        std::filesystem::remove_all(std::filesystem::temp_directory_path() / "vybn-clip-stream-selftest", ec);
     }
 
     // Input: monitoring and recording, with a fake stereo input
@@ -963,7 +963,7 @@ int runAudioSelfTest()
     // A recording written to a WAV file reads back
     {
         std::string werror;
-        const std::string wav = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : ".") + "/vibin-selftest.wav";
+        const std::string wav = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : ".") + "/vybn-selftest.wav";
         std::vector<float> stereo(2000);
         for (size_t i = 0; i < stereo.size(); ++i)
             stereo[i] = (i % 2 ? -0.5f : 0.5f) * static_cast<float>(i) / 2000.0f;
@@ -978,7 +978,7 @@ int runAudioSelfTest()
     // Integer WAV files: 24-bit exact to a step, 16-bit within its dither, and clipped at full scale
     for (int bits : {16, 24}) {
         std::string werror;
-        const std::string wav = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : ".") + "/vibin-selftest-int.wav";
+        const std::string wav = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : ".") + "/vybn-selftest-int.wav";
         std::vector<float> stereo(2000);
         for (size_t i = 0; i < stereo.size(); ++i)
             stereo[i] = std::sin(static_cast<float>(i) * 0.01f) * 0.9f;

@@ -6,7 +6,7 @@ if(NOT GLSLC)
     message(FATAL_ERROR "glslc not found; check that VULKAN_SDK is set")
 endif()
 
-set(SHADER_DIR "${VIBIN_OUTPUT_DIR}/shaders")
+set(SHADER_DIR "${VYBN_OUTPUT_DIR}/shaders")
 set(SHADER_SOURCES
     shaders/prim.vert
     shaders/prim.frag

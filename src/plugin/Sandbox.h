@@ -7,12 +7,12 @@
 namespace plugin {
 
 // How a plugin host process is contained. Native plugin code can't be contained inside the app's
-// own process, so each plugin instance runs in vibin-plugin-host.exe, and this is the fence
+// own process, so each plugin instance runs in vybn-plugin-host.exe, and this is the fence
 // around it:
 // - A job object: the host dies when the app closes it (or the app dies), may not start other
 //   processes, is capped in memory, ends at once on a crash (no error box), and can't touch the
 //   desktop's settings, global atoms or exit Windows.
-// - An AppContainer with no capabilities ("Vibin.PluginSandbox"): no network, and no access to the
+// - An AppContainer with no capabilities ("VYBN.PluginSandbox"): no network, and no access to the
 //   user's files, registry or other processes except what is granted. The host's executable and
 //   each plugin's .clap file (and folders the user grants it) are granted read and execute, by
 //   adding the container to their access lists. The system's own files stay readable.
@@ -60,7 +60,7 @@ private:
     std::string note_;
 };
 
-// vibin-plugin-host.exe beside the running program
+// vybn-plugin-host.exe beside the running program
 std::string hostExecutable();
 // A Windows exit code as words ("an access violation", "exit code 3")
 std::string describeExit(uint32_t code);

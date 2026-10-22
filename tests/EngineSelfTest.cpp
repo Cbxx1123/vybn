@@ -153,7 +153,7 @@ double percentile(std::vector<double> values, double p)
     return values[std::min(values.size() - 1, static_cast<size_t>(p * static_cast<double>(values.size())))];
 }
 
-// Benchmarks (VIBIN_TEST_BENCH): what the real-time pool costs per batch, back to back (an offline
+// Benchmarks (VYBN_TEST_BENCH): what the real-time pool costs per batch, back to back (an offline
 // render) and paced like the live audio thread, and what the scheduler's wakes cost
 void benchPoolAndScheduler()
 {
@@ -443,7 +443,7 @@ int runEngineSelfTest()
 
     // Streaming a sample from disk
     {
-        const fs::path folder = fs::temp_directory_path() / "vibin-engine-selftest";
+        const fs::path folder = fs::temp_directory_path() / "vybn-engine-selftest";
         std::error_code ec;
         fs::remove_all(folder, ec);
         fs::create_directories(folder / "Instrument", ec);
@@ -587,7 +587,7 @@ int runEngineSelfTest()
     // Streamed audio clips: a long file decoded a piece at a time into the cache's float copy,
     // read back from it, and played and exported exactly as the file loaded whole
     {
-        const fs::path folder = fs::temp_directory_path() / "vibin-engine-clip-selftest";
+        const fs::path folder = fs::temp_directory_path() / "vybn-engine-clip-selftest";
         std::error_code ec;
         fs::remove_all(folder, ec);
         fs::create_directories(folder, ec);

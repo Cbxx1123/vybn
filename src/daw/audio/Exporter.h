@@ -39,7 +39,7 @@ public:
     void openDialog();
     // Queues the preset at this index of the project as it is now, and shows the Exports panel
     void run(size_t preset);
-    // Queues the project's "Mix" preset into the temp folder as "Vibin demo mix", without asking
+    // Queues the project's "Mix" preset into the temp folder as "VYBN demo mix", without asking
     // (the --demo exportmix check)
     void runDemo();
     // Queues the project's "Release" preset into the temp folder under its own names, without

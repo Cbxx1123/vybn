@@ -697,7 +697,7 @@ int runSynthSelfTest()
     // clamped and unknown ids dropped, and names a file can't have refused
     {
         namespace fs = std::filesystem;
-        const fs::path folder = fs::temp_directory_path() / "vibin-synth-preset-test";
+        const fs::path folder = fs::temp_directory_path() / "vybn-synth-preset-test";
         std::error_code ec;
         fs::remove_all(folder, ec);
         audio::SynthPreset preset;

@@ -132,12 +132,12 @@ void Splash::run()
         wc.lpfnWndProc = splashProc;
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.hCursor = LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_APPSTARTING));
-        wc.lpszClassName = L"VibinSplash";
+        wc.lpszClassName = L"VybnSplash";
         RegisterClassExW(&wc);
         RECT work{};
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
         const POINT position{work.left + (work.right - work.left - width) / 2, work.top + (work.bottom - work.top - height) / 2};
-        HWND hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW, wc.lpszClassName, L"Vibin", WS_POPUP, position.x,
+        HWND hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW, wc.lpszClassName, L"VYBN", WS_POPUP, position.x,
                                     position.y, width, height, nullptr, nullptr, wc.hInstance, nullptr);
 
         // A premultiplied 32-bit bitmap to draw into and hand to the compositor
@@ -241,7 +241,7 @@ void Splash::run()
 
                 Gdiplus::SolidBrush name(gdi(text_));
                 Gdiplus::SolidBrush note(gdi(muted_));
-                g.DrawString(L"Vibin", -1, &title, Gdiplus::RectF(cx, oy + groove + 14.0f, cw, 32.0f), &centred, &name);
+                g.DrawString(L"VYBN", -1, &title, Gdiplus::RectF(cx, oy + groove + 14.0f, cw, 32.0f), &centred, &name);
                 g.DrawString(L"Loading", -1, &caption, Gdiplus::RectF(cx, oy + groove + 44.0f, cw, 18.0f), &centred, &note);
             }
 

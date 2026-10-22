@@ -20,7 +20,7 @@ namespace ui {
 // appended again (DrawList::appendSection) instead of painting. `reuse` false always paints
 // (while recording, while something glides). A section holding an image is never reused.
 //
-// With VIBIN_VERIFY_CACHE=1 every draw paints; when the key matched, what was painted is
+// With VYBN_VERIFY_CACHE=1 every draw paints; when the key matched, what was painted is
 // compared with the cached section, and the first time they differ the cache prints
 // "DrawCache: <name> drew something else under the same key" to stderr. Main thread only.
 class DrawCache {
@@ -70,7 +70,7 @@ public:
     };
     static Totals takeTotals();
 
-    // Whether VIBIN_VERIFY_CACHE is set (to anything but 0); read once
+    // Whether VYBN_VERIFY_CACHE is set (to anything but 0); read once
     static bool verifying();
 
 private:

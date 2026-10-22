@@ -41,7 +41,7 @@ struct AudioMetadata {
     std::string album;
     std::string comment;
     std::string date;
-    std::string software = "Vibin";
+    std::string software = "VYBN";
 };
 
 // Streams interleaved float audio into a file. Open refuses a format the container can't hold,

@@ -134,16 +134,16 @@ int runPluginSelfTest()
     c.check(scanned && found.size() == 5, "a scan lists the file's five plugins", scanned ? text("in %.0f ms", since(start) * 1000) : error);
     plugin::Descriptor gainD, sineD, faultyD, duckD;
     for (const auto &d : found) {
-        if (d.id == "vibin.test.gain")
+        if (d.id == "vybn.test.gain")
             gainD = d;
-        else if (d.id == "vibin.test.sine")
+        else if (d.id == "vybn.test.sine")
             sineD = d;
-        else if (d.id == "vibin.test.faulty")
+        else if (d.id == "vybn.test.faulty")
             faultyD = d;
-        else if (d.id == "vibin.test.duck")
+        else if (d.id == "vybn.test.duck")
             duckD = d;
     }
-    c.check(gainD.name == "Test Gain" && gainD.vendor == "Vibin" && gainD.effect() && !gainD.instrument(), "the gain is an effect, named");
+    c.check(gainD.name == "Test Gain" && gainD.vendor == "VYBN" && gainD.effect() && !gainD.instrument(), "the gain is an effect, named");
     c.check(sineD.instrument() && sineD.hasFeature("synthesizer"), "the sine is an instrument", sineD.features);
     c.check(gainD.path == file, "descriptors know their file");
     {
@@ -414,7 +414,7 @@ int runPluginSelfTest()
     // A folder granted for writing (its presets, its database) can be written in
     {
         std::error_code ec;
-        const fs::path folder = fs::temp_directory_path() / "vibin-plugin-write-test";
+        const fs::path folder = fs::temp_directory_path() / "vybn-plugin-write-test";
         fs::remove_all(folder, ec);
         fs::create_directories(folder, ec);
         fs::copy_file(fs::u8path(file), folder / "copy.clap", ec);
@@ -514,9 +514,9 @@ int runPluginSelfTest()
         c.check(!manager.scanning() && list.size() == 5 && manager.version() == 1, "the manager scans a folder",
                 text("%.0f plugins", static_cast<double>(list.size())));
         error.clear();
-        auto made = manager.create("vibin.test.gain", error);
+        auto made = manager.create("vybn.test.gain", error);
         c.check(made && made->status() == plugin::Status::Ready, "and makes an instance by id", error);
-        c.check(!manager.create("vibin.test.nothing", error) && !error.empty(), "an unknown id is refused", error);
+        c.check(!manager.create("vybn.test.nothing", error) && !error.empty(), "an unknown id is refused", error);
         // A plugin effect in a chain: the sound passes while it loads, then the plugin plays it,
         // values from the project reach it, dropping a value brings the state back, and a crash
         // silences it until reloaded
@@ -524,7 +524,7 @@ int runPluginSelfTest()
             audio::DeviceChain chain;
             chain.setPlugins(&manager);
             chain.prepare(kRate, kFrames);
-            std::vector<audio::DeviceSetting> settings = {pluginDevice("vibin.test.gain", "Test Gain")};
+            std::vector<audio::DeviceSetting> settings = {pluginDevice("vybn.test.gain", "Test Gain")};
             chain.apply(settings);
             Buffers e;
             auto fill = [&e] {
@@ -596,7 +596,7 @@ int runPluginSelfTest()
             audio::DeviceChain chain;
             chain.setPlugins(&manager);
             chain.prepare(kRate, kFrames);
-            std::vector<audio::DeviceSetting> settings = {pluginDevice("vibin.test.faulty", "Test Faulty")};
+            std::vector<audio::DeviceSetting> settings = {pluginDevice("vybn.test.faulty", "Test Faulty")};
             chain.apply(settings);
             auto *effect = dynamic_cast<audio::PluginEffect *>(chain.effect(0));
             const auto until = Clock::now() + std::chrono::seconds(10);
@@ -636,7 +636,7 @@ int runPluginSelfTest()
             audio::DeviceChain chain;
             chain.setPlugins(&manager);
             chain.prepare(kRate, kFrames);
-            chain.apply({pluginDevice("vibin.test.duck", "Test Duck")});
+            chain.apply({pluginDevice("vybn.test.duck", "Test Duck")});
             auto *effect = dynamic_cast<audio::PluginEffect *>(chain.effect(0));
             const auto until = Clock::now() + std::chrono::seconds(10);
             while (effect && effect->slot()->state() == plugin::Slot::State::Loading && Clock::now() < until) {
@@ -676,7 +676,7 @@ int runPluginSelfTest()
                     "and is ducked by the key it is given (both channels of it)",
                     text("%.4f at 0.75, ", keyedLoud) + text("%.4f at full scale, ", keyedFull) + text("%.4f at 0.5 on the right", keyedRight));
             // A plugin without a sidechain port ignores the key
-            chain.apply({pluginDevice("vibin.test.gain", "Test Gain")});
+            chain.apply({pluginDevice("vybn.test.gain", "Test Gain")});
             auto *plain = dynamic_cast<audio::PluginEffect *>(chain.effect(0));
             for (int i = 0; i < 1000 && plain && plain->slot()->state() == plugin::Slot::State::Loading; ++i) {
                 chain.collect();
@@ -726,9 +726,9 @@ int runPluginSelfTest()
         // stereo sidechain port, Test Gain, the sine and the faulty one none
         {
             plugin::Descriptor duck, gainInfo;
-            const bool foundDuck = manager.find("vibin.test.duck", duck), foundGain = manager.find("vibin.test.gain", gainInfo);
+            const bool foundDuck = manager.find("vybn.test.duck", duck), foundGain = manager.find("vybn.test.gain", gainInfo);
             plugin::Descriptor crashy;
-            const bool foundCrashy = manager.find("vibin.test.crashinit", crashy);
+            const bool foundCrashy = manager.find("vybn.test.crashinit", crashy);
             c.check(foundCrashy && crashy.sidechain == 0 && crashy.probed && manager.lastScan().probed == 4,
                     "a plugin that crashes when made is still listed by the scan; its failed probe leaves no sidechain and is remembered",
                     text("%.0f probed", static_cast<double>(manager.lastScan().probed)));
@@ -743,8 +743,8 @@ int runPluginSelfTest()
             p.tracks.resize(2);
             p.tracks[0].name = "Pad";
             p.tracks[1].name = "Kick";
-            p.tracks[0].effects = {pluginDevice("vibin.test.duck", "Test Duck"), pluginDevice("vibin.test.gain", "Test Gain"),
-                                   pluginDevice("vibin.not.installed", "Missing")};
+            p.tracks[0].effects = {pluginDevice("vybn.test.duck", "Test Duck"), pluginDevice("vybn.test.gain", "Test Gain"),
+                                   pluginDevice("vybn.not.installed", "Missing")};
             p.tracks[0].effects[2].sidechain = 2; // a key a missing plugin keeps
             daw::ObjectId next = 1;
             p.normalizeIds(next);
@@ -766,7 +766,7 @@ int runPluginSelfTest()
 
         // A plugin keyed through the bridge: a pad with Test Duck, keyed by a muted kick track
         {
-            const fs::path dir = fs::temp_directory_path() / "vibin-plugin-sidechain";
+            const fs::path dir = fs::temp_directory_path() / "vybn-plugin-sidechain";
             std::error_code removed;
             fs::remove_all(dir, removed);
             fs::create_directories(dir, removed);
@@ -789,7 +789,7 @@ int runPluginSelfTest()
             }
             p.tracks[0].name = "Pad";
             p.tracks[0].clips.push_back(daw::Clip("Held", 0.0, 16.0, {daw::Note{0.0, 16.0, 57, 0.8f}}));
-            p.tracks[0].effects = {pluginDevice("vibin.test.duck", "Test Duck")};
+            p.tracks[0].effects = {pluginDevice("vybn.test.duck", "Test Duck")};
             p.tracks[1].name = "Kick";
             std::vector<daw::Note> beats;
             for (int beat = 0; beat < 4; ++beat)
@@ -870,7 +870,7 @@ int runPluginSelfTest()
             audio::DeviceChain chain;
             chain.setPlugins(&manager);
             chain.prepare(kRate, kFrames);
-            std::vector<audio::DeviceSetting> settings = {pluginDevice("vibin.test.faulty", "Test Faulty")};
+            std::vector<audio::DeviceSetting> settings = {pluginDevice("vybn.test.faulty", "Test Faulty")};
             chain.apply(settings);
             auto *effect = dynamic_cast<audio::PluginEffect *>(chain.effect(0));
             const auto until = Clock::now() + std::chrono::seconds(10);
@@ -919,7 +919,7 @@ int runPluginSelfTest()
             owned->setChain(&chain);
             audio::NotePlayer player(std::move(owned));
             player.prepare(kRate, kFrames);
-            chain.apply(pluginDevice("vibin.test.sine", "Test Sine"), {});
+            chain.apply(pluginDevice("vybn.test.sine", "Test Sine"), {});
             auto *sound = dynamic_cast<audio::PluginInstrument *>(chain.instrument());
             const auto until = Clock::now() + std::chrono::seconds(10);
             while (sound && sound->slot() && sound->slot()->state() == plugin::Slot::State::Loading && Clock::now() < until) {
@@ -998,7 +998,7 @@ int runPluginSelfTest()
             late.chain.setPlugins(&manager);
             late.prepare(kRate, kFrames);
             early.prepare(kRate, kFrames);
-            std::vector<audio::DeviceSetting> settings = {pluginDevice("vibin.test.gain", "Test Gain")};
+            std::vector<audio::DeviceSetting> settings = {pluginDevice("vybn.test.gain", "Test Gain")};
             settings[0].setValue(4, 256.0);
             late.chain.apply(settings);
             auto *effect = dynamic_cast<audio::PluginEffect *>(late.chain.effect(0));
@@ -1038,7 +1038,7 @@ int runPluginSelfTest()
 
         // The scan cache: a second scan loads nothing, a forced one everything, a changed file again
         {
-            const fs::path temp = fs::temp_directory_path() / "vibin-plugin-cache-test";
+            const fs::path temp = fs::temp_directory_path() / "vybn-plugin-cache-test";
             std::error_code ec;
             fs::remove_all(temp, ec);
             fs::create_directories(temp / "plugins", ec);
@@ -1059,12 +1059,12 @@ int runPluginSelfTest()
                     "the scan cache: unchanged files aren't loaded again",
                     text("%.0f scanned, then ", static_cast<double>(first.scanned)) + text("%.0f", static_cast<double>(second.scanned)));
             plugin::Descriptor cachedDuck;
-            c.check(scanner.find("vibin.test.duck", cachedDuck) && cachedDuck.sidechain == 2,
+            c.check(scanner.find("vybn.test.duck", cachedDuck) && cachedDuck.sidechain == 2,
                     "the scan cache keeps a plugin's sidechain port");
             // A cache from before the sidechain info (format 1) is read as nothing, so it is scanned again
             {
                 const fs::path old = temp / "old.cache";
-                std::ofstream(old, std::ios::binary) << "# Vibin plugin scans 1: old" << (char)10 << "file" << (char)9 << "x.clap" << (char)9 << "1" << (char)9 << "1" << (char)9 << (char)10;
+                std::ofstream(old, std::ios::binary) << "# VYBN plugin scans 1: old" << (char)10 << "file" << (char)9 << "x.clap" << (char)9 << "1" << (char)9 << "1" << (char)9 << (char)10;
                 c.check(plugin::readScanCache(old.u8string()).empty(), "an older scan cache is ignored, so its plugins are scanned again");
             }
             // A file that changes is scanned again

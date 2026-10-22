@@ -101,12 +101,12 @@ ui::Rect box(float x, float y, float w, float h)
 
 fs::path goldenPath(const std::string &scene)
 {
-    return fs::path(std::string(VIBIN_TEST_DIR) + "/render/" + scene + ".png");
+    return fs::path(std::string(VYBN_TEST_DIR) + "/render/" + scene + ".png");
 }
 
 fs::path outputFolder()
 {
-    return fs::temp_directory_path() / "vibin-render";
+    return fs::temp_directory_path() / "vybn-render";
 }
 
 bool writePng(const fs::path &path, const Picture &picture, std::string &error)
@@ -241,7 +241,7 @@ Picture renderPicture(uint32_t width, uint32_t height, const ui::Theme &theme,
                       const std::function<void(ui::Context &)> &build, int timedFrames = 0,
                       Timing *timing = nullptr, ui::FrameStats *afterFrame = nullptr)
 {
-    engine::Window window(width, height, "Vibin render test", false);
+    engine::Window window(width, height, "VYBN render test", false);
     window.setPosition(-32000, -32000); // far off the desktop, so the real mouse never hovers it
     engine::Renderer renderer(window, false, true);
 
@@ -830,7 +830,7 @@ Picture sceneArrangement()
 // lanes, the ruler (30) above, a track's row (76) and then its lanes (56 each), 22 pixels a beat.
 void automationEditChecks(Checker &c)
 {
-    engine::Window window(1200, 520, "Vibin automation test", false);
+    engine::Window window(1200, 520, "VYBN automation test", false);
     window.setPosition(-32000, -32000);
     engine::Renderer renderer(window, false, true);
     const ui::Theme theme = daw::studioTheme(true);
@@ -923,7 +923,7 @@ void automationEditChecks(Checker &c)
 // header, or pressing in its lane area, selects, moves and adds nothing.
 void masterEditChecks(Checker &c)
 {
-    engine::Window window(1200, 520, "Vibin master automation test", false);
+    engine::Window window(1200, 520, "VYBN master automation test", false);
     window.setPosition(-32000, -32000);
     engine::Renderer renderer(window, false, true);
     const ui::Theme theme = daw::studioTheme(true);
@@ -1015,7 +1015,7 @@ void masterEditChecks(Checker &c)
 // back. Only a group folds, and a hidden track's open lanes take no room either.
 void foldChecks(Checker &c)
 {
-    engine::Window window(1200, 900, "Vibin fold test", false);
+    engine::Window window(1200, 900, "VYBN fold test", false);
     window.setPosition(-32000, -32000);
     engine::Renderer renderer(window, false, true);
     const ui::Theme theme = daw::studioTheme(true);
@@ -1144,7 +1144,7 @@ void foldUiChecks(Checker &c)
                 "Fold state: its version moves on every change of the folded set and only then");
     }
 
-    engine::Window window(1200, 900, "Vibin fold ui test", false);
+    engine::Window window(1200, 900, "VYBN fold ui test", false);
     window.setPosition(-32000, -32000);
     engine::Renderer renderer(window, false, true);
     const ui::Theme theme = daw::studioTheme(true);
@@ -1222,7 +1222,7 @@ void foldUiChecks(Checker &c)
 // lands before the group or after them
 void foldDragChecks(Checker &c)
 {
-    engine::Window window(1200, 900, "Vibin fold drag test", false);
+    engine::Window window(1200, 900, "VYBN fold drag test", false);
     window.setPosition(-32000, -32000);
     engine::Renderer renderer(window, false, true);
     const ui::Theme theme = daw::studioTheme(true);
@@ -1311,7 +1311,7 @@ void foldMixerChecks(Checker &c)
 {
     env::Environment environment;
     audio::AudioSystem engine(environment, audio::Deviceless{});
-    engine::Window window(1200, 400, "Vibin fold mixer test", false);
+    engine::Window window(1200, 400, "VYBN fold mixer test", false);
     window.setPosition(-32000, -32000);
     engine::Renderer renderer(window, false, true);
     const ui::Theme theme = daw::studioTheme(true);
@@ -1428,7 +1428,7 @@ void flexibleMixerChecks(Checker &c)
 {
     env::Environment environment;
     audio::AudioSystem engine(environment, audio::Deviceless{});
-    engine::Window window(1200, 400, "Vibin flexible mixer test", false);
+    engine::Window window(1200, 400, "VYBN flexible mixer test", false);
     window.setPosition(-32000, -32000);
     engine::Renderer renderer(window, false, true);
     const ui::Theme theme = daw::studioTheme(true);
@@ -1479,7 +1479,7 @@ void tallStripChecks(Checker &c)
 {
     env::Environment environment;
     audio::AudioSystem engine(environment, audio::Deviceless{});
-    engine::Window window(1200, 400, "Vibin tall strip test", false);
+    engine::Window window(1200, 400, "VYBN tall strip test", false);
     window.setPosition(-32000, -32000);
     engine::Renderer renderer(window, false, true);
     const ui::Theme theme = daw::studioTheme(true);
@@ -1517,7 +1517,7 @@ void faderDragChecks(Checker &c)
     using Clock = std::chrono::steady_clock;
     env::Environment environment;
     audio::AudioSystem engine(environment, audio::Deviceless{});
-    engine::Window window(1500, 400, "Vibin fader drag test", false);
+    engine::Window window(1500, 400, "VYBN fader drag test", false);
     window.setPosition(-32000, -32000);
     engine::Renderer renderer(window, false, true);
     const ui::Theme theme = daw::studioTheme(true);
@@ -1593,12 +1593,12 @@ void sidechainUiChecks(Checker &c)
     env::Environment environment;
     environment.add<env::Scheduler>(env::SchedulerConfig{});
     daw::Settings settings;
-    settings.libraryPath = (std::filesystem::temp_directory_path() / "vibin-sidechain-ui").u8string();
+    settings.libraryPath = (std::filesystem::temp_directory_path() / "vybn-sidechain-ui").u8string();
     std::filesystem::create_directories(std::filesystem::u8path(settings.libraryPath));
     daw::InstrumentLibrary library(environment, settings);
     daw::DeviceCatalogue catalogue(library, nullptr);
 
-    engine::Window window(1100, 500, "Vibin sidechain test", false);
+    engine::Window window(1100, 500, "VYBN sidechain test", false);
     window.setPosition(-32000, -32000);
     engine::Renderer renderer(window, false, true);
     const ui::Theme theme = daw::studioTheme(true);
@@ -1796,7 +1796,7 @@ Picture renderSidechain(ui::FrameStats *after)
     env::Environment environment;
     environment.add<env::Scheduler>(env::SchedulerConfig{});
     daw::Settings settings;
-    settings.libraryPath = (std::filesystem::temp_directory_path() / "vibin-sidechain-ui").u8string();
+    settings.libraryPath = (std::filesystem::temp_directory_path() / "vybn-sidechain-ui").u8string();
     daw::InstrumentLibrary library(environment, settings);
     daw::DeviceCatalogue catalogue(library, nullptr);
     return renderPicture(1760, 300, daw::studioTheme(true), [&](ui::Context &context) {
@@ -1830,10 +1830,10 @@ Picture renderPluginSidechain(ui::FrameStats *after)
     daw::Project project = sidechainProject();
     audio::DeviceSetting duck;
     duck.kind = audio::DeviceKind::Plugin;
-    duck.id = "vibin.test.duck";
+    duck.id = "vybn.test.duck";
     duck.name = "Test Duck";
     audio::DeviceSetting gain = duck;
-    gain.id = "vibin.test.gain";
+    gain.id = "vybn.test.gain";
     gain.name = "Test Gain";
     project.tracks[0].effects = {duck, gain};
     daw::ProjectStore store(project);
@@ -1865,7 +1865,7 @@ Picture renderPluginSidechain(ui::FrameStats *after)
         return device && setting && device->matches(*setting) ? device : nullptr;
     };
     daw::Settings settings;
-    settings.libraryPath = (std::filesystem::temp_directory_path() / "vibin-sidechain-ui").u8string();
+    settings.libraryPath = (std::filesystem::temp_directory_path() / "vybn-sidechain-ui").u8string();
     daw::InstrumentLibrary library(environment, settings);
     daw::DeviceCatalogue catalogue(library, &manager);
     Picture picture = renderPicture(1000, 300, daw::studioTheme(true), [&](ui::Context &context) {
@@ -1880,7 +1880,7 @@ Picture scenePluginSidechain()
     return renderPluginSidechain(nullptr);
 }
 
-// A benchmark (VIBIN_TEST_BENCH): what the Sidechain controls cost a still frame on a big project, 64 tracks
+// A benchmark (VYBN_TEST_BENCH): what the Sidechain controls cost a still frame on a big project, 64 tracks
 // in 4 groups and a pad with 8 compressors (3 keyed): the offers of its 8 cards worked out afresh (done only when the project
 // changes now (22 ms a frame before: the controls worked them out every frame, and with the routes made afresh per
 // track), and settled frames of the Devices panel
@@ -1912,7 +1912,7 @@ void sidechainBench()
     env::Environment environment;
     environment.add<env::Scheduler>(env::SchedulerConfig{});
     daw::Settings settings;
-    settings.libraryPath = (std::filesystem::temp_directory_path() / "vibin-sidechain-ui").u8string();
+    settings.libraryPath = (std::filesystem::temp_directory_path() / "vybn-sidechain-ui").u8string();
     daw::InstrumentLibrary library(environment, settings);
     daw::DeviceCatalogue catalogue(library, nullptr);
     std::map<std::string, std::unique_ptr<audio::BuiltinEffect>> devices;
@@ -1927,7 +1927,7 @@ void sidechainBench()
             made = audio::makeEffect(type);
         return made.get();
     };
-    engine::Window window(1800, 400, "Vibin sidechain bench", false);
+    engine::Window window(1800, 400, "VYBN sidechain bench", false);
     window.setPosition(-32000, -32000);
     engine::Renderer renderer(window, false, true);
     ui::Context context(window, renderer, daw::studioTheme(true));
@@ -1950,7 +1950,7 @@ void sidechainBench()
 // A device's own view has the same row
 void sidechainDeviceViewChecks(Checker &c)
 {
-    engine::Window window(900, 500, "Vibin sidechain device view test", false);
+    engine::Window window(900, 500, "VYBN sidechain device view test", false);
     window.setPosition(-32000, -32000);
     engine::Renderer renderer(window, false, true);
     const ui::Theme theme = daw::studioTheme(true);
@@ -1981,7 +1981,7 @@ void sidechainDeviceViewChecks(Checker &c)
 // middle keeps it open for clicks; the middle closes it; a press outside the disc isn't its own
 void radialToggleChecks(Checker &c)
 {
-    engine::Window window(800, 600, "Vibin radial test", false);
+    engine::Window window(800, 600, "VYBN radial test", false);
     window.setPosition(-32000, -32000);
     engine::Renderer renderer(window, false, true);
     const ui::Theme theme = daw::studioTheme(true);
@@ -2924,7 +2924,7 @@ void paintCached(ui::DrawList &list, const ui::Theme &theme)
 }
 
 // The DrawCache counts: a miss paints, the same key again appends, and a change of key, reuse, invalidate,
-// rect or clip paints again. Only without VIBIN_VERIFY_CACHE, which paints every draw.
+// rect or clip paints again. Only without VYBN_VERIFY_CACHE, which paints every draw.
 void cacheChecks(Checker &c, const ui::Theme &theme)
 {
     ui::DrawCache cache("sections-check");
@@ -2981,7 +2981,7 @@ void cacheChecks(Checker &c, const ui::Theme &theme)
             "paints " + std::to_string(paints));
 }
 
-// With VIBIN_VERIFY_CACHE every draw paints, so a matched key's paint is compared with the cached section
+// With VYBN_VERIFY_CACHE every draw paints, so a matched key's paint is compared with the cached section
 void verifierChecks(Checker &c, const ui::Theme &theme)
 {
     ui::DrawCache verifier("verifier-check");
@@ -3092,14 +3092,14 @@ void sectionChecks(Checker &c)
                                                                   std::to_string(outer.prims.size()) + " prims");
     }
 
-    // The draw cache's counts, or the verifier's check when VIBIN_VERIFY_CACHE is set
+    // The draw cache's counts, or the verifier's check when VYBN_VERIFY_CACHE is set
     if (ui::DrawCache::verifying()) {
-        std::printf("SKIP  %-44s %s\n", "Draw cache counts", "VIBIN_VERIFY_CACHE is set, so every draw paints");
+        std::printf("SKIP  %-44s %s\n", "Draw cache counts", "VYBN_VERIFY_CACHE is set, so every draw paints");
         verifierChecks(c, theme);
     } else {
         cacheChecks(c, theme);
         std::printf("SKIP  %-44s %s\n", "Draw cache verifier",
-                    "VIBIN_VERIFY_CACHE is not set; the verifier is checked by running the app");
+                    "VYBN_VERIFY_CACHE is not set; the verifier is checked by running the app");
     }
     std::printf("\n");
 }
@@ -3280,7 +3280,7 @@ int runRenderSelfTest(int argc, char **argv)
         }
     }
 
-    // What each part took, for VIBIN_TEST_TIMES (the runner's --times): each scene and each group of checks
+    // What each part took, for VYBN_TEST_TIMES (the runner's --times): each scene and each group of checks
     std::vector<std::pair<double, std::string>> times;
     auto timed = [&times](const std::string &name, const std::function<void()> &run) {
         const auto begin = std::chrono::steady_clock::now();
@@ -3291,7 +3291,7 @@ int runRenderSelfTest(int argc, char **argv)
     // A hidden window open for the whole run: GLFW starts when the first window opens and stops when
     // the last closes, and starting it enumerates the input devices (DirectInput on Windows), which can
     // take most of a second; without this every scene's window would pay that again
-    engine::Window keeper(16, 16, "Vibin render test", false);
+    engine::Window keeper(16, 16, "VYBN render test", false);
 
     // The primitive checks need no window and run whatever scene is asked for
     Checker prims;
@@ -3304,7 +3304,7 @@ int runRenderSelfTest(int argc, char **argv)
     bool found = only.empty();
     std::vector<std::pair<std::string, ui::FrameStats>> rendered;
     std::vector<std::pair<const char *, ui::FrameStats>> settled;
-    std::vector<const char *> verifiedSkips; // cache scenes not checked because VIBIN_VERIFY_CACHE makes every draw paint
+    std::vector<const char *> verifiedSkips; // cache scenes not checked because VYBN_VERIFY_CACHE makes every draw paint
     for (const SceneEntry &scene : kScenes) {
         if (!only.empty() && only != scene.name)
             continue;
@@ -3333,7 +3333,7 @@ int runRenderSelfTest(int argc, char **argv)
         settledCacheChecks(caches, entry.first, entry.second);
     for (const char *name : verifiedSkips)
         std::printf("SKIP  %-44s %s\n", (std::string(name) + ": a settled frame draws from its caches").c_str(),
-                    "VIBIN_VERIFY_CACHE is set, so every draw paints");
+                    "VYBN_VERIFY_CACHE is set, so every draw paints");
     if (!settled.empty() || !verifiedSkips.empty())
         std::printf("\n");
     failures += caches.failures;
@@ -3362,7 +3362,7 @@ int runRenderSelfTest(int argc, char **argv)
     for (const auto &entry : rendered)
         printInfo(entry.first, entry.second);
 
-    // The scenes timed on their settled frames: a benchmark (VIBIN_TEST_BENCH), each a scene built again
+    // The scenes timed on their settled frames: a benchmark (VYBN_TEST_BENCH), each a scene built again
     if (bench()) {
         failures += timeScene("synth", only, [](int frames, Timing *timing) { renderSynth(frames, timing); });
         failures += timeScene("waveforms", only, [](int frames, Timing *timing) { renderWaveforms(frames, timing); });
@@ -3372,7 +3372,7 @@ int runRenderSelfTest(int argc, char **argv)
         failures += timeScene("pianoroll", only, [](int frames, Timing *timing) { renderPianoRoll(frames, timing); });
         failures += timeScene("steps", only, [](int frames, Timing *timing) { renderSteps(frames, timing); });
     }
-    if (flag("VIBIN_TEST_TIMES")) {
+    if (flag("VYBN_TEST_TIMES")) {
         std::sort(times.begin(), times.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
         for (size_t i = 0; i < times.size() && i < 10; ++i)
             std::printf("TIME  %-7.0f ms  %s\n", times[i].first, times[i].second.c_str());

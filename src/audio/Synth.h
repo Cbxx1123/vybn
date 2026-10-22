@@ -137,7 +137,7 @@ struct Voice {
 // nothing is allocated on the audio thread.
 class Synth : public Instrument {
 public:
-    explicit Synth(std::string name = "Vibin Synth");
+    explicit Synth(std::string name = "VYBN Synth");
 
     // Main thread: a parameter in its display units (a choice's index, percent-style rows 0-100,
     // ms, Hz...), clamped to its range. Unknown ids are ignored.

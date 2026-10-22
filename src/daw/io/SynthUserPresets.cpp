@@ -62,7 +62,7 @@ std::string userSynthPresetFolder()
 {
     const char *appData = std::getenv("APPDATA");
     fs::path base = appData && *appData ? fs::path(appData) : fs::path(std::getenv("HOME") ? std::getenv("HOME") : ".") / ".config";
-    return (base / "Vibin" / "Synth presets").string();
+    return (base / "VYBN" / "Synth presets").string();
 }
 
 std::vector<audio::SynthPreset> loadUserSynthPresets(std::string &error, const std::string &folder)
@@ -118,7 +118,7 @@ bool saveUserSynthPreset(const audio::SynthPreset &preset, std::string &error, c
         error = "Couldn't write " + file.u8string();
         return false;
     }
-    out << "# A Vibin Synth preset\n";
+    out << "# A VYBN Synth preset\n";
     out << "name = " << toml::quote(preset.name) << "\n";
     out << "category = \"User\"\n";
     if (!preset.description.empty())

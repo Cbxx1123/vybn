@@ -216,7 +216,7 @@ std::string writeProject(const Project &project, const std::string &folder)
     std::ostringstream out;
     auto boolean = [](bool b) { return b ? "true" : "false"; };
 
-    out << "# Vibin project\n";
+    out << "# VYBN project\n";
     out << "format = " << kProjectFormat << "\n";
     out << "name = " << quote(project.name) << "\n";
     out << "tempo = " << number(project.tempo) << "\n";
@@ -723,9 +723,9 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
     if (!r.whole(root, "format", "", format))
         return false;
     if (format > kProjectFormat)
-        return r.fail("the project was saved by a newer version of Vibin (format " + std::to_string(format) + ")");
+        return r.fail("the project was saved by a newer version of VYBN (format " + std::to_string(format) + ")");
     if (format < kProjectFormat)
-        return r.fail("the project was saved by an older version of Vibin (format " + std::to_string(format) +
+        return r.fail("the project was saved by an older version of VYBN (format " + std::to_string(format) +
                       "), which this one no longer opens");
 
     Project p;

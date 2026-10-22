@@ -119,7 +119,7 @@ void ProjectSession::restoreState(Project state)
 void ProjectSession::verify()
 {
     static const bool enabled = [] {
-        const char *value = std::getenv("VIBIN_VERIFY_STORE");
+        const char *value = std::getenv("VYBN_VERIFY_STORE");
         return value && std::string(value) == "1";
     }();
     if (!enabled)

@@ -182,7 +182,7 @@ int runBridgeChecks()
     Checker c;
 
     // A deviceless engine with its MIDI hub first (as RenderJob makes it), an empty library and a pool
-    const std::string dir = (std::filesystem::temp_directory_path() / "vibin-bridge-selftest").u8string();
+    const std::string dir = (std::filesystem::temp_directory_path() / "vybn-bridge-selftest").u8string();
     std::error_code ec;
     std::filesystem::remove_all(std::filesystem::u8path(dir), ec);
     std::filesystem::create_directories(std::filesystem::u8path(dir), ec);

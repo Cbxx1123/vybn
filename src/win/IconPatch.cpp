@@ -1,11 +1,11 @@
-// vibin-icon-patch.exe: gives the app's executable the icon of the user's theme, once the app has ended.
+// vybn-icon-patch.exe: gives the app's executable the icon of the user's theme, once the app has ended.
 //
 // The icon inside an executable is data in the file, so it can't change while the program runs (the file
 // is locked) and can't be drawn by the program itself afterwards. So when the app ends with a theme whose
 // icon differs from the executable's (AppIcon.cpp: scheduleExecutableIcon), it starts this, which waits
 // for the app to be gone, then replaces the icon:
 //
-//   vibin-icon-patch <process id> <the executable> <a .ico file>
+//   vybn-icon-patch <process id> <the executable> <a .ico file>
 //
 // The icon's images are stored as plain bitmaps (AppIcon.cpp: encodeDib), which for a given size in pixels
 // are always the same number of bytes, whatever the colours. So the new images go over the old ones,
@@ -242,7 +242,7 @@ bool patch(const std::wstring &exePath, const std::map<int, std::vector<uint8_t>
 
     Resources resources;
     std::vector<Write> plan;
-    // The two icon groups the app's resource file has (src/win/vibin.rc.in), each with its images
+    // The two icon groups the app's resource file has (src/win/vybn.rc.in), each with its images
     bool ok = loadResources(exe, resources) && planGroup(resources, true, 1, nullptr, images, plan) &&
               planGroup(resources, false, 0, L"GLFW_ICON", images, plan);
     for (size_t i = 0; ok && i < plan.size(); ++i)

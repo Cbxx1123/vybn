@@ -176,7 +176,7 @@ void DawApp::pluginEditorDemo()
             // The first instrument plugin installed, the project's own test plugins last
             const CatalogueEntry *chosen = nullptr;
             for (const CatalogueEntry &e : catalogue_->entries())
-                if (e.instrument && e.plugin() && (!chosen || chosen->device.id.rfind("vibin.test.", 0) == 0))
+                if (e.instrument && e.plugin() && (!chosen || chosen->device.id.rfind("vybn.test.", 0) == 0))
                     chosen = &e;
             if (!chosen || lead < 0)
                 return;

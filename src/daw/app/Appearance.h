@@ -13,7 +13,7 @@ ui::Theme studioTheme(bool dark = true, const std::string &preset = "Carbon");
 // The presets offered: the dark ones first
 std::vector<std::string> appearancePresets();
 
-// The user's look, in %APPDATA%\Vibin\theme.toml: the preset it started from, the colours (as
+// The user's look, in %APPDATA%\VYBN\theme.toml: the preset it started from, the colours (as
 // "#RRGGBB"), dark or light, and every shape and text setting. Reading starts from the studio
 // theme, so a missing key keeps its default; values are clamped by the Theme.
 std::string themePath();

@@ -1,4 +1,4 @@
-vibin_module(vibin_daw SOURCES
+vybn_module(vybn_daw SOURCES
     # The project and its rules
     model/AutomationLanes.cpp
     model/ExportModel.cpp
@@ -64,8 +64,8 @@ vibin_module(vibin_daw SOURCES
     app/Settings.cpp
     app/Splash.cpp
 )
-target_link_libraries(vibin_daw PUBLIC vibin_ui vibin_audio vibin_plugin PRIVATE vibin_stb)
+target_link_libraries(vybn_daw PUBLIC vybn_ui vybn_audio vybn_plugin PRIVATE vybn_stb)
 if(WIN32)
     # The loading screen (GDI+), the title bar (DWM), MIDI input, and the icon and folders (the shell)
-    target_link_libraries(vibin_daw PRIVATE gdiplus dwmapi winmm shell32)
+    target_link_libraries(vybn_daw PRIVATE gdiplus dwmapi winmm shell32)
 endif()

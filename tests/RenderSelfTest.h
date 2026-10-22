@@ -5,11 +5,11 @@ namespace tests {
 // main --render-selftest [--update-goldens] [--scene NAME]
 //
 // Renders scenes off screen (a hidden window, engine::Renderer::beginOffscreen) and compares each
-// picture with its golden image, tests/render/<scene>.png (VIBIN_TEST_DIR "/render"). A picture
+// picture with its golden image, tests/render/<scene>.png (VYBN_TEST_DIR "/render"). A picture
 // matches when every pixel's red, green and blue are each within 2 of the golden's and no more than
 // 0.05% of pixels differ by more; a missing golden fails. On a mismatch it writes
 // <scene>.actual.png and <scene>.diff.png (differences in red, magnified, over a faded copy) into
-// %TEMP%\vibin-render and names them in the FAIL line. --update-goldens writes every picture as its
+// %TEMP%\vybn-render and names them in the FAIL line. --update-goldens writes every picture as its
 // golden instead (PASS lines say "updated"). --scene renders that scene alone. PNGs are opaque RGB.
 //
 // Scenes, each at a fixed size, with the theme named:

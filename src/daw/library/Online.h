@@ -40,7 +40,7 @@ struct OnlineItem {
     double seconds = 0.0;    // a sample's length
 };
 
-// Where online assets come from. Read from %APPDATA%\Vibin\sources.toml when it exists, so more
+// Where online assets come from. Read from %APPDATA%\VYBN\sources.toml when it exists, so more
 // can be added, else these defaults:
 //   github:    every repository of a GitHub organisation, each an instrument downloaded as a zip
 //              (sfzinstruments: free SFZ instruments, mostly CC0)
@@ -75,7 +75,7 @@ std::string licenseName(const std::string &url);
 std::string freesoundQuery(const std::string &text, const std::string &category);
 
 // The sources' listings. A listing is fetched on a background thread and arrives on the main
-// thread; GitHub listings are kept for an hour (in %APPDATA%\Vibin\cache) to stay inside its
+// thread; GitHub listings are kept for an hour (in %APPDATA%\VYBN\cache) to stay inside its
 // limit for unsigned-in requests.
 class OnlineCatalogue {
 public:

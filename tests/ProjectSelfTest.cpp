@@ -119,7 +119,7 @@ int runProjectSelfTest()
 
     // Audio tracks: inputs and clips, with sound files beside the project written relative to it
     {
-        const std::filesystem::path folder = std::filesystem::temp_directory_path() / "vibin-audio-selftest";
+        const std::filesystem::path folder = std::filesystem::temp_directory_path() / "vybn-audio-selftest";
         daw::Project a;
         daw::Track audioTrack;
         audioTrack.name = "Guitar DI";
@@ -244,7 +244,7 @@ int runProjectSelfTest()
     }
 
     // Through a file
-    const std::filesystem::path file = std::filesystem::temp_directory_path() / "vibin-project-selftest.vbp";
+    const std::filesystem::path file = std::filesystem::temp_directory_path() / "vybn-project-selftest.vbp";
     error.clear();
     daw::Project loaded;
     const bool saved = daw::saveProjectFile(file.string(), demo, error);
@@ -617,7 +617,7 @@ id = "Grand Piano"
     {
         daw::Project p = daw::demoProject();
         audio::DeviceSetting synth = audio::SynthDevice::setting();
-        synth.name = "Vibin Synth";
+        synth.name = "VYBN Synth";
         synth.setValue(0, 3.0);     // Osc 1 wave: Square
         synth.setValue(34, -40.0);  // filter envelope amount: bipolar
         synth.setValue(31, 1234.5); // cutoff
@@ -627,7 +627,7 @@ id = "Grand Piano"
         daw::Project back;
         std::string error;
         const bool ok = daw::readProject(text, back, error);
-        c.check(ok && back.tracks[0].instrument == synth && back.tracks[0].instrument.name == "Vibin Synth" &&
+        c.check(ok && back.tracks[0].instrument == synth && back.tracks[0].instrument.name == "VYBN Synth" &&
                     back.tracks[0].instrument.kind == audio::DeviceKind::Synth && daw::writeProject(back) == text &&
                     daw::instrumentsUsed(back).size() == 1 && daw::instrumentsUsed(back)[0] == "Spanish classical guitar",
                 "Synth: saved and read back exactly, and not a library instrument", error);
@@ -1646,7 +1646,7 @@ id = "vibin.synth"
     // controller into a temporary folder (never the user's autosave folder)
     {
         namespace fs = std::filesystem;
-        const fs::path base = fs::temp_directory_path() / "vibin-autosave-selftest";
+        const fs::path base = fs::temp_directory_path() / "vybn-autosave-selftest";
         std::error_code ec;
         fs::remove_all(base, ec);
         fs::create_directories(base, ec);

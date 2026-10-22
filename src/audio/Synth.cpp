@@ -903,7 +903,7 @@ void Synth::controlChange(int controller, float value)
 }
 
 SynthDevice::SynthDevice(const DeviceSetting &setting)
-    : InstrumentDevice("Vibin Synth")
+    : InstrumentDevice("VYBN Synth")
 {
     applySetting(setting);
 }

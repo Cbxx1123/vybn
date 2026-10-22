@@ -26,6 +26,30 @@ std::string trim(std::string s)
     return first == std::string::npos ? std::string() : s.substr(first, last - first + 1);
 }
 
+// Moves what is in `from` into `to`: an entry `to` lacks is moved whole, a folder both have is merged
+// the same way, and a file both have stays as `to` has it (written since, so never the older), the
+// copy in `from` removed. `from` goes once it is empty.
+void mergeInto(const fs::path &from, const fs::path &to)
+{
+    std::error_code ec;
+    fs::create_directories(to, ec);
+    std::vector<fs::path> entries; // listed first: the folder changes as they move
+    for (const fs::directory_entry &entry : fs::directory_iterator(from, ec))
+        entries.push_back(entry.path());
+    for (const fs::path &entry : entries) {
+        const fs::path target = to / entry.filename();
+        std::error_code e;
+        if (!fs::exists(target, e))
+            fs::rename(entry, target, e);
+        else if (fs::is_directory(entry, e) && fs::is_directory(target, e))
+            mergeInto(entry, target);
+        else if (!fs::is_directory(entry, e))
+            fs::remove(entry, e);
+    }
+    if (fs::is_empty(from, ec))
+        fs::remove(from, ec);
+}
+
 }
 
 std::string Settings::defaultLibraryPath()
@@ -33,7 +57,30 @@ std::string Settings::defaultLibraryPath()
     std::string home = environment("USERPROFILE");
     if (home.empty())
         home = environment("HOME");
-    return (fs::path(home) / "Documents" / "Vibin Library").string();
+    // The library from before the app was renamed, where there is one and no new one yet: it stays
+    // where it is, since instruments may be referred to by path
+    const fs::path library = fs::path(home) / "Documents" / "VYBN Library";
+    const fs::path before = fs::path(home) / "Documents" / "Vibin Library";
+    std::error_code ec;
+    if (!fs::exists(library, ec) && fs::is_directory(before, ec))
+        return before.string();
+    return library.string();
+}
+
+void Settings::moveFromOldName()
+{
+    // Settings, keybinds, the theme and synth presets (roaming), and the sample cache, imported
+    // plugins and autosaves (local): moved from the "Vibin" folders into the "VYBN" ones, merged with
+    // anything already there. What can't be moved (in use) stays to be tried at the next start.
+    for (const char *variable : {"APPDATA", "LOCALAPPDATA"}) {
+        const std::string base = environment(variable);
+        if (base.empty())
+            continue;
+        const fs::path from = fs::path(base) / "Vibin";
+        std::error_code ec;
+        if (fs::is_directory(from, ec))
+            mergeInto(from, fs::path(base) / "VYBN");
+    }
 }
 
 std::string Settings::filePath()
@@ -41,7 +88,7 @@ std::string Settings::filePath()
     std::string base = environment("APPDATA");
     if (base.empty())
         base = (fs::path(environment("HOME")) / ".config").string();
-    return (fs::path(base) / "Vibin" / "settings.ini").string();
+    return (fs::path(base) / "VYBN" / "settings.ini").string();
 }
 
 std::string Settings::sampleCachePath()
@@ -49,7 +96,7 @@ std::string Settings::sampleCachePath()
     std::string base = environment("LOCALAPPDATA");
     if (base.empty())
         base = (fs::path(environment("HOME")) / ".cache").string();
-    return (fs::path(base) / "Vibin" / "Sample cache").string();
+    return (fs::path(base) / "VYBN" / "Sample cache").string();
 }
 
 std::string Settings::pluginsPath()
@@ -57,7 +104,7 @@ std::string Settings::pluginsPath()
     std::string base = environment("LOCALAPPDATA");
     if (base.empty())
         base = (fs::path(environment("HOME")) / ".local").string();
-    return (fs::path(base) / "Vibin" / "Plugins").string();
+    return (fs::path(base) / "VYBN" / "Plugins").string();
 }
 
 plugin::PluginConfig Settings::pluginConfig() const
@@ -151,7 +198,7 @@ bool Settings::save(std::string &error) const
         error = "Can't write " + path.string();
         return false;
     }
-    file << "# Vibin settings\n";
+    file << "# VYBN settings\n";
     file << "library=" << libraryPath << "\n";
     file << "audioOutput=" << audioOutput << "\n";
     file << "audioInput=" << audioInput << "\n";

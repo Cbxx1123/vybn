@@ -144,7 +144,7 @@ uint16_t le16(const uint8_t *p)
     return static_cast<uint16_t>(p[0] | (p[1] << 8));
 }
 
-// The largest image of the icon this executable carries (its resource 1, from vibin.rc.in): its data, or empty
+// The largest image of the icon this executable carries (its resource 1, from vybn.rc.in): its data, or empty
 std::vector<uint8_t> embeddedIcon()
 {
     const HRSRC group = FindResourceW(nullptr, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(14));
@@ -355,7 +355,7 @@ bool scheduleExecutableIcon(ui::Color base, ui::Color accent)
         return false;
     const std::wstring exe(buffer, length);
     const size_t slash = exe.find_last_of(L"\\/");
-    const std::wstring patcher = (slash == std::wstring::npos ? std::wstring() : exe.substr(0, slash + 1)) + L"vibin-icon-patch.exe";
+    const std::wstring patcher = (slash == std::wstring::npos ? std::wstring() : exe.substr(0, slash + 1)) + L"vybn-icon-patch.exe";
     if (GetFileAttributesW(patcher.c_str()) == INVALID_FILE_ATTRIBUTES)
         return false;
 
@@ -375,7 +375,7 @@ bool scheduleExecutableIcon(ui::Color base, ui::Color accent)
     wchar_t temp[MAX_PATH + 1] = {};
     if (GetTempPathW(MAX_PATH, temp) == 0)
         return false;
-    const std::wstring ico = std::wstring(temp) + L"vibin-icon-" + std::to_wstring(GetCurrentProcessId()) + L".ico";
+    const std::wstring ico = std::wstring(temp) + L"vybn-icon-" + std::to_wstring(GetCurrentProcessId()) + L".ico";
     std::string error;
     if (!writeIconFile(narrow(ico), base, accent, error))
         return false;

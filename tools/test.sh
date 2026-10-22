@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the self-test suites (each is `output/main.exe --<suite>-selftest`) and prints one table.
+# Runs the self-test suites (each is `output/vybn.exe --<suite>-selftest`) and prints one table.
 #
 #   tools/test.sh                  every suite, in parallel, the fast tier (see docs/testing.md)
 #   tools/test.sh audio synth      only these suites
@@ -19,10 +19,10 @@
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# VIBIN_TEST_EXE names another build to test (output/main-dev.exe, linked by tools/link-dev.ps1 while
-# the app holds main.exe)
-EXE="${VIBIN_TEST_EXE:-$ROOT/output/main.exe}"
-[ -x "$EXE" ] || EXE="$ROOT/output/main"
+# VYBN_TEST_EXE names another build to test (output/vybn-dev.exe, linked by tools/link-dev.ps1 while
+# the app holds vybn.exe)
+EXE="${VYBN_TEST_EXE:-$ROOT/output/vybn.exe}"
+[ -x "$EXE" ] || EXE="$ROOT/output/vybn"
 
 # Longest first (measured; see docs/testing.md)
 ALL="export engine synth render plugin audio project browser input notes"
@@ -34,8 +34,8 @@ times=0; logs=""
 want=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --full) export VIBIN_TEST_FULL=1 ;;
-    --bench) export VIBIN_TEST_BENCH=1 ;;
+    --full) export VYBN_TEST_FULL=1 ;;
+    --bench) export VYBN_TEST_BENCH=1 ;;
     --times) times=1 ;;
     --serial) jobs_max=1 ;;
     -j) shift; jobs_max="$1" ;;
@@ -56,7 +56,7 @@ if [ ! -x "$EXE" ]; then echo "build first: $EXE not found" >&2; exit 2; fi
 keep=1
 if [ -z "$logs" ]; then logs="$(mktemp -d)"; keep=0; fi
 mkdir -p "$logs"
-[ $times -eq 1 ] && export VIBIN_TEST_TIMES=1
+[ $times -eq 1 ] && export VYBN_TEST_TIMES=1
 
 now() { date +%s%N; }
 

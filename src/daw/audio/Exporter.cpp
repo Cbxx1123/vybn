@@ -45,7 +45,7 @@ void Exporter::run(size_t index)
 
 void Exporter::runDemo()
 {
-    runDemoPreset("Mix", "Vibin demo mix");
+    runDemoPreset("Mix", "VYBN demo mix");
 }
 
 void Exporter::runReleaseDemo()

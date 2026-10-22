@@ -42,7 +42,7 @@ std::string narrow(const std::wstring &w)
     return s;
 }
 
-const wchar_t kContainerName[] = L"Vibin.PluginSandbox";
+const wchar_t kContainerName[] = L"VYBN.PluginSandbox";
 
 // The container's SID, derived once from its name. Its profile (a registry key and an empty data
 // folder under %LOCALAPPDATA%\Packages) is made only when Windows asks for it.
@@ -75,7 +75,7 @@ bool ensureProfile()
 {
     std::lock_guard<std::mutex> lock(containerMutex);
     PSID sid = nullptr;
-    const HRESULT hr = CreateAppContainerProfile(kContainerName, L"Vibin plugins", L"CLAP plugins hosted by the Vibin DAW", nullptr, 0, &sid);
+    const HRESULT hr = CreateAppContainerProfile(kContainerName, L"VYBN plugins", L"CLAP plugins hosted by the VYBN DAW", nullptr, 0, &sid);
     if (sid)
         FreeSid(sid);
     return SUCCEEDED(hr) || hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS);
@@ -326,7 +326,7 @@ std::string hostExecutable()
     const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
     std::wstring w(path, n);
     const size_t slash = w.find_last_of(L"\\/");
-    return narrow(w.substr(0, slash + 1) + L"vibin-plugin-host.exe");
+    return narrow(w.substr(0, slash + 1) + L"vybn-plugin-host.exe");
 }
 
 std::string describeExit(uint32_t code)
@@ -346,7 +346,7 @@ std::string describeExit(uint32_t code)
     case 0xC000001D:
         return "an illegal instruction";
     case 0xDEAD:
-        return "being stopped by Vibin";
+        return "being stopped by VYBN";
     default: {
         char text[48];
         std::snprintf(text, sizeof text, code >= 0xC0000000 ? "error 0x%08X" : "exit code %u", code);
@@ -367,7 +367,7 @@ bool HostProcess::running() const { return false; }
 uint32_t HostProcess::exitCode() const { return 0; }
 void HostProcess::terminate() {}
 bool HostProcess::wait(uint32_t) const { return true; }
-std::string hostExecutable() { return "vibin-plugin-host"; }
+std::string hostExecutable() { return "vybn-plugin-host"; }
 std::string describeExit(uint32_t code) { return "exit code " + std::to_string(code); }
 
 #endif

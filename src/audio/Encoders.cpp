@@ -679,7 +679,7 @@ protected:
         h.insert(h.end(), 34, 0);
         // VORBIS_COMMENT (type 4, the last block): the vendor, then the comments
         std::vector<uint8_t> body;
-        const std::string vendor = "Vibin";
+        const std::string vendor = "VYBN";
         putBytes(body, vendor.size(), 4, false);
         putText(body, vendor);
         const std::vector<std::string> comments = vorbisComments(metadata_);

@@ -19,12 +19,12 @@
 // Three tiers, chosen by environment variables (tools/test.sh sets them from its flags):
 //   default            the fast tier: every assertion, on inputs just big enough to prove it. This is
 //                      what runs while working and in the commit gate.
-//   VIBIN_TEST_FULL=1  the same assertions on the full-size inputs (the whole demo song, every voice
+//   VYBN_TEST_FULL=1  the same assertions on the full-size inputs (the whole demo song, every voice
 //                      count, 160,000 notes): slower, for before a release or when changing the engine.
-//   VIBIN_TEST_BENCH=1 also run the benchmarks: they measure and print INFO lines, and assert nothing.
+//   VYBN_TEST_BENCH=1 also run the benchmarks: they measure and print INFO lines, and assert nothing.
 // And two output switches:
-//   VIBIN_TEST_TIMES=1 after the suite, print its slowest checks
-//   VIBIN_TEST_QUIET=1 print only FAIL, SKIP and INFO lines and the summary
+//   VYBN_TEST_TIMES=1 after the suite, print its slowest checks
+//   VYBN_TEST_QUIET=1 print only FAIL, SKIP and INFO lines and the summary
 namespace tests {
 
 inline bool flag(const char *name)
@@ -37,14 +37,14 @@ inline bool flag(const char *name)
 // size of what it runs on changes, so `full() ? bigSize : smallSize` is the whole use.
 inline bool full()
 {
-    static const bool on = flag("VIBIN_TEST_FULL");
+    static const bool on = flag("VYBN_TEST_FULL");
     return on;
 }
 
 // Whether to run the benchmarks: code that times something and prints it, with nothing to pass or fail
 inline bool bench()
 {
-    static const bool on = flag("VIBIN_TEST_BENCH");
+    static const bool on = flag("VYBN_TEST_BENCH");
     return on;
 }
 
@@ -102,11 +102,11 @@ public:
         mark_ = Clock::now(); // a skipped check did no work
     }
 
-    // Ends the suite: the summary line, and with VIBIN_TEST_TIMES the slowest checks. Returns the exit code.
+    // Ends the suite: the summary line, and with VYBN_TEST_TIMES the slowest checks. Returns the exit code.
     int finish(const char *suite)
     {
         const double total = millis(start_, Clock::now());
-        if (flag("VIBIN_TEST_TIMES")) {
+        if (flag("VYBN_TEST_TIMES")) {
             std::vector<std::pair<double, std::string>> sorted = costs_;
             std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
             for (size_t i = 0; i < sorted.size() && i < 8; ++i)
@@ -128,7 +128,7 @@ private:
     }
     static bool quiet()
     {
-        static const bool on = flag("VIBIN_TEST_QUIET");
+        static const bool on = flag("VYBN_TEST_QUIET");
         return on;
     }
     void record(const std::string &what)

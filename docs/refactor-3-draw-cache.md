@@ -78,10 +78,10 @@ whether it was painted now or appended from the cache, so a cached frame and a p
 same content give the same fingerprint. `fingerprint(list)` then only adds the images' ids and
 versions, so it no longer walks the whole list.
 
-**The verifier.** With `VIBIN_VERIFY_CACHE=1`, every `DrawCache::draw` paints; when the key matched,
+**The verifier.** With `VYBN_VERIFY_CACHE=1`, every `DrawCache::draw` paints; when the key matched,
 it compares what was painted with the cached section, and the first time they differ it prints
 `DrawCache: <name> drew something else under the same key` to stderr. That is how a key missing an
-input is found, the same way `VIBIN_VERIFY_STORE` finds edits made outside the store.
+input is found, the same way `VYBN_VERIFY_STORE` finds edits made outside the store.
 
 ### Which views, and how they split
 
@@ -116,7 +116,7 @@ order of what is drawn must stay the same as today (goldens check it).
 | AO arrangement | `src/daw/Arrangement.h/.cpp` | the split and key from the table |
 | AP tests | `tests/RenderSelfTest.cpp` | a section appended equals the painted one (prims, data, hash); a changed key repaints; a nested section; plot offsets after appending; a section with an image not reused; the verifier catching a key missing an input; the arrangement scene painted twice gives one hit and the same prims |
 
-**Done when:** all self-tests and goldens pass; `--demo transport` with `VIBIN_VERIFY_CACHE=1` for 30
+**Done when:** all self-tests and goldens pass; `--demo transport` with `VYBN_VERIFY_CACHE=1` for 30
 seconds prints nothing; frame stats show the arrangement hitting its cache while the transport plays
 and `update` skipping its layout on most frames.
 
@@ -127,7 +127,7 @@ AT `SynthView.cpp`, AU `FileDialog.cpp` (`FileList`), AV `ExportsPanel.cpp` (`Lo
 with the split and key from the table, then AW tests (`tests/RenderSelfTest.cpp`: each view's scene
 painted twice hits its cache and draws the same).
 
-**Done when:** every demo run for 20 seconds with `VIBIN_VERIFY_CACHE=1` and some interaction the
+**Done when:** every demo run for 20 seconds with `VYBN_VERIFY_CACHE=1` and some interaction the
 demo performs itself prints nothing; tests and goldens pass.
 
 ### R3.3 Performance
@@ -140,7 +140,7 @@ update, build and submit ms, prims, cache hits and misses, layouts skipped.
 |---|---|---|
 | AX culling | `src/ui/Layout.cpp` (`Container::draw`), `src/ui/DrawList.h/.cpp` (a `clip()` getter) | a child whose rect, grown by 32 px, misses the list's clip isn't drawn at all (long settings pages, the browser's rows, the shortcuts list) |
 | AY keys | the view files the numbers point at | keys that miss too often (hover changes that don't change the picture, glides) tightened, measured |
-| AZ stats | `src/ui/UISystem.cpp`, `src/daw/DawAudio.cpp` (`buildMetrics`) | cache hits, misses and layouts skipped in the `VIBIN_FRAME_STATS` line and the Metrics page |
+| AZ stats | `src/ui/UISystem.cpp`, `src/daw/DawAudio.cpp` (`buildMetrics`) | cache hits, misses and layouts skipped in the `VYBN_FRAME_STATS` line and the Metrics page |
 
 Targets: build ms during playback down by at least 40% in `--demo transport` and `--demo pianoroll`;
 `update` lays out on under 10% of frames when the mouse is still; no verifier output.
@@ -170,7 +170,7 @@ entirely for quiet windows.
 
 ## Results (19 October 2026)
 
-`VIBIN_FRAME_STATS=1`, main window, per frame:
+`VYBN_FRAME_STATS=1`, main window, per frame:
 
 | | Before refactor 3 | After R3.1 | After R3.3 |
 |---|---|---|---|
@@ -180,7 +180,7 @@ entirely for quiet windows.
 | render self-test, 50 settled frames: synth / scroll (2,000 rows) | 1.35 / 14.5 ms | 1.24 / 14.5 ms | 0.53 / 3.43 ms |
 
 Targets met: build during playback down 42% (transport) and 51% (piano roll); update lays out on
-no frame while the mouse is still; 21 demos run with `VIBIN_VERIFY_CACHE=1` print nothing. Against
+no frame while the mouse is still; 21 demos run with `VYBN_VERIFY_CACHE=1` print nothing. Against
 the R0 baseline, a playing frame's CPU (update + build + submit) went from 1.79 ms to 0.50 ms.
 
 Decided in the Performance stage, from a profile of draw time per component class while playing

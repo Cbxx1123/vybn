@@ -721,7 +721,7 @@ void AssetBrowser::rebuildDetail()
         detail_->add<LiveLabel>([this] {
             return hooks_.instrumentTarget ? "Use plays it " + hooks_.instrumentTarget() + "." : std::string();
         }, TextStyle::Caption, TextTone::Secondary).setWrapWidth(290.0f);
-        detail_->add<Label>("Built into Vibin. Its controls are on the track's Devices tab, where its full view opens.",
+        detail_->add<Label>("Built into VYBN. Its controls are on the track's Devices tab, where its full view opens.",
                             TextStyle::Caption, TextTone::Muted)
             .setWrapWidth(290.0f);
         break;

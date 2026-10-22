@@ -105,7 +105,7 @@ void DawApp::offerRecovery()
         const std::string name = recoverable_.name.empty() ? std::string("Untitled") : recoverable_.name;
         // Escape or the close button counts as Not now; a button that was pressed already answered
         auto answered = std::make_shared<bool>(false);
-        Dialog &dialog = Dialog::open(gui_, "Vibin didn't close properly",
+        Dialog &dialog = Dialog::open(gui_, "VYBN didn't close properly",
                                       name + " has unsaved work from " +
                                           autosaveTimeText(recoverable_.autosaveTime, unixSeconds()) + ".");
         dialog.setWidth(460.0f);
@@ -352,7 +352,7 @@ void DawApp::versionsDemo()
 void DawApp::buildSavingSettings(Container &body)
 {
     body.add<Label>("Saving", TextStyle::Subtitle);
-    body.add<Label>("While a project has unsaved changes, Vibin keeps a copy of it, so a crash loses little. "
+    body.add<Label>("While a project has unsaved changes, VYBN keeps a copy of it, so a crash loses little. "
                     "Autosaves and the versions you save by hand are listed under Project > Versions.",
                     TextStyle::Caption, TextTone::Secondary)
         .setWrapWidth(500.0f);

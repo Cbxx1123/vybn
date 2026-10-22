@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(UIEngine LANGUAGES CXX)
+project(VYBN LANGUAGES CXX)
 
 if(MSVC)
     enable_language(RC) # the executable's icon (cmake/Windows.cmake)
@@ -16,10 +16,10 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
 
-option(VIBIN_OPTIMISE_AUDIO "Compile the real-time audio code with -O3 in every build type" ON)
+option(VYBN_OPTIMISE_AUDIO "Compile the real-time audio code with -O3 in every build type" ON)
 
 # Everything built goes here: the program, its helpers, the shaders and the test plugins
-set(VIBIN_OUTPUT_DIR "${PROJECT_SOURCE_DIR}/output")
+set(VYBN_OUTPUT_DIR "${PROJECT_SOURCE_DIR}/output")
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(Dependencies)

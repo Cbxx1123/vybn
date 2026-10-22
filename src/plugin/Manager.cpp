@@ -84,7 +84,7 @@ std::vector<ScanRecord> readScanCache(const std::string &file)
     std::vector<ScanRecord> out;
     std::ifstream in(fs::u8path(file), std::ios::binary);
     std::string line;
-    if (!std::getline(in, line) || line.rfind("# Vibin plugin scans 3", 0) != 0)
+    if (!std::getline(in, line) || line.rfind("# VYBN plugin scans 3", 0) != 0)
         return out;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r')
@@ -126,7 +126,7 @@ bool writeScanCache(const std::string &file, const std::vector<ScanRecord> &reco
         std::ofstream out(temp, std::ios::binary | std::ios::trunc);
         if (!out)
             return false;
-        out << "# Vibin plugin scans 3: what each .clap held when it was last scanned\n";
+        out << "# VYBN plugin scans 3: what each .clap held when it was last scanned\n";
         for (const ScanRecord &r : records) {
             out << "file\t" << escape(r.path) << "\t" << r.size << "\t" << r.modified << "\t" << escape(r.error) << "\n";
             for (const Descriptor &d : r.plugins)

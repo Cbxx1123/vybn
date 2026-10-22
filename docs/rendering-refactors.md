@@ -61,15 +61,15 @@ on, so before anything changes we need:
    before any change, and the orchestrator looks at each one before committing it.
 3. **Frame statistics**: `ui::FrameStats` (times for update, layout, build and submit; counts of
    primitives, glyphs, images, draw calls and bytes uploaded), read by `Context::stats()`, and
-   `VIBIN_FRAME_STATS=1`, which makes the UISystem print one line a second for the main window.
+   `VYBN_FRAME_STATS=1`, which makes the UISystem print one line a second for the main window.
    The baseline numbers for `--demo transport`, `--demo synth`, `--demo pianoroll` and `--demo steps`
    are recorded in each plan before its Performance stage.
 
 | Wave | Agent | Owns (only these files) | Done when |
 |---|---|---|---|
-| R0.0 | orchestrator | `engine/Renderer.h` (off-screen API), `ui/FrameStats.h`, `ui/Context.h` and `ui/UIRenderer.h` (stats), `tests/RenderSelfTest.h`, `CMakeLists.txt` (test file, `VIBIN_TEST_DIR`) | headers check |
+| R0.0 | orchestrator | `engine/Renderer.h` (off-screen API), `ui/FrameStats.h`, `ui/Context.h` and `ui/UIRenderer.h` (stats), `tests/RenderSelfTest.h`, `CMakeLists.txt` (test file, `VYBN_TEST_DIR`) | headers check |
 | R0.1 | A off-screen | `src/engine/Renderer.cpp` | `beginOffscreen`/`endOffscreen` as documented |
-| R0.1 | B stats | `src/ui/Context.cpp`, `src/ui/UIRenderer.cpp`, `src/ui/UISystem.h/.cpp` | stats filled; `VIBIN_FRAME_STATS` prints |
+| R0.1 | B stats | `src/ui/Context.cpp`, `src/ui/UIRenderer.cpp`, `src/ui/UISystem.h/.cpp` | stats filled; `VYBN_FRAME_STATS` prints |
 | R0.1 | C render test | `tests/RenderSelfTest.cpp`, `src/main.cpp` (the flag) | scenes render, compare, update and report |
 | R0.2 | orchestrator | `tests/render/*.png` | goldens made, looked at, committed with the baseline numbers |
 
@@ -81,7 +81,7 @@ on, so before anything changes we need:
 - Agents syntax-check with `tools/check.sh FILE...`. They never run `cmake --build` (one shared
   build tree) and never launch the app.
 - Between waves the orchestrator builds (`cmake --build build`, then `tools/link-dev.ps1` while the
-  app holds `main.exe`), runs every self-test including `--render-selftest`, reviews the diff, fixes
+  app holds `vybn.exe`), runs every self-test including `--render-selftest`, reviews the diff, fixes
   or sends back, and commits.
 - The look must not change unless a stage says so. A golden that changes needs the orchestrator to
   look at the new image and say why before it is updated.
@@ -89,7 +89,7 @@ on, so before anything changes we need:
 
 ## Baseline (R0, 19 October 2026, before any refactor)
 
-`VIBIN_FRAME_STATS=1`, main window, per frame, Debug build on this machine. Idle demos tick at about
+`VYBN_FRAME_STATS=1`, main window, per frame, Debug build on this machine. Idle demos tick at about
 10-25 a second and present only on change; `transport` plays, so it presents every frame.
 
 | Demo | update ms (layout) | build ms | submit ms | surfaces | texts / glyphs | batches = draws | binds | upload |

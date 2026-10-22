@@ -7,7 +7,7 @@ The four limits left by `docs/routing-plan.md`, each built in three waves by one
 2. **Flesh out**: the full UI and the edge cases (rules, loops, deleting, undo names, recording),
    with tests for each.
 3. **Polish and optimise**: a render golden looked at and explained, draw caches keyed right
-   (`VIBIN_VERIFY_CACHE=1` quiet), the audio thread's cost measured (a bench where it touches the
+   (`VYBN_VERIFY_CACHE=1` quiet), the audio thread's cost measured (a bench where it touches the
    audio path) and cut, docs (`CLAUDE.md` and this file's Status), every suite passing.
 
 The features run one after another, in this order, since they share files (no git: one checkout).
@@ -16,7 +16,7 @@ The features run one after another, in this order, since they share files (no gi
 
 - Read `CLAUDE.md` first, then `docs/routing-plan.md` (how routing works), then the files named below.
 - Build: `cmake --build build -j 8` (from `UI-Engine/`). Tests: `bash tools/test.sh` (every suite,
-  about 15 s); one suite: `./output/main --project-selftest` etc. Syntax-check one file without
+  about 15 s); one suite: `./output/vybn --project-selftest` etc. Syntax-check one file without
   building: `bash tools/check.sh FILE`. Never use `C:/MinGW` (32-bit).
 - Line endings: files are a mix of CRLF and LF. Edit with the Edit tool. Never `sed -i` a CRLF file
   (it strips the CRs). Check with `file PATH` if unsure.
@@ -28,11 +28,11 @@ The features run one after another, in this order, since they share files (no gi
   `sameSavedDevice`.
 - New `.cpp` files go in `CMakeLists.txt`'s `add_executable` list. New render scenes go in
   `kScenes` in `tests/RenderSelfTest.cpp`; write a golden with
-  `./output/main --render-selftest --scene NAME --update-goldens` only after looking at the picture
+  `./output/vybn --render-selftest --scene NAME --update-goldens` only after looking at the picture
   (Read the PNG) and checking it shows what it should.
 - The audio thread never locks, allocates or frees. Buffers are sized in `prepare`.
 - Leave every suite passing at the end of the wave. If a golden changes, say which and why.
-- Don't run the app for more than a few seconds and never leave it running (`output/main.exe` must be
+- Don't run the app for more than a few seconds and never leave it running (`output/vybn.exe` must be
   free for the next build).
 - Report at the end: what you built, the files you touched, the tests you added (with their output
   lines), measurements, anything left undone or unsure, and anything you noticed that the next wave
@@ -89,7 +89,7 @@ Built as above, with these changes from the plan:
 - The render scene `master` (the demo with the master's volume lane and a Gain effect's lane shown, 1200x740)
   is a golden and a cache scene: a settled frame draws from its caches. The arrangement's cache key gained
   the master row's open state; lane edits are covered by the store's revision, and the playhead-dependent
-  value text and the headers are drawn outside the cache, like a track's. `VIBIN_VERIFY_CACHE=1` is quiet on
+  value text and the headers are drawn outside the cache, like a track's. `VYBN_VERIFY_CACHE=1` is quiet on
   the scene and on `--demo masterautomation` (the master row's lanes shown, writing armed, playing).
 - A demo, `--demo masterautomation`, was added for checking it in the app.
 
@@ -126,7 +126,7 @@ groups inside it) are hidden, and the group's lane shows a summary of their clip
 - **Waves**: prototype = fold state, hidden rows, the control; flesh out = indentation, depth bars,
   summary blocks, the mixer, selection unfolding, "Fold all groups"/"Unfold all" (View menu);
   polish = render scene `folding` golden, the arrangement's draw cache key including the fold state
-  (`VIBIN_VERIFY_CACHE`), tests for `rowAt` and layout with folded groups, docs.
+  (`VYBN_VERIFY_CACHE`), tests for `rowAt` and layout with folded groups, docs.
 
 ### Status
 
@@ -139,7 +139,7 @@ Built as above, with these changes from the plan:
 - **Reordering** (`Routing.h`: `dragBlock`, `settleDrop`, `dropOrder`, `moveBlock`, pure and tested): dragging a header moves a block, the track alone or, for a folded group, the group and every track hidden inside it, kept together in order. A drop slot that would fall between a folded group and its hidden tracks, or among them, goes to the nearer end (before the group, or after the run's last track; a tie goes after). The selection stays on its track.
 - **Selection**: a selected track that is hidden (mixer, keyboard, undo) unfolds the groups hiding it, once per `selectionRevision` change (checked in `ArrangementView::handleInput`, so it needs the arrangement to exist, as it always does in the app).
 - **Mixer**: hidden tracks get no strip (rebuilt when the fold version moves).
-- **Caches**: the arrangement's key gained the hidden flags and the fold version; `FoldChevron` has a cache keyed by its state. `VIBIN_VERIFY_CACHE=1 VIBIN_VERIFY_STORE=1 ./output/main --silent --demo folding` for 8 s printed only FRAME lines.
+- **Caches**: the arrangement's key gained the hidden flags and the fold version; `FoldChevron` has a cache keyed by its state. `VYBN_VERIFY_CACHE=1 VYBN_VERIFY_STORE=1 ./output/vybn --silent --demo folding` for 8 s printed only FRAME lines.
 - **Demo and scenes**: `--demo folding` (two nested groups, the inner folded, playing). The render scene `folding` (a golden and a cache scene) shows the nested-groups project with Outer open, Inner folded and a lane open on a nested track; the `mixer` scene is now 1500 wide so its group strip's chevron shows (golden updated).
 
 Tests: `foldChecks` and `foldProjectChecks` in the routing suite (depth, `insideGroup`, `hiddenTracks`, loops; the file round trip and the ignored flag, not an undo step but modified, kept through undo, an undone delete, the drag rules and `moveBlock`) and `foldChecks`, `foldUiChecks`, `foldMixerChecks` and `foldDragChecks` in the render suite (layout, lookups, chevron click, indentation, counts, selection unfolding, Fold all, `FoldState` versions, mixer strip counts, a project opened folded, a folded group dragged with its tracks, a drop among hidden tracks), plus the `folding` scene.
@@ -193,9 +193,9 @@ Tests: `sidechainModelChecks`, `sidechainPlanChecks`, `sidechainEngineChecks`, `
 
 Measurements (Debug build, this machine):
 
-- The routing bench (`VIBIN_TEST_BENCH`): 4 s of 24 synth tracks and a kick: no effects about 184 to 233 ms, a compressor each 261 to 302 ms, each keyed by the kick 273 to 313 ms: keys cost about 4 to 5% over unkeyed compressors (the key copy is two contiguous runs per keyed effect, so it was left as it is).
+- The routing bench (`VYBN_TEST_BENCH`): 4 s of 24 synth tracks and a kick: no effects about 184 to 233 ms, a compressor each 261 to 302 ms, each keyed by the kick 273 to 313 ms: keys cost about 4 to 5% over unkeyed compressors (the key copy is two contiguous runs per keyed effect, so it was left as it is).
 - The offers of 8 cards on a pad in a 64-track project with 4 groups: 21.9 ms when worked out every frame (the first version, a routes graph made again per track), 0.65 ms with the graph made once, and not at all on a still frame: a settled Devices frame went from 22.6 ms to 0.9 ms.
-- `--demo sidechain` for 8 s with `VIBIN_VERIFY_CACHE=1 VIBIN_VERIFY_STORE=1 VIBIN_FRAME_STATS=1 --silent` printed only FRAME lines.
+- `--demo sidechain` for 8 s with `VYBN_VERIFY_CACHE=1 VYBN_VERIFY_STORE=1 VYBN_FRAME_STATS=1 --silent` printed only FRAME lines.
 
 Limits:
 
@@ -235,9 +235,9 @@ Tests: `flexibleModelChecks`, `flexiblePlanChecks`, `flexibleMenuChecks` and `fl
 
 Measurements (Debug build, this machine, which ran the plain case about 205-225 ms against 160 ms when the plan was written):
 
-- The routing bench (`VIBIN_TEST_BENCH`): plain 218-224 ms; 4 returns (96 sends) and 2 groups 309-311 ms (+38 to +42%); the same with each track also sending into the other group (120 sends) 316-321 ms, 2-3% more. Sends into groups cost what sends into returns do.
+- The routing bench (`VYBN_TEST_BENCH`): plain 218-224 ms; 4 returns (96 sends) and 2 groups 309-311 ms (+38 to +42%); the same with each track also sending into the other group (120 sends) 316-321 ms, 2-3% more. Sends into groups cost what sends into returns do.
 - A 64-track project's frame: 0.94 ms still and 0.97 ms with a fader dragged every frame (the revision moving); `groupSendShape` costs about 32 us (112 sends), once a frame while the revision moves.
-- `--demo flexible` for 9 s with `VIBIN_VERIFY_CACHE=1 VIBIN_VERIFY_STORE=1 VIBIN_FRAME_STATS=1 --silent` printed only FRAME lines.
+- `--demo flexible` for 9 s with `VYBN_VERIFY_CACHE=1 VYBN_VERIFY_STORE=1 VYBN_FRAME_STATS=1 --silent` printed only FRAME lines.
 
 Limits:
 
@@ -263,7 +263,7 @@ like the built-in Compressor and Gate.
   copy only the frames used, and only when keyed.
 - **App side**: `PluginEffect` takes `Effect::setKey` like the built-ins do (the chain already hands
   each keyed effect its key) and passes it to its `Slot`/`Instance` for the block.
-- **Test plugin**: `tests/plugins/TestPlugins.cpp` gains "Test Duck" (`vibin.test.duck`): a main stereo
+- **Test plugin**: `tests/plugins/TestPlugins.cpp` gains "Test Duck" (`vybn.test.duck`): a main stereo
   in/out and a stereo sidechain input; its output is its input times (1 - min(1, key peak in the
   block)), so a key at full scale silences it and no key passes it unchanged.
 - **Tests**: the plugin suite (`tests/PluginSelfTest.cpp`, runs the real sandbox): the scan reports
@@ -285,12 +285,12 @@ Built as above, with these changes from the plan:
 - **The sidechain port** is the first input port that isn't the main one, with 1 or 2 channels (`Loaded::sidechainInput`, `sidechainChannels`; the same rule in the scan's probe).
 - **Probe, not scan**: the scan lists descriptors as before; the manager then asks each effect plugin's sidechain port with a `Probe` request (`Instance::probeSidechain`), each in a host of its own, so a plugin that crashes when made costs only its probe: it stays listed, with sidechain 0, remembered as probed (a forced scan asks again). The scan cache is format 3 (`sidechain` and `probed` per plugin); older caches read as empty and are scanned again. `ScanStats::probed` counts the probes.
 - **Rules**: `mayTakeSidechain` (a built-in with `EffectInfo::sidechain`, or any plugin) is what the file reader, the key count, the routing graph and the plan use, so the project stays pure (it can't know what is installed) and a keyed plugin that is missing or has no sidechain port keeps its key and counts toward the 4-per-track limit. `takesSidechain` (a plugin only when the scan found a port, through `setPluginSidechainLookup`, which `DawApp` points at `PluginManager::sidechainChannels`) decides the Sidechain dropdown and the "Keyed by" line; such a plugin gets neither, and the engine hands its slot the key anyway.
-- **Test plugins**: "Test Duck" (`vibin.test.duck`, a stereo sidechain input; output = input times 1 minus the key's peak in the block) and "Test Crash Init" (`vibin.test.crashinit`, crashes when initialised, for the probe's robustness).
+- **Test plugins**: "Test Duck" (`vybn.test.duck`, a stereo sidechain input; output = input times 1 minus the key's peak in the block) and "Test Crash Init" (`vybn.test.crashinit`, crashes when initialised, for the probe's robustness).
 - **Demo**: `--demo pluginsidechain` (with `--plugin-folder output/plugins`): Test Duck on the pad keyed by the kick. No render scene: a keyed plugin card needs a live plugin device (a sandbox host loading in the background), which would make the render suite slower and flaky for one picture.
 
 Tests (plugin suite): the scan lists five plugins; Test Duck's port found by the manager's scan and none for the others, the crashing plugin still listed with its failed probe remembered; the cache keeping the port and ignoring an older format; a keyed Test Duck in a `DeviceChain` and through an `Instance` (ducked, passed with no or a silent key, the key not outliving its block, a plugin without a port ignoring it); the offer functions with the manager's info; a pad keyed by a muted kick through `AudioBridge` (silenced on each kick, not between: -180 dB during, -24.8 dB between; the key removed brings back the steady level); Test Faulty crashing while keyed (silent, keyed blocks go on, keyed again after Reload).
 
-Measurements (Debug build): a keyed block's round trip through the sandbox 10 us, the same as unkeyed (`INFO plugin sidechain:`); a plain scan of the test file (5 plugins) 117 to 176 ms, the manager's scan with its 4 effect probes (one host each) about 280 ms (`INFO plugin scan:`). `--demo pluginsidechain` for 10 s with `VIBIN_VERIFY_CACHE=1 VIBIN_VERIFY_STORE=1 VIBIN_FRAME_STATS=1 --silent` printed only FRAME lines.
+Measurements (Debug build): a keyed block's round trip through the sandbox 10 us, the same as unkeyed (`INFO plugin sidechain:`); a plain scan of the test file (5 plugins) 117 to 176 ms, the manager's scan with its 4 effect probes (one host each) about 280 ms (`INFO plugin scan:`). `--demo pluginsidechain` for 10 s with `VYBN_VERIFY_CACHE=1 VYBN_VERIFY_STORE=1 VYBN_FRAME_STATS=1 --silent` printed only FRAME lines.
 
 Limits:
 
@@ -307,8 +307,8 @@ Done by the lead alone after features 1-5, from their limits and the notes at th
   open, so closing it stopped GLFW and the next started it again, and starting GLFW (it enumerates the
   input devices) took about 600 ms here, its first window another 280 ms. The suite now keeps one hidden
   window open throughout: 15 s for 21 scenes and the editing checks. It prints `TIME` lines with
-  `VIBIN_TEST_TIMES` (the runner's `--times`), and `tools/test.sh` takes `VIBIN_TEST_EXE` to test
-  `output/main-dev.exe` while the app holds `main.exe`.
+  `VYBN_TEST_TIMES` (the runner's `--times`), and `tools/test.sh` takes `VYBN_TEST_EXE` to test
+  `output/vybn-dev.exe` while the app holds `vybn.exe`.
 - **Folding**: `FoldState::revealSelection` (the selection rule) is called by both views, so the mixer
   alone unfolds a hidden track's groups.
 - **Group send labels**: groups whose short names match are numbered (`groupSendLabel(project, group)`),
@@ -323,7 +323,7 @@ Done by the lead alone after features 1-5, from their limits and the notes at th
 
 ### Optimisation
 
-- **The audio code compiled optimised** (`VIBIN_OPTIMISE_AUDIO`, ON): the app runs as a Debug build, so
+- **The audio code compiled optimised** (`VYBN_OPTIMISE_AUDIO`, ON): the app runs as a Debug build, so
   the audio thread ran -O0 code. At -O3 (GCC 10 vectorises only there), with debug information kept:
   24 synth tracks for 4 s 190 to about 65 ms, the export's offline render 5.3 to 16.6 times real time,
   the synth's timed render 689 to 207 ms, the engine's 24-track mix 640 to 290 ms on one thread, and

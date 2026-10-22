@@ -144,7 +144,7 @@ MemoryManager::MemoryManager(env::Environment &env, MemoryConfig config)
     scheduler_ = env.find<env::Scheduler>();
     audio_ = env.find<AudioSystem>();
     if (config.cacheFolder.empty())
-        config.cacheFolder = (fs::temp_directory_path() / "Vibin sample cache").u8string();
+        config.cacheFolder = (fs::temp_directory_path() / "VYBN sample cache").u8string();
     config.chunkFrames = std::max<uint32_t>(config.chunkFrames, 1024);
     config_ = config;
     streaming_ = config.streaming;
@@ -200,7 +200,7 @@ void MemoryManager::configure(const MemoryConfig &config)
     config_ = config;
     config_.chunkFrames = chunk;
     if (config_.cacheFolder.empty())
-        config_.cacheFolder = (fs::temp_directory_path() / "Vibin sample cache").u8string();
+        config_.cacheFolder = (fs::temp_directory_path() / "VYBN sample cache").u8string();
     streaming_ = config.streaming;
 }
 

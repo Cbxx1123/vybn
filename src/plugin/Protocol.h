@@ -1,6 +1,6 @@
 #pragma once
 
-// What the app and its sandboxed plugin hosts (vibin-plugin-host.exe, one process per plugin
+// What the app and its sandboxed plugin hosts (vybn-plugin-host.exe, one process per plugin
 // instance) share. Both sides include this file and are built by the same compiler, so the
 // layouts agree.
 //

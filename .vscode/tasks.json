@@ -42,21 +42,21 @@
                 "command": "powershell",
                 "args": [
                     "-c",
-                    "& .\\output\\main.exe"
+                    "& .\\output\\vybn.exe"
                 ]
             },
             "linux": {
                 "command": "bash",
                 "args": [
                     "-c",
-                    "./output/main"
+                    "./output/vybn"
                 ]
             },
             "osx": {
                 "command": "bash",
                 "args": [
                     "-c",
-                    "./output/main"
+                    "./output/vybn"
                 ]
             },
             "dependsOn": "build",

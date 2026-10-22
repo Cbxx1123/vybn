@@ -9,7 +9,7 @@
 
 namespace daw {
 
-// The Vibin Synth's own panel, laid out like the front of a hardware synth: a preset bar over four
+// The VYBN Synth's own panel, laid out like the front of a hardware synth: a preset bar over four
 // rows of cards. Each card is a display of its part on top (the oscillator's wave, the sub and
 // noise, the filter's response, the envelopes' shapes, the LFOs' waves) and its knobs below in one
 // or two tight rows. Row 1 is Osc 1 and Osc 2; row 2 the filter and the two envelopes; row 3 the sub

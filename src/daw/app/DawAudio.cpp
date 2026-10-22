@@ -270,7 +270,7 @@ void DawApp::importAudioDemo()
             samples[(start + i) * 2 + 1] += v * 0.8f;
         }
     }
-    const std::string path = (fs::temp_directory_path() / "Vibin demo take.wav").string();
+    const std::string path = (fs::temp_directory_path() / "VYBN demo take.wav").string();
     std::string error;
     if (!audio::writeWavFile(path, samples.data(), frames, 2, rate, error)) {
         notify(error);
@@ -769,7 +769,7 @@ void DawApp::buildPerformanceSettings(Container &body)
             .setSize(Size::Small);
         if (env::ResourceManager *resources = env_.find<env::ResourceManager>()) {
             const std::vector<int> times{10, 30, 60, 300, -1};
-            const std::vector<std::string> names{"10 seconds", "30 seconds", "1 minute", "5 minutes", "Until Vibin closes"};
+            const std::vector<std::string> names{"10 seconds", "30 seconds", "1 minute", "5 minutes", "Until VYBN closes"};
             int current = 1;
             for (size_t i = 0; i < times.size(); ++i) {
                 if (times[i] == settings_.unusedSeconds)

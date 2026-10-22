@@ -69,7 +69,7 @@ daw::Project openingBeats(daw::Project project, double beats)
 // up to the dry mix, the loudness a preset reaches, the files a preset writes) holds on any stretch of it, and
 // the whole 48 s song costs ~6 s a render, so the fast tier renders the opening 8 beats of every track (4 s,
 // guitar, bass and lead sounding together), on the built-in synthesizer in place of the guitar: nothing read
-// from the user's sample library, so the same on every machine. VIBIN_TEST_FULL renders the song as it is.
+// from the user's sample library, so the same on every machine. VYBN_TEST_FULL renders the song as it is.
 daw::Project songToRender()
 {
     daw::Project song = daw::demoProject();
@@ -180,7 +180,7 @@ bool encodeTo(const std::string &path, const audio::EncodeFormat &format, const 
 {
     audio::AudioMetadata meta;
     meta.title = "Encoder test title";
-    meta.artist = "Vibin tests";
+    meta.artist = "VYBN tests";
     meta.album = "Encoder test album";
     meta.comment = "Encoder test comment";
     meta.date = "2026-10-18";
@@ -262,7 +262,7 @@ bool readAiff(const std::string &path, uint32_t &channels, int &bits, double &ra
 void encoderChecks(Checker &c)
 {
     namespace fs = std::filesystem;
-    const fs::path base = fs::temp_directory_path() / "vibin-export-selftest";
+    const fs::path base = fs::temp_directory_path() / "vybn-export-selftest";
     std::error_code ec;
     fs::remove_all(base, ec);
     fs::create_directories(base, ec);
@@ -481,7 +481,7 @@ void encoderChecks(Checker &c)
         // The tag: ID3v2.3 first, with the metadata, and the encoder's gapless information kept
         c.check(bytes.size() > 10 && std::memcmp(bytes.data(), "ID3\x03", 4) == 0 && containsText(bytes, "TIT2") &&
                     containsText(bytes, "Encoder test title") && containsText(bytes, "Encoder test album") &&
-                    containsText(bytes, "Vibin tests") && containsText(bytes, "Encoder test comment") &&
+                    containsText(bytes, "VYBN tests") && containsText(bytes, "Encoder test comment") &&
                     containsText(bytes, "TYER") && containsText(bytes, "2026"),
                 "An MP3's ID3 tag holds the title, artist, album, comment and year");
         c.check(containsText(bytes, "iTunSMPB"), "An MP3 keeps the encoder's gapless information (iTunSMPB)");
@@ -769,7 +769,7 @@ void midiChecks(Checker &c)
 {
     namespace fs = std::filesystem;
     std::error_code ec;
-    const fs::path base = fs::temp_directory_path(ec) / "vibin-midi-selftest";
+    const fs::path base = fs::temp_directory_path(ec) / "vybn-midi-selftest";
     fs::create_directories(base, ec);
     const std::string path = base.u8string() + "/export.mid";
 
@@ -1019,7 +1019,7 @@ void renderChecks(Checker &c)
 {
     using namespace daw;
 
-    const std::string dir = (std::filesystem::temp_directory_path() / "vibin-render-selftest").u8string();
+    const std::string dir = (std::filesystem::temp_directory_path() / "vybn-render-selftest").u8string();
     std::error_code ec;
     std::filesystem::remove_all(std::filesystem::u8path(dir), ec);
     std::filesystem::create_directories(std::filesystem::u8path(dir), ec);
@@ -1205,7 +1205,7 @@ void renderChecks(Checker &c)
             h.phase = 5;
             return false;
         }
-        // The speed of a pass is a benchmark (VIBIN_TEST_BENCH): nothing to assert, and a whole extra render
+        // The speed of a pass is a benchmark (VYBN_TEST_BENCH): nothing to assert, and a whole extra render
         if (!bench()) {
             std::filesystem::remove_all(std::filesystem::u8path(dir), ec);
             return true;
@@ -1257,7 +1257,7 @@ void queueChecks(Checker &c)
     namespace fs = std::filesystem;
     using Clock = std::chrono::steady_clock;
 
-    const std::string dir = (fs::temp_directory_path() / fs::u8path("vibin-queue-selftest")).u8string();
+    const std::string dir = (fs::temp_directory_path() / fs::u8path("vybn-queue-selftest")).u8string();
     std::error_code ec;
     fs::remove_all(fs::u8path(dir), ec);
     fs::create_directories(fs::u8path(dir), ec);

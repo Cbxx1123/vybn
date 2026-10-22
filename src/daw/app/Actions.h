@@ -17,7 +17,7 @@ namespace daw {
 // Menu items and views hook them by id; the shortcuts editor changes their keys.
 void defineActions(ui::Keymap &keymap);
 
-// The user's changed shortcuts, kept in %APPDATA%\Vibin\keybinds.toml beside settings.ini: a
+// The user's changed shortcuts, kept in %APPDATA%\VYBN\keybinds.toml beside settings.ini: a
 // [keys] table of action id to a list of chords ("project.save" = ["Ctrl+S", "F2"]; [] for
 // none). Only actions whose keys differ from the defaults are written. Loading applies them;
 // a missing file is fine, a broken one is reported and ignored, and chords that don't parse

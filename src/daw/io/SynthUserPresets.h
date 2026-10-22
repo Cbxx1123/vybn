@@ -7,7 +7,7 @@
 
 namespace daw {
 
-// The folder the user's synth presets are kept in: %APPDATA%\Vibin\Synth presets
+// The folder the user's synth presets are kept in: %APPDATA%\VYBN\Synth presets
 std::string userSynthPresetFolder();
 
 // The user's presets in `folder`, one TOML file each, sorted by file name. Each comes back with the

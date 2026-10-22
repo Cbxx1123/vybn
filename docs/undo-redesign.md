@@ -47,10 +47,10 @@ Notes on reading them:
 
 ```
 cmake --build build -j 8
-VIBIN_TEST_BENCH=1 output/main.exe --project-selftest | grep "INFO undo"      # Debug
+VYBN_TEST_BENCH=1 output/vybn.exe --project-selftest | grep "INFO undo"      # Debug
 cmake -S . -B build-release -G "MinGW Makefiles" -DCMAKE_C_COMPILER=C:/TDM-GCC-64/bin/x86_64-w64-mingw32-gcc.exe -DCMAKE_CXX_COMPILER=C:/TDM-GCC-64/bin/x86_64-w64-mingw32-g++.exe -DCMAKE_BUILD_TYPE=Release
-cmake --build build-release -j 8       # writes output/main.exe too: rebuild build afterwards (or copy the exe aside)
-VIBIN_TEST_BENCH=1 output/main.exe --project-selftest | grep "INFO undo"      # Release
+cmake --build build-release -j 8       # writes output/vybn.exe too: rebuild build afterwards (or copy the exe aside)
+VYBN_TEST_BENCH=1 output/vybn.exe --project-selftest | grep "INFO undo"      # Release
 ```
 
 The correctness checks ("Undo: ..." in the project suite, fast tier) must stay true after the redesign:

@@ -16,14 +16,14 @@ tools/test.sh audio synth      only these suites
 ```
 
 The VS Code tasks `test` and `test (full)` run the same. A suite is still runnable alone,
-`output/main.exe --<suite>-selftest`, with the switches below set in the environment. Exit status is 0 only
+`output/vybn.exe --<suite>-selftest`, with the switches below set in the environment. Exit status is 0 only
 when every suite passed.
 
 ## Architecture
 
 ```
 tools/test.sh            the runner: one process per suite, longest first, one table, exit code
-  output/main.exe --X-selftest      a suite (tests/XSelfTest.cpp), run on its own
+  output/vybn.exe --X-selftest      a suite (tests/XSelfTest.cpp), run on its own
     tests/Harness.h                 the shared Checker, the tier switches, the Pacer
 ```
 
@@ -33,7 +33,7 @@ the longest suite's rather than the sum.
 
 **One checker.** `tests/Harness.h` holds the `Checker` every suite used to define for itself (twelve
 copies, differing only in column width). A check prints the same `PASS  name  detail` line as before, and
-records the time since the previous check, so `VIBIN_TEST_TIMES=1` ranks a suite's checks by what they
+records the time since the previous check, so `VYBN_TEST_TIMES=1` ranks a suite's checks by what they
 cost. `finish("suite")` prints one summary line and returns the exit code.
 
 **Three tiers**, chosen by environment variables (`tools/test.sh` sets them from its flags):
@@ -41,13 +41,13 @@ cost. `finish("suite")` prints one summary line and returns the exit code.
 | Tier | Switch | What it is for |
 |---|---|---|
 | fast (default) | none | Every assertion, on inputs just big enough to prove it. While working, and the commit gate. |
-| full | `VIBIN_TEST_FULL=1` | The same assertions on full-size inputs: the whole 48 s demo song with the real guitar library, 40 clips a track in the idle-frame project. Before a release, or when changing the engine. |
-| bench | `VIBIN_TEST_BENCH=1` | Also the benchmarks: code that times something and prints it, with nothing to pass or fail. |
+| full | `VYBN_TEST_FULL=1` | The same assertions on full-size inputs: the whole 48 s demo song with the real guitar library, 40 clips a track in the idle-frame project. Before a release, or when changing the engine. |
+| bench | `VYBN_TEST_BENCH=1` | Also the benchmarks: code that times something and prints it, with nothing to pass or fail. |
 
 A tier changes the *size* of what a check runs on, never whether it asserts: `full() ? big : small` is the
 whole use of the switch (`tests::full()`, `tests::bench()` in `Harness.h`).
 
-Two output switches: `VIBIN_TEST_TIMES=1` (the slowest checks) and `VIBIN_TEST_QUIET=1` (only FAIL, SKIP
+Two output switches: `VYBN_TEST_TIMES=1` (the slowest checks) and `VYBN_TEST_QUIET=1` (only FAIL, SKIP
 and INFO lines and the summary).
 
 **Suites and what each covers** (see CLAUDE.md for the long form):
@@ -131,8 +131,8 @@ Every check was reviewed by name and by what it asserts, and the suites by what 
 
 ## Benchmarks of the runtime systems
 
-Three refactors of the environment layer (`src/env/`) added benchmarks, behind `VIBIN_TEST_BENCH`. Run a
-suite alone for them (`VIBIN_TEST_BENCH=1 ./output/main --engine-selftest`), since the other suites' load
+Three refactors of the environment layer (`src/env/`) added benchmarks, behind `VYBN_TEST_BENCH`. Run a
+suite alone for them (`VYBN_TEST_BENCH=1 ./output/vybn --engine-selftest`), since the other suites' load
 moves the numbers (and two engine suites at once clash over their temp folders):
 
 | Line | Suite | What it times |
@@ -160,7 +160,7 @@ and after the refactors:
 | Bus post and dispatch | 2,990 ns | 870 ns | -71% |
 | Environment loop, 16 posts | 4,570 ns | 3,520 ns | -23% |
 | Export render speed | 4.2 to 4.7 s/s | 4.4 to 4.7 s/s | within noise |
-| Render x50, `VIBIN_FRAME_STATS` (`--demo transport`) | | | unchanged (a UI frame neither posts nor emits) |
+| Render x50, `VYBN_FRAME_STATS` (`--demo transport`) | | | unchanged (a UI frame neither posts nor emits) |
 
 ## Rules for new tests
 
