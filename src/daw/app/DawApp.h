@@ -124,6 +124,7 @@ public:
     // Records a phrase sent through the MIDI hub onto the Lead track, as if played on a
     // keyboard, then opens the take in the piano roll (--demo recordmidi)
     void recordMidiDemo();
+    void takesDemo();
     // Starts recording onto the armed tracks, or stops (see RecordingController)
     void toggleRecording() { recordingController_->toggleRecording(); }
     bool recording() const { return recording_->recording(); }
@@ -275,6 +276,10 @@ private:
     const audio::AudioData *clipAudio(int track, int clip);
     void openClipMenu(ui::Vec2 at, double beat);
     void openTrackMenu(int track, ui::Vec2 at);
+    // A take lane's menu (from the arrangement; `take` the take under the mouse, or kNoId), and a
+    // change to a track's takes and comp made on a copy, applied when `change` says it changed something
+    void openTakeMenu(int track, ObjectId lane, ObjectId take, ui::Vec2 at);
+    void editTakes(int track, const std::function<bool(Track &)> &change);
     // The tempo map's points and signature changes (by index): a point's menu (ramp to the next,
     // its tempo, delete), a change's menu (edit, delete) and its editor (numerator and unit)
     void openTempoMenu(int point, ui::Vec2 at);

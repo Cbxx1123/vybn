@@ -9,6 +9,7 @@ vybn_module(vybn_daw SOURCES
     model/ProjectStore.cpp
     model/Routing.cpp
     model/StepSequence.cpp
+    model/Takes.cpp
     # Files and formats
     io/Autosave.cpp
     io/Json.cpp
@@ -33,6 +34,7 @@ vybn_module(vybn_daw SOURCES
     # Panels, editors and dialogs
     views/Arpeggiator.cpp
     views/Arrangement.cpp
+    views/ArrangementTakes.cpp
     views/AudioEditor.cpp
     views/Browser.cpp
     views/DeviceControls.cpp

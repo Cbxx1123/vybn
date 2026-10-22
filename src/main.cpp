@@ -310,6 +310,8 @@ int main(int argc, char **argv)
                     app.showShortcuts();
                 else if (demo == "transport")
                     audio.transport().play();
+                else if (demo == "takes")
+                    app.takesDemo();
                 else if (demo == "tempo") {
                     // A ramp from 100 to 140 BPM over four bars, held, then 90; 7/8 from bar 5, 6/8 from
                     // bar 7; the transport playing through the changes

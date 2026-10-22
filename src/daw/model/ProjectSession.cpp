@@ -21,7 +21,7 @@ bool sameNoteContent(const Note &a, const Note &b)
 bool sameClipContent(const Clip &a, const Clip &b)
 {
     if (a.name != b.name || a.start != b.start || a.length != b.length || a.audioFile != b.audioFile ||
-        a.offset != b.offset || a.gain != b.gain || a.fadeIn != b.fadeIn || a.fadeOut != b.fadeOut ||
+        a.offset != b.offset || a.gain != b.gain || a.fadeIn != b.fadeIn || a.fadeOut != b.fadeOut || a.take != b.take ||
         a.notes.size() != b.notes.size() || a.controls.size() != b.controls.size())
         return false;
     for (size_t i = 0; i < a.notes.size(); ++i) {
@@ -46,11 +46,19 @@ bool sameClipContent(const Clip &a, const Clip &b)
 bool sameTrackContent(const Track &a, const Track &b)
 {
     if (a.kind != b.kind || a.instrument != b.instrument || a.effects != b.effects || a.automation != b.automation ||
-        a.clips.size() != b.clips.size())
+        a.clips.size() != b.clips.size() || a.takeLanes.size() != b.takeLanes.size())
         return false;
     for (size_t i = 0; i < a.clips.size(); ++i) {
         if (!sameClipContent(a.clips[i], b.clips[i]))
             return false;
+    }
+    for (size_t l = 0; l < a.takeLanes.size(); ++l) {
+        if (a.takeLanes[l].name != b.takeLanes[l].name || a.takeLanes[l].clips.size() != b.takeLanes[l].clips.size())
+            return false;
+        for (size_t i = 0; i < a.takeLanes[l].clips.size(); ++i) {
+            if (!sameClipContent(a.takeLanes[l].clips[i], b.takeLanes[l].clips[i]))
+                return false;
+        }
     }
     return true;
 }

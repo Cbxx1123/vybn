@@ -60,6 +60,13 @@ struct TransportHooks {
     std::function<void(ui::Vec2 at, double beat, bool tempo)> timingLaneMenu;
     // The lanes were shown or hidden (to remember it)
     std::function<void(bool shown)> timingShown;
+    // Take lanes: a lane's menu (right-click, opened at `at`), and auditioning one (hearing it
+    // instead of the track's comp; kNoId for the comp)
+    std::function<void(int track, ObjectId lane, ObjectId take, ui::Vec2 at)> takeMenu;
+    std::function<ObjectId(int track)> auditioned;
+    std::function<void(int track, ObjectId lane)> audition;
+    // The sound a take plays (a pass being recorded: the recording so far), or null
+    std::function<const audio::AudioData *(int track, const Clip &take)> takeAudioFor;
 };
 
 // The controls at the start of one track's row: number, name, kind and input, and a disc of its
@@ -105,9 +112,11 @@ public:
     // `automationShown` and `showAutomation` back its A toggle: the track's automation lanes shown
     // `folded` and `fold` back a group's chevron (shown instead of its number) and `foldedCount` its
     // "N tracks folded" caption (see ArrangementView::fold); they may be empty, as for any other track
+    // `takesShown` and `showTakes` back its T toggle (its take lanes shown; not on buses)
     TrackHeader(ProjectStore &store, int index, const TransportHooks &hooks, std::function<bool()> automationShown,
                 std::function<void(bool)> showAutomation, std::function<bool()> folded = {},
-                std::function<void(bool)> fold = {}, std::function<int()> foldedCount = {});
+                std::function<void(bool)> fold = {}, std::function<int()> foldedCount = {},
+                std::function<bool()> takesShown = {}, std::function<void(bool)> showTakes = {});
 
     TrackName &name() { return *title_; }
     // Whether a press at `p` starts a drag of the track (not on its toggles, the name being typed,
@@ -166,6 +175,16 @@ private:
 // - Under the last track is the master's row: a header (its A toggle shows the master's lanes: its
 //   volume and its effects' parameters, edited like a track's; TransportHooks::masterAutomationMenu)
 //   and no clips. It is never a track: rowAt, drops, reordering and clip dragging skip it.
+// - A track's T toggle shows its take lanes (docs/design/takes-plan.md) under its row, above its
+//   automation: a lane per take lane, newest first, each with a header (its name, how much of it
+//   the comp uses, and buttons to listen to it, use it all, and delete it). The takes are drawn
+//   faint, the parts the comp plays bright and outlined, and the comp's boundaries run down
+//   through them. Drag across a take to comp that range from it (snapped unless Shift), click one
+//   to switch the comp section under the mouse to it, double-click for the whole take, drag a
+//   boundary to move it, right-click for the lane's menu (TransportHooks::takeMenu). Hovering
+//   shows what a click would choose. The comp's sections in the track's own lane carry their
+//   take's name; Alt+Up and Alt+Down switch the selected one to the take above or below.
+//   Recording that leaves takes shows them (showTakes).
 // - Under the ruler, the tempo and signature lanes (TimingLanes). Hidden, the ruler marks each
 //   signature change ("7/8" by its bar's number) and each tempo change (a dot).
 // - The wheel scrolls the tracks; Shift or a sideways wheel scrolls in time, as does the bar
@@ -215,6 +234,9 @@ public:
     // TransportHooks::timingShown). The chip in the corner left of the ruler, which shows the tempo
     // and signature at the playhead, shows and hides them too.
     bool timingShown() const { return timingShown_; }
+    // Whether a track's take lanes are shown (kept by the track's id, not saved), and showing them
+    bool takesShown(int track) const;
+    void showTakes(int track, bool shown);
     void showTiming(bool shown);
     const TimingLanes &timingLanes() const { return *timing_; }
 
@@ -231,13 +253,14 @@ private:
     int rowAt(float y) const; // track index under a y coordinate, or -1
     ui::Rect clipRect(int track, const Clip &clip) const;
 
-    // The rows: each track's own (kTrackHeight), with its automation's lanes and the strip to add
-    // one under it while shown. Worked out from the project every arrange.
+    // The rows: each track's own (kTrackHeight), its take lanes while shown, then its automation's
+    // lanes and the strip to add one while shown. Worked out from the project every arrange.
     struct Row {
         float top = 0.0f;    // from the top of the lanes, unscrolled
         float height = 0.0f;
         bool open = false;   // its automation shown
         std::vector<AutomationRow> lanes;
+        size_t takes = 0;    // take lanes shown
     };
     void layoutRows();
     float rowTop(int track) const;    // on screen
@@ -246,7 +269,7 @@ private:
     // The master's row has the index after the last track in the lane functions below
     bool isMaster(int track) const { return track == static_cast<int>(project().tracks.size()); }
     const Row *rowOf(int track) const; // a track's row, or the master's; null for neither
-    float headHeight(int track) const; // the height of a row's own part, above its lanes
+    float headHeight(int track) const; // the height of a row's own part and its take lanes, above its automation
     int laneRowAt(float y) const;      // rowAt, or the master's index on its row
     // A shown lane in the lanes, its header in the header column, and the strip to add one
     ui::Rect laneRect(int track, size_t lane) const;
@@ -275,6 +298,19 @@ private:
     bool clipShown(const ui::Rect &r) const;
     // Whether any clip is being recorded (its take grows every frame)
     bool anyRecording() const;
+    // Take lanes (ArrangementTakes.cpp): a lane's rect in the lanes and in the header column, a
+    // header's buttons (0 listen, 1 use, 2 delete), the lane under a point, drawing and input
+    ui::Rect takeLaneRect(int track, size_t lane) const;
+    ui::Rect takeHeaderRect(int track, size_t lane) const;
+    ui::Rect takeButtonRect(int track, size_t lane, int button) const;
+    bool takeLaneAt(ui::Vec2 p, int &track, size_t &lane) const;
+    void drawTakeLanes(ui::DrawList &list, const ui::Theme &theme) const;
+    void drawTakeContent(ui::DrawList &list, const ui::Theme &theme, int track, const Clip &take, const ui::Rect &r, float opacity) const;
+    void drawTakeHeaders(ui::DrawList &list, const ui::Theme &theme) const;
+    // Handles a press, drag or hover in the take lanes and their headers; true when it took the input
+    bool handleTakeInput(const ui::Input &input);
+    // The badge on a comp section in the track's own lane: its take's lane name
+    void drawTakeBadge(ui::DrawList &list, const ui::Theme &theme, int track, const Clip &clip, const ui::Rect &r) const;
     // Everything drawContent reads, for the cache; `recording` is anyRecording()
     uint64_t contentKey(bool recording) const;
     // The ruler, the lanes with their clips, and the scroll bar: cached (see draw)
@@ -350,6 +386,26 @@ private:
     double lastPointPress_ = -1.0;
     int lastPressedPoint_ = -1;
     bool lanePress_ = false; // this frame's press was in the lanes or their headers (handleLaneInput took it)
+
+    // Take lanes: the tracks whose lanes are shown, and the interaction in them
+    std::set<ObjectId> openTakes_;
+    int takeTrack_ = -1;          // the take lane under the mouse (or being dragged in): its track
+    int takeLane_ = -1;           //   and its index among the track's lanes
+    int takeButton_ = -1;         // a lane header's button under the mouse
+    double hoverFrom_ = 0.0, hoverTo_ = 0.0; // what a click would comp there (from == to: nothing)
+    enum class TakeDrag { None, Pending, Swipe, Boundary };
+    TakeDrag takeDrag_ = TakeDrag::None;
+    ObjectId dragTake_ = kNoId;   // the take pressed
+    double pressBeat_ = 0.0;      // where (snapped), and the mouse x there
+    float pressX_ = 0.0f;
+    double boundaryAt_ = 0.0;     // the boundary being dragged, where it is now
+    std::vector<Clip> compBefore_; // the comp as it was at the press, which a swipe changes from
+    double pressRaw_ = 0.0;       // the press's beat, not snapped (a click's section is around it)
+    double swipeTo_ = -1.0;       // where the swipe last reached
+    double lastTakePress_ = -1.0;
+    ObjectId lastTakePressed_ = kNoId;
+    bool takePress_ = false;      // this frame's press was in the take lanes or their headers
+    ui::Hooks takeKeys_;          // Alt+Up and Alt+Down on the selected comp section
 
     // The tempo and signature lanes under the ruler
     std::unique_ptr<TimingLanes> timing_;

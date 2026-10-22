@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,6 +53,12 @@ public:
     // and Metrics: an edit that keeps the tracks makes none
     uint64_t processorsMade() const { return made_; }
     uint64_t processorsRemoved() const { return removed_; }
+    // Auditioning: a track (by id) plays one of its take lanes instead of its comp (kNoId: the comp
+    // again). A view state, not the project's: not saved or undone.
+    void setAudition(ObjectId track, ObjectId lane);
+    ObjectId audition(ObjectId track) const;
+    // Where two comp sections meet, the crossfade between them (seconds)
+    static constexpr double kCompFade = 0.010;
     // How many note sequences sync has sent to the instrument tracks' players (since this bridge was
     // made), for tests: an edit that changes one track's notes sends one
     uint64_t sequencesSent() const { return sequences_; }
@@ -102,6 +109,8 @@ private:
         uint64_t clipsRevision = 0;
         uint64_t clipsPoolVersion = ~0ull;
         uint64_t clipsTempo = 0; // the tempo map's points, hashed
+        uint64_t clipsAudition = ~0ull; // auditionVersion_ when the clips and notes were last checked
+        uint64_t notesAudition = ~0ull;
         std::string requested = std::string(1, '\0'); // the instrument asked for (never a name at first)
         audio::SamplerDevice *sampler = nullptr;    // the sampler the request went to
         std::shared_ptr<const audio::SampleSet> pendingSet; // loaded, waiting for the sampler
@@ -119,8 +128,10 @@ private:
                                const std::vector<audio::AutomationLane> *mix);
     // The plugin's own changes (and name) into the project, when they really differ from it
     void syncDevice(ProjectStore &store, const DevicePlace &place, audio::Device *device);
-    uint64_t hashClips(const Project &project, const Track &t) const;
-    std::unique_ptr<audio::ClipSequence> clipSequenceFor(const Project &project, const Track &t);
+    // The clips a track plays: the take lane auditioned on it, else its own (the comp)
+    const std::vector<Clip> &playedClips(const Track &t) const;
+    uint64_t hashClips(const Project &project, const std::vector<Clip> &played) const;
+    std::unique_ptr<audio::ClipSequence> clipSequenceFor(const Project &project, const std::vector<Clip> &played);
     // A new processor and players for a track (added to the graph)
     TrackAudio makeTrack(const Track &t);
     // Takes one track's processor out of the graph
@@ -143,6 +154,8 @@ private:
     uint64_t routingKey_ = 0;          // what the routing was last made from
     uint32_t masterTime_ = 0;          // the latest path's latency to the master, from the last plan
     uint64_t made_ = 0, removed_ = 0, sequences_ = 0;
+    std::map<ObjectId, ObjectId> audition_; // track id to the lane it plays
+    uint64_t auditionVersion_ = 0;          // moved by every change of audition_
     uint64_t masterAutomationKey_ = 0;
     std::vector<float> levels_; // kept as its own vector: MixerView holds a reference to it
 };

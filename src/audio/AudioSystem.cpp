@@ -339,6 +339,12 @@ bool AudioSystem::renderOffline(float *out, uint32_t frames, double sampleRate, 
     return true;
 }
 
+void AudioSystem::setOfflineInputs(uint32_t channels)
+{
+    if (deviceless_)
+        inputChannels_ = std::min<uint32_t>(channels, kMaxInputs);
+}
+
 void AudioSystem::start(env::Environment &)
 {
     if (!deviceless_)

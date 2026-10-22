@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <set>
+#include <tuple>
 #include <utility>
 
 namespace daw {
@@ -37,13 +38,38 @@ bool sameClip(const Clip &a, const Clip &b)
         return false;
     if (a.name != b.name || a.start != b.start || a.length != b.length || a.audioFile != b.audioFile ||
         a.offset != b.offset || a.gain != b.gain || a.fadeIn != b.fadeIn || a.fadeOut != b.fadeOut ||
-        a.notes.size() != b.notes.size())
+        a.take != b.take || a.notes.size() != b.notes.size())
         return false;
     for (size_t i = 0; i < a.notes.size(); ++i) {
         if (!sameNote(a.notes[i], b.notes[i]))
             return false;
     }
     return true;
+}
+
+// Take lanes: names, takes and the takes' ids (the comp's sections name them, so they are content here)
+bool sameTakeLanes(const std::vector<TakeLane> &a, const std::vector<TakeLane> &b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (size_t l = 0; l < a.size(); ++l) {
+        if (a[l].name != b[l].name || a[l].clips.size() != b[l].clips.size())
+            return false;
+        for (size_t i = 0; i < a[l].clips.size(); ++i) {
+            if (a[l].clips[i].id != b[l].clips[i].id || !sameClip(a[l].clips[i], b[l].clips[i]))
+                return false;
+        }
+    }
+    return true;
+}
+
+// The comp's shape: each section's take and range (ordinary clips as no take)
+std::vector<std::tuple<ObjectId, double, double>> compShape(const Track &t)
+{
+    std::vector<std::tuple<ObjectId, double, double>> shape;
+    for (const Clip &c : t.clips)
+        shape.emplace_back(c.take, c.start, c.length);
+    return shape;
 }
 
 // The same clip, its notes' selection included: safe to share between snapshots
@@ -64,7 +90,7 @@ bool sameTrackFields(const Track &a, const Track &b)
     return a.name == b.name && a.kind == b.kind && a.gain == b.gain && a.pan == b.pan && a.mute == b.mute &&
            a.solo == b.solo && a.instrument == b.instrument && a.inputChannel == b.inputChannel &&
            a.inputStereo == b.inputStereo && a.effects == b.effects && a.automation == b.automation &&
-           a.output == b.output && a.sends == b.sends;
+           a.output == b.output && a.sends == b.sends && sameTakeLanes(a.takeLanes, b.takeLanes);
 }
 
 bool sameTrack(const Track &a, const Track &b)
@@ -215,8 +241,20 @@ bool sameSavedTrack(const Track &a, const Track &b)
             return false;
     }
     for (size_t i = 0; i < a.clips.size(); ++i) {
-        if (!sameSavedClip(a.clips[i], b.clips[i], instrument))
+        if (!sameSavedClip(a.clips[i], b.clips[i], instrument) || a.clips[i].take != b.clips[i].take)
             return false;
+    }
+    if (a.takeLanes.size() != b.takeLanes.size())
+        return false;
+    for (size_t l = 0; l < a.takeLanes.size(); ++l) {
+        const TakeLane &x = a.takeLanes[l];
+        const TakeLane &y = b.takeLanes[l];
+        if (x.name != y.name || x.clips.size() != y.clips.size())
+            return false;
+        for (size_t i = 0; i < x.clips.size(); ++i) {
+            if (x.clips[i].id != y.clips[i].id || !sameSavedClip(x.clips[i], y.clips[i], instrument))
+                return false;
+        }
     }
     return true;
 }
@@ -291,6 +329,23 @@ std::string describeChange(const Project &a, const Project &b)
         return "Edit export preset";
     if (a.exportMetadata != b.exportMetadata)
         return "Edit export details";
+
+    // Takes recorded, removed or comped (before the clips: comping cuts and joins them)
+    for (size_t i = 0; i < a.tracks.size(); ++i) {
+        const Track &ta = a.tracks[i];
+        const Track &tb = b.tracks[i];
+        if (!sameTakeLanes(ta.takeLanes, tb.takeLanes)) {
+            if (tb.takeLanes.size() > ta.takeLanes.size())
+                return "Record takes";
+            if (tb.takeLanes.empty())
+                return "Flatten comp";
+            if (tb.takeLanes.size() < ta.takeLanes.size())
+                return "Delete take lane";
+            return "Edit takes";
+        }
+        if (!tb.takeLanes.empty() && compShape(ta) != compShape(tb))
+            return "Comp";
+    }
 
     // Clips appearing on one track and going from another moved between them
     size_t added = 0, removed = 0;
@@ -386,7 +441,7 @@ namespace {
 // a field added to Track would quietly drop out of undo. This stops the build when Track's size
 // changes (on the toolchain the project builds with): add the field to those three, then update the size.
 #if defined(__GLIBCXX__) && defined(__x86_64__)
-static_assert(sizeof(Track) == 320, "Track changed: add the new field to shellOf, sameTrackFields and "
+static_assert(sizeof(Track) == 344, "Track changed: add the new field to shellOf, sameTrackFields and "
                                      "ProjectStore::restore, then update this size");
 #endif
 
@@ -411,6 +466,7 @@ Track shellOf(const Track &t)
     s.automation = t.automation;
     s.output = t.output;
     s.sends = t.sends;
+    s.takeLanes = t.takeLanes;
     return s;
 }
 
@@ -529,7 +585,7 @@ HistoryRestore History::makePlan(const Snapshot &from, const Snapshot &to, const
         if (a.shell != b.shell) {
             mix = !sameMixFields(*a.shell, *b.shell);
             content = a.shell->instrument != b.shell->instrument || a.shell->effects != b.shell->effects ||
-                      a.shell->automation != b.shell->automation;
+                      a.shell->automation != b.shell->automation || !sameTakeLanes(a.shell->takeLanes, b.shell->takeLanes);
         }
         if (a.clips.size() != b.clips.size())
             content = true;

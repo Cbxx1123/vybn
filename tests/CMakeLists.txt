@@ -14,6 +14,7 @@ add_library(vybn_selftests STATIC
     RoutingSelfTest.cpp
     StepSelfTest.cpp
     SynthSelfTest.cpp
+    TakesSelfTest.cpp
     TempoSelfTest.cpp
 )
 target_include_directories(vybn_selftests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

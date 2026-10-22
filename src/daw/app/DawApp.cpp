@@ -298,6 +298,14 @@ void DawApp::buildBody()
         const std::string message = recording_->update();
         if (!message.empty())
             notify(message);
+        // A recording that left takes shows them
+        for (ObjectId id : recording_->takeNewTakes()) {
+            const int index = project().trackIndex(id);
+            if (index >= 0) {
+                arrangement_->showTakes(index, true);
+                notify("Takes recorded: drag across a take to comp it");
+            }
+        }
         if (recording_->midiMessages() != midiSeen_) {
             midiSeen_ = recording_->midiMessages();
             midiTime_ = ui_.window().time();
@@ -357,6 +365,20 @@ void DawApp::buildBody()
     hooks.seek = [&audio](double beats) { seekBeats(audio, beats); };
     hooks.openClip = [this] { showEditor(); };
     hooks.audioFor = [this](int track, int clip) { return clipAudio(track, clip); };
+    hooks.takeAudioFor = [this](int track, const Clip &take) -> const audio::AudioData * {
+        if (take.hasAudio())
+            return pool_->get(take.audioFile).get();
+        return recording_->trackPreview(track); // a pass being recorded: the recording so far
+    };
+    hooks.takeMenu = [this](int track, ObjectId lane, ObjectId take, Vec2 at) { openTakeMenu(track, lane, take, at); };
+    hooks.auditioned = [this](int track) {
+        const Track *t = project().track(track);
+        return t ? bridge_->audition(t->id) : kNoId;
+    };
+    hooks.audition = [this](int track, ObjectId lane) {
+        if (const Track *t = project().track(track))
+            bridge_->setAudition(t->id, lane);
+    };
     hooks.isRecording = [this](int track, int clip) { return recording_->isRecording(track, clip); };
     hooks.trackInput = [this](int track) { return trackInputText(track); };
     hooks.trackListening = [this](int track) {
@@ -718,8 +740,8 @@ void DawApp::buildBody()
 
 void DawApp::syncTracks()
 {
-    // The piano roll's loop, except while a render or a take needs the timeline straight
-    setLoopBeats(audio_, project().loopStart, project().loopEnd, project().looping && !recording_->recording());
+    // The loop (recording through it makes a take of each lap)
+    setLoopBeats(audio_, project().loopStart, project().loopEnd, project().looping);
     const AudioBridge::SyncOptions options;
     bridge_->sync(session_.store(), options);
 }
@@ -976,6 +998,12 @@ void DawApp::replaceProject(Project project, std::string path, const Project *sa
         for (const Clip &c : t.clips) {
             if (c.hasAudio())
                 files.insert(c.audioFile);
+        }
+        for (const TakeLane &lane : t.takeLanes) {
+            for (const Clip &c : lane.clips) {
+                if (c.hasAudio())
+                    files.insert(c.audioFile);
+            }
         }
     }
     pool_->keepOnly(files);

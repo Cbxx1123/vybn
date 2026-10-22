@@ -17,8 +17,8 @@ namespace daw {
 
 namespace {
 
-// FNV-1a over a track's clips and notes, to notice edits without tracking every one
-uint64_t hashNotes(const Track &t)
+// FNV-1a over the clips a track plays and their notes, to notice edits without tracking every one
+uint64_t hashNotes(const std::vector<Clip> &clips)
 {
     uint64_t h = 1469598103934665603ull;
     auto mix = [&h](const void *data, size_t size) {
@@ -28,7 +28,7 @@ uint64_t hashNotes(const Track &t)
             h *= 1099511628211ull;
         }
     };
-    for (const Clip &c : t.clips) {
+    for (const Clip &c : clips) {
         mix(&c.start, sizeof(c.start));
         mix(&c.length, sizeof(c.length));
         for (const Note &n : c.notes) {
@@ -49,11 +49,11 @@ uint64_t hashNotes(const Track &t)
     return h;
 }
 
-// A track's notes on the timeline, cut at the end of their clips
-std::unique_ptr<audio::NoteSequence> sequenceFor(const Track &t)
+// The notes of the clips a track plays on the timeline, cut at the end of their clips
+std::unique_ptr<audio::NoteSequence> sequenceFor(const std::vector<Clip> &clips)
 {
     auto sequence = std::make_unique<audio::NoteSequence>();
-    for (const Clip &c : t.clips) {
+    for (const Clip &c : clips) {
         for (const Note &n : c.notes) {
             if (n.start >= c.length || n.length <= 0.0 || n.muted)
                 continue;
@@ -64,7 +64,7 @@ std::unique_ptr<audio::NoteSequence> sequenceFor(const Track &t)
     }
     // Controller lanes: each controller's points from every clip on the timeline, in order;
     // a clip's curve ends where it does, holding its last value there
-    for (const Clip &c : t.clips) {
+    for (const Clip &c : clips) {
         for (const ControlLane &lane : c.controls) {
             if (lane.points.empty())
                 continue;
@@ -251,13 +251,15 @@ void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
             const uint64_t trackRevision = store.trackRevision(static_cast<int>(i));
             const uint64_t poolVersion = pool_.version();
             if (trackRevision != state.clipsRevision || poolVersion != state.clipsPoolVersion ||
-                tempo != state.clipsTempo) {
-                const uint64_t hash = hashClips(project, t);
-                if (hash == state.clipHash || clips->setSequence(clipSequenceFor(project, t))) {
+                tempo != state.clipsTempo || auditionVersion_ != state.clipsAudition) {
+                const std::vector<Clip> &played = playedClips(t);
+                const uint64_t hash = hashClips(project, played);
+                if (hash == state.clipHash || clips->setSequence(clipSequenceFor(project, played))) {
                     state.clipHash = hash;
                     state.clipsRevision = trackRevision;
                     state.clipsPoolVersion = poolVersion;
                     state.clipsTempo = tempo;
+                    state.clipsAudition = auditionVersion_;
                 }
             }
             clips->monitor = t.armed && t.monitor && t.inputChannel >= 0;
@@ -274,13 +276,15 @@ void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
         // revision moved (a selection-only change moves it too, and the hash ignores it). If the
         // audio thread can't take a sequence yet, the revision stays stale and it's tried again next frame.
         const uint64_t trackRevision = store.trackRevision(static_cast<int>(i));
-        if (trackRevision != state.notesRevision) {
-            const uint64_t hash = hashNotes(t);
+        if (trackRevision != state.notesRevision || auditionVersion_ != state.notesAudition) {
+            const std::vector<Clip> &played = playedClips(t);
+            const uint64_t hash = hashNotes(played);
             const bool unchanged = hash == state.noteHash;
-            if (unchanged || player->setSequence(sequenceFor(t))) {
+            if (unchanged || player->setSequence(sequenceFor(played))) {
                 sequences_ += unchanged ? 0 : 1;
                 state.noteHash = hash;
                 state.notesRevision = trackRevision;
+                state.notesAudition = auditionVersion_;
             }
         }
         // A library instrument: loaded in the background, then handed to its sampler (asked
@@ -666,10 +670,38 @@ void AudioBridge::syncDevice(ProjectStore &store, const DevicePlace &place, audi
         setting->name = slot->name();
 }
 
-uint64_t AudioBridge::hashClips(const Project &project, const Track &t) const
+void AudioBridge::setAudition(ObjectId track, ObjectId lane)
+{
+    const auto found = audition_.find(track);
+    const ObjectId was = found == audition_.end() ? kNoId : found->second;
+    if (was == lane)
+        return;
+    if (lane == kNoId)
+        audition_.erase(track);
+    else
+        audition_[track] = lane;
+    ++auditionVersion_;
+}
+
+ObjectId AudioBridge::audition(ObjectId track) const
+{
+    const auto found = audition_.find(track);
+    return found == audition_.end() ? kNoId : found->second;
+}
+
+const std::vector<Clip> &AudioBridge::playedClips(const Track &t) const
+{
+    for (const TakeLane &lane : t.takeLanes) {
+        if (lane.id != kNoId && lane.id == audition(t.id))
+            return lane.clips;
+    }
+    return t.clips;
+}
+
+uint64_t AudioBridge::hashClips(const Project &project, const std::vector<Clip> &played) const
 {
     uint64_t h = 1469598103934665603ull;
-    for (const Clip &c : t.clips) {
+    for (const Clip &c : played) {
         mix(h, &c.start, sizeof(c.start));
         mix(h, &c.length, sizeof(c.length));
         mix(h, &c.offset, sizeof(c.offset));
@@ -677,6 +709,7 @@ uint64_t AudioBridge::hashClips(const Project &project, const Track &t) const
         mix(h, &c.fadeIn, sizeof(c.fadeIn));
         mix(h, &c.fadeOut, sizeof(c.fadeOut));
         mix(h, c.audioFile.data(), c.audioFile.size());
+        mix(h, &c.take, sizeof(c.take));
     }
     // A tempo change moves clips in time; a file finishing loading adds it
     const uint64_t tempo = tempoHash(project.timing);
@@ -686,10 +719,12 @@ uint64_t AudioBridge::hashClips(const Project &project, const Track &t) const
     return h;
 }
 
-std::unique_ptr<audio::ClipSequence> AudioBridge::clipSequenceFor(const Project &project, const Track &t)
+std::unique_ptr<audio::ClipSequence> AudioBridge::clipSequenceFor(const Project &project, const std::vector<Clip> &played)
 {
+    const audio::TempoMap &timing = project.timing;
     auto sequence = std::make_unique<audio::ClipSequence>();
-    for (const Clip &c : t.clips) {
+    std::vector<std::pair<double, bool>> sections; // each region's start, and whether it is a comp section
+    for (const Clip &c : played) {
         if (!c.hasAudio())
             continue;
         auto data = pool_.get(c.audioFile); // starts loading if it isn't yet
@@ -704,9 +739,28 @@ std::unique_ptr<audio::ClipSequence> AudioBridge::clipSequenceFor(const Project 
         r.fadeIn = c.fadeIn;
         r.fadeOut = c.fadeOut;
         sequence->regions.push_back(std::move(r));
+        sections.push_back({c.start, c.take != kNoId});
     }
     sequence->sort();
-    sequence->crossfade(project.timing);
+    std::sort(sections.begin(), sections.end());
+    // Where two comp sections meet, each reaches kCompFade / 2 into the other (where its sound goes
+    // on) and they crossfade there, so a comp edit never clicks. The model keeps them butted.
+    for (size_t i = 0; i + 1 < sequence->regions.size() && i + 1 < sections.size(); ++i) {
+        audio::ClipRegion &a = sequence->regions[i];
+        audio::ClipRegion &b = sequence->regions[i + 1];
+        if (!sections[i].second || !sections[i + 1].second || std::fabs(a.end - b.start) > 1e-6)
+            continue;
+        const double edge = timing.secondsAt(a.end);
+        const double aLeft = a.data->seconds() - (a.offset + edge - timing.secondsAt(a.start)); // a's sound after the edge
+        const double half = std::min({kCompFade / 2.0, std::max(0.0, aLeft), b.offset});
+        if (half <= 0.0)
+            continue;
+        a.end = timing.beatAt(edge + half);
+        const double bStart = timing.beatAt(edge - half);
+        b.offset -= half;
+        b.start = bStart;
+    }
+    sequence->crossfade(timing);
     return sequence;
 }
 
