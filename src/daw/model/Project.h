@@ -165,6 +165,16 @@ struct DevicePlace {
     std::string key() const { return (master ? std::string("M") : "T" + std::to_string(track)) + ":" + std::to_string(index); }
 };
 
+// A named place in the song (docs/design/markers-and-import-plan.md)
+struct Marker {
+    ObjectId id = kNoId; // from the clip counter (normalizeIds); bookkeeping, like a clip's
+    double beat = 0.0;
+    std::string name;
+
+    bool operator==(const Marker &o) const { return beat == o.beat && name == o.name; }
+    bool operator!=(const Marker &o) const { return !(*this == o); }
+};
+
 struct Project {
     std::string name = "Untitled";
     std::vector<Track> tracks;
@@ -176,6 +186,13 @@ struct Project {
     double loopStart = 0.0, loopEnd = 0.0;
     bool looping = false;
     bool hasLoop() const { return loopEnd > loopStart; }
+    // The markers, sorted by beat. Saved and undone (the loop isn't).
+    std::vector<Marker> markers;
+    // The marker at or before `beat` (-1 for none), and the next one after it (-1 for none)
+    int markerAt(double beat) const;
+    int markerAfter(double beat) const;
+    // Sorts the markers by beat, the order they were in kept for markers on one beat
+    void sortMarkers();
     // Looping on or off; with no loop set, on over the selected clip (else the first four bars)
     void toggleLoop();
     // Effects on the whole mix, in order, before the master volume

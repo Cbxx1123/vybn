@@ -31,6 +31,7 @@ struct HistoryRestore {
     Project project;
     bool timing = false;    // the tempo map differs (a structural plan always sets it)
     bool settings = false;  // name or length differ
+    bool markers = false;   // the markers differ
     bool presets = false;   // export presets differ
     bool metadata = false;  // export details differ
     bool master = false;    // the master's effects differ

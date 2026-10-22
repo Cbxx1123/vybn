@@ -302,6 +302,9 @@ ArrangementView::ArrangementView(ProjectStore &store, TransportHooks transport, 
     timing.signatureMenu = transport_.signatureMenu;
     timing.editTempo = transport_.editTempo;
     timing.editSignature = transport_.editSignature;
+    timing.seek = transport_.seek;
+    timing.renameMarker = transport_.renameMarker;
+    timing.markerMenu = transport_.markerMenu;
     timing.laneMenu = transport_.timingLaneMenu;
     timing_ = std::make_unique<TimingLanes>(store_, std::move(timing));
     rebuild();
@@ -841,7 +844,16 @@ void ArrangementView::handleInput(const Input &input)
             else
                 loopDrag_ = 1;
         } else if (ruler_.contains(input.mouse)) {
-            scrubbing_ = true;
+            // A marker's flag (the global lanes hidden) puts the playhead on it; elsewhere the ruler scrubs
+            bool flagged = false;
+            for (auto it = rulerFlags_.rbegin(); it != rulerFlags_.rend() && !flagged && !timingShown_; ++it) {
+                if (it->second.contains(input.mouse)) {
+                    flagged = true;
+                    if (transport_.seek)
+                        transport_.seek(it->first);
+                }
+            }
+            scrubbing_ = !flagged;
         } else if (bar_.contains(input.mouse)) {
             const Rect t = thumb();
             grabX_ = t.contains(input.mouse) ? input.mouse.x - t.x : t.w * 0.5f;
@@ -1256,12 +1268,25 @@ void ArrangementView::drawContent(DrawList &list, const Theme &theme) const
                                    Shape::Rounded, TextTone::Muted, true, 0.6f));
         }
     });
-    // With the lanes hidden, a dot on the ruler at each tempo change
+    // With the lanes hidden, a dot on the ruler at each tempo change, and each marker's flag: a pin and
+    // its name on a tab over the bar numbers
+    rulerFlags_.clear();
     if (!timingShown_) {
         for (const audio::TempoPoint &p : timing.points()) {
             const float x = beatX(p.beat);
             if (p.beat > 0.0 && x >= ruler_.x && x <= ruler_.x + ruler_.w)
                 list.add(theme.accent({x - 3.0f, rulerBottom - 6.0f, 6.0f, 6.0f}, Shape::Circle, 0.8f));
+        }
+        for (const Marker &m : project().markers) {
+            const float x = beatX(m.beat);
+            const float w = theme.measureText(m.name.empty() ? std::string(" ") : m.name, TextStyle::Caption).x + 14.0f;
+            const Rect tab{x, band.y + band.h + 1.0f, w, rulerBottom - band.y - band.h - 2.0f};
+            rulerFlags_.push_back({m.beat, tab});
+            if (tab.x > ruler_.x + ruler_.w || tab.x + tab.w < ruler_.x)
+                continue;
+            list.add(theme.surface(tab, Shape::Soft, Elevation::Raised, 0.6f, Finish::Convex));
+            list.add(theme.accent({x, band.y, 2.0f, rulerBottom - band.y}, Shape::Pill, 1.0f));
+            list.add(theme.text(m.name, {x + 6.0f, tab.y, w - 8.0f, tab.h}, TextStyle::Caption, TextTone::Accent, TextAlign::Start));
         }
     }
     list.popClip();
@@ -1867,6 +1892,17 @@ void ArrangementView::showTiming(bool shown)
     Component::treeChanged(); // the lanes take room or give it back: lay out again
     if (transport_.timingShown)
         transport_.timingShown(shown);
+}
+
+void ArrangementView::dropPlace(Vec2 p, int &track, double &beat) const
+{
+    track = trackAt(p);
+    beat = p.x >= well_.x && p.x <= well_.x + well_.w && track >= 0 ? laneSnap(xBeat(p.x), false) : -1.0;
+}
+
+Vec2 ArrangementView::pointAt(int track, double beat) const
+{
+    return {beatX(beat) + 4.0f, rowTop(track) + kTrackHeight * 0.5f};
 }
 
 Rect ArrangementView::timingChip() const

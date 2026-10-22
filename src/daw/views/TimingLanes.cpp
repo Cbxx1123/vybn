@@ -39,10 +39,24 @@ TimingLanes::TimingLanes(ProjectStore &store, TimingHooks hooks) : store_(store)
 
 void TimingLanes::arrange(const Rect &headers, const Rect &lanes)
 {
-    signatureHeader_ = {headers.x, headers.y, headers.w, kSignatureHeight};
-    tempoHeader_ = {headers.x, headers.y + kSignatureHeight + kGap, headers.w, kTempoHeight};
-    signatureLane_ = {lanes.x, lanes.y, lanes.w, kSignatureHeight};
-    tempoLane_ = {lanes.x, lanes.y + kSignatureHeight + kGap, lanes.w, kTempoHeight};
+    const float signature = kMarkerHeight + kGap, tempo = signature + kSignatureHeight + kGap;
+    markerHeader_ = {headers.x, headers.y, headers.w, kMarkerHeight};
+    signatureHeader_ = {headers.x, headers.y + signature, headers.w, kSignatureHeight};
+    tempoHeader_ = {headers.x, headers.y + tempo, headers.w, kTempoHeight};
+    markerLane_ = {lanes.x, lanes.y, lanes.w, kMarkerHeight};
+    signatureLane_ = {lanes.x, lanes.y + signature, lanes.w, kSignatureHeight};
+    tempoLane_ = {lanes.x, lanes.y + tempo, lanes.w, kTempoHeight};
+}
+
+ObjectId TimingLanes::flagAt(Vec2 p) const
+{
+    if (!markerLane_.contains(p))
+        return kNoId;
+    for (auto it = flagRects_.rbegin(); it != flagRects_.rend(); ++it) {
+        if (it->second.inset(-2.0f).contains(p))
+            return it->first;
+    }
+    return kNoId;
 }
 
 void TimingLanes::tempoRange(double &low, double &high) const
@@ -142,6 +156,16 @@ int TimingLanes::selectedMarker() const
 
 bool TimingLanes::deleteSelected()
 {
+    if (selectedFlag_ != kNoId) {
+        const auto &markers = project().markers;
+        const auto found = std::find_if(markers.begin(), markers.end(), [this](const Marker &m) { return m.id == selectedFlag_; });
+        selectedFlag_ = kNoId;
+        if (found != markers.end()) {
+            std::vector<Marker> &edited = store_.editMarkers();
+            edited.erase(edited.begin() + (found - markers.begin()));
+            return true;
+        }
+    }
     const audio::TempoMap &timing = project().timing;
     const int point = selectedPoint();
     if (point > 0) {
@@ -200,6 +224,27 @@ bool TimingLanes::handleInput(const Input &input)
         input.setCursor(engine::Cursor::Move);
         return true;
     }
+    // A song marker pressed: dragged past a few pixels, it moves (the press already put the playhead there)
+    if (dragFlag_ != kNoId) {
+        if (!input.down) {
+            dragFlag_ = kNoId;
+            return true;
+        }
+        flagMoved_ = flagMoved_ || std::fabs(input.mouse.x - flagPressX_) > 4.0f;
+        if (flagMoved_) {
+            const double beat = std::clamp(hooks_.snap(xBeat(input.mouse.x), input.shift), 0.0, end);
+            const auto &markers = project().markers;
+            const auto found = std::find_if(markers.begin(), markers.end(), [this](const Marker &m) { return m.id == dragFlag_; });
+            if (found != markers.end() && found->beat != beat) {
+                const size_t index = static_cast<size_t>(found - markers.begin());
+                std::vector<Marker> &edited = store_.editMarkers();
+                edited[index].beat = beat;
+                std::stable_sort(edited.begin(), edited.end(), [](const Marker &a, const Marker &b) { return a.beat < b.beat; });
+            }
+            input.setCursor(engine::Cursor::ResizeX);
+        }
+        return true;
+    }
     // A signature change being dragged moves to the bar under the mouse, between its neighbours
     if (dragMarker_ >= 0) {
         const auto &signatures = timing.signatures();
@@ -227,11 +272,14 @@ bool TimingLanes::handleInput(const Input &input)
     hoverMarker_ = markerAt(input.mouse);
     hoverTempo_ = tempoLane_.contains(input.mouse);
     hoverSignature_ = signatureLane_.contains(input.mouse);
-    const bool inHeaders = signatureHeader_.contains(input.mouse) || tempoHeader_.contains(input.mouse);
+    hoverFlag_ = flagAt(input.mouse);
+    hoverFlags_ = markerLane_.contains(input.mouse);
+    const bool inHeaders = markerHeader_.contains(input.mouse) || signatureHeader_.contains(input.mouse) || tempoHeader_.contains(input.mouse);
     // Where a click would add something: a point at the snapped beat, a change at the bar
     ghostBeat_ = -1.0;
     ghostBar_ = -1;
     const double mouseBeat = std::clamp(xBeat(input.mouse.x), 0.0, end);
+    ghostFlagBeat_ = hoverFlags_ && hoverFlag_ == kNoId ? std::clamp(hooks_.snap(mouseBeat, input.shift), 0.0, end) : -1.0;
     if (hoverTempo_ && hoverPoint_ < 0) {
         const double beat = std::clamp(hooks_.snap(mouseBeat, input.shift), 0.0, end);
         const auto &points = timing.points();
@@ -246,14 +294,19 @@ bool TimingLanes::handleInput(const Input &input)
             ghostBar_ = bar;
     }
 
-    if (!hoverTempo_ && !hoverSignature_ && !inHeaders) {
+    if (!hoverTempo_ && !hoverSignature_ && !hoverFlags_ && !inHeaders) {
         // A press anywhere else lets go of the selection
         if (input.pressed || input.secondaryPressed) {
             selectedBeat_ = -1.0;
             selectedBar_ = -1;
+            selectedFlag_ = kNoId;
         }
         return false;
     }
+    if (hoverFlag_ != kNoId)
+        input.setCursor(engine::Cursor::Hand);
+    else if (ghostFlagBeat_ >= 0.0)
+        input.setCursor(engine::Cursor::Crosshair);
     if (hoverPoint_ >= 0)
         input.setCursor(engine::Cursor::Move);
     else if (hoverMarker_ > 0)
@@ -266,7 +319,11 @@ bool TimingLanes::handleInput(const Input &input)
     // Right-click: a point's or a marker's menu (selecting it), or the lane's
     if (input.secondaryPressed) {
         input.secondaryPressed = false;
-        if (hoverPoint_ >= 0) {
+        if (hoverFlags_) {
+            selectedFlag_ = hoverFlag_;
+            if (hooks_.markerMenu)
+                hooks_.markerMenu(hoverFlag_, hoverFlag_ != kNoId ? -1.0 : ghostFlagBeat_, input.mouse);
+        } else if (hoverPoint_ >= 0) {
             selectedBeat_ = timing.points()[static_cast<size_t>(hoverPoint_)].beat;
             selectedBar_ = -1;
             if (hooks_.tempoMenu)
@@ -285,12 +342,50 @@ bool TimingLanes::handleInput(const Input &input)
         return true;
 
     // A second press on the same thing soon after the first is a double-click
-    const int pressed = hoverTempo_ ? hoverPoint_ : hoverMarker_;
+    const int laneNow = hoverFlags_ ? 0 : hoverSignature_ ? 1 : hoverTempo_ ? 2 : -1;
+    const auto &markers = project().markers;
+    const auto flag = std::find_if(markers.begin(), markers.end(), [this](const Marker &m) { return m.id == hoverFlag_; });
+    const int pressed = hoverFlags_ ? (flag != markers.end() ? static_cast<int>(flag - markers.begin()) : -1)
+                        : hoverTempo_ ? hoverPoint_ : hoverMarker_;
     const bool doubleClick = lastPress_ >= 0.0 && input.time - lastPress_ < kDoubleClick && pressed == lastPressed_ &&
-                             lastPressTempo_ == hoverTempo_;
+                             lastPressLane_ == laneNow;
     lastPress_ = doubleClick ? -1.0 : input.time;
     lastPressed_ = pressed;
-    lastPressTempo_ = hoverTempo_;
+    lastPressLane_ = laneNow;
+    if (!hoverFlags_)
+        selectedFlag_ = kNoId;
+
+    if (hoverFlags_) {
+        selectedBeat_ = -1.0;
+        selectedBar_ = -1;
+        if (flag != markers.end()) {
+            // A marker: the playhead goes there; a double-click names it; a drag moves it
+            selectedFlag_ = flag->id;
+            if (doubleClick) {
+                if (hooks_.renameMarker)
+                    hooks_.renameMarker(flag->id);
+                return true;
+            }
+            if (hooks_.seek)
+                hooks_.seek(flag->beat);
+            dragFlag_ = flag->id;
+            flagPressX_ = input.mouse.x;
+            flagMoved_ = false;
+        } else if (doubleClick && ghostFlagBeat_ >= 0.0) {
+            // A new marker here, named after how many there are, then its name to edit
+            std::vector<Marker> &edited = store_.editMarkers();
+            edited.push_back({kNoId, ghostFlagBeat_, "Marker " + std::to_string(edited.size() + 1)});
+            std::stable_sort(edited.begin(), edited.end(), [](const Marker &a, const Marker &b) { return a.beat < b.beat; });
+            store_.normalizeIds();
+            for (const Marker &m : project().markers) {
+                if (m.beat == ghostFlagBeat_ && m.name == "Marker " + std::to_string(project().markers.size()))
+                    selectedFlag_ = m.id;
+            }
+            if (hooks_.renameMarker && selectedFlag_ != kNoId)
+                hooks_.renameMarker(selectedFlag_);
+        }
+        return true;
+    }
 
     if (hoverTempo_) {
         selectedBar_ = -1;
@@ -353,6 +448,37 @@ void TimingLanes::drawLanes(DrawList &list, const Theme &theme) const
     const audio::TempoMap &timing = project().timing;
     const double end = project().lengthBeats();
     const float endX = std::min(signatureLane_.x + signatureLane_.w, beatX(end));
+
+    // Markers: a flag per marker, a pin at its beat and its name on a raised tab
+    list.add(theme.surface(markerLane_.inset(1.0f), Shape::Soft, Elevation::Inset, hoverFlags_ ? 0.42f : 0.3f));
+    list.pushClip(markerLane_);
+    flagRects_.clear();
+    if (ghostFlagBeat_ >= 0.0) {
+        const float x = beatX(ghostFlagBeat_);
+        list.add(theme.accent({x, markerLane_.y + 3.0f, 2.0f, markerLane_.h - 6.0f}, Shape::Pill, 0.35f));
+        list.add(theme.text("Double-click to add a marker", {x + 8.0f, markerLane_.y, 220.0f, markerLane_.h}, TextStyle::Caption,
+                            TextTone::Muted, TextAlign::Start));
+    } else if (project().markers.empty() && endX > markerLane_.x + 260.0f) {
+        list.add(theme.text("Double-click to add a marker; click one to jump there",
+                            {markerLane_.x + 14.0f, markerLane_.y, 360.0f, markerLane_.h}, TextStyle::Caption, TextTone::Muted, TextAlign::Start));
+    }
+    for (const Marker &m : project().markers) {
+        const float x = beatX(m.beat);
+        const float w = theme.measureText(m.name.empty() ? std::string(" ") : m.name, TextStyle::Caption).x + 18.0f;
+        const Rect r{x, markerLane_.y + 3.0f, w, markerLane_.h - 6.0f};
+        flagRects_.push_back({m.id, r});
+        if (r.x > markerLane_.x + markerLane_.w || r.x + r.w < markerLane_.x)
+            continue;
+        const bool hot = m.id == hoverFlag_ || m.id == dragFlag_;
+        const bool selected = m.id == selectedFlag_;
+        if (selected)
+            list.add(theme.accent(r.inset(-2.0f), Shape::Soft, 0.3f));
+        list.add(theme.surface(r, Shape::Soft, Elevation::Raised, hot || selected ? 0.75f : 0.5f, Finish::Convex));
+        list.add(theme.accent({x, r.y, 2.0f, r.h}, Shape::Pill, 1.0f));
+        list.add(theme.text(m.name, {x + 8.0f, r.y, w - 10.0f, r.h}, TextStyle::Caption, hot || selected ? TextTone::Accent : TextTone::Primary,
+                            TextAlign::Start));
+    }
+    list.popClip();
     const int markerSelected = selectedMarker();
     const int pointSelected = selectedPoint();
 
@@ -474,6 +600,13 @@ void TimingLanes::drawHeaders(DrawList &list, const Theme &theme) const
 {
     const audio::TempoMap &timing = project().timing;
     const double playhead = hooks_.position ? std::max(0.0, hooks_.position()) : 0.0;
+    // The section the playhead is in: the marker at or before it
+    const int section = project().markerAt(playhead);
+    list.add(theme.text("Markers", {markerHeader_.x + 12.0f, markerHeader_.y, 120.0f, markerHeader_.h}, TextStyle::Caption,
+                        TextTone::Secondary, TextAlign::Start));
+    list.add(theme.text(section >= 0 ? project().markers[static_cast<size_t>(section)].name : std::string(),
+                        {markerHeader_.x + 80.0f, markerHeader_.y, markerHeader_.w - 92.0f, markerHeader_.h}, TextStyle::Caption,
+                        TextTone::Accent, TextAlign::End));
     list.add(theme.text("Signature", {signatureHeader_.x + 12.0f, signatureHeader_.y, 120.0f, signatureHeader_.h}, TextStyle::Caption,
                         TextTone::Secondary, TextAlign::Start));
     list.add(theme.text(signatureText(timing.signatureAt(playhead)),
@@ -513,6 +646,12 @@ uint64_t TimingLanes::key() const
     fp.add(dragHigh_);
     fp.add(selectedBeat_);
     fp.add(selectedBar_);
+    fp.add(markerLane_);
+    fp.add(hoverFlag_);
+    fp.add(dragFlag_);
+    fp.add(selectedFlag_);
+    fp.add(hoverFlags_);
+    fp.add(ghostFlagBeat_);
     return fp.value();
 }
 

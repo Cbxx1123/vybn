@@ -35,6 +35,7 @@ void defineActions(ui::Keymap &keymap)
     define("project.saveVersion", "Save version", "Project", {{Key::S, ctrlAlt}});
     define("project.versions", "Versions", "Project", {});
     define("file.importAudio", "Import audio file", "Project", {{Key::I, ctrlShift}});
+    define("file.importMidi", "Import MIDI file", "Project", {});
     define("file.importInstrument", "Import instrument", "Project", {{Key::I, ctrl}});
     define("app.settings", "Settings", "Project", {{Key::Comma, ctrl}});
     define("app.quit", "Quit", "Project", {{Key::Q, ctrl}});
@@ -65,6 +66,18 @@ void defineActions(ui::Keymap &keymap)
     define("view.foldAll", "Fold all groups", "View", {});
     define("view.unfoldAll", "Unfold all groups", "View", {});
     define("view.timing", "Tempo and signature lanes", "View", {{Key::M, ctrlShift}});
+    define("markers.add", "Add marker at the playhead", "Transport", {{Key::M, ctrl}});
+    define("markers.previous", "Previous marker", "Transport", {{Key::Left, ctrlAlt}}, true);
+    define("markers.next", "Next marker", "Transport", {{Key::Right, ctrlAlt}}, true);
+    define("markers.loop", "Loop this section", "Transport", {});
+    define("markers.list", "Markers", "Transport", {});
+    static const char *const goIds[] = {"markers.go1", "markers.go2", "markers.go3", "markers.go4", "markers.go5",
+                                        "markers.go6", "markers.go7", "markers.go8", "markers.go9"};
+    static const char *const goLabels[] = {"Go to marker 1", "Go to marker 2", "Go to marker 3", "Go to marker 4", "Go to marker 5",
+                                           "Go to marker 6", "Go to marker 7", "Go to marker 8", "Go to marker 9"};
+    const Key goKeys[] = {Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9};
+    for (int i = 0; i < 9; ++i)
+        define(goIds[i], goLabels[i], "Transport", {{goKeys[i], engine::ModAlt}});
     define("takes.up", "Comp section from the take above", "Tracks and clips", {{Key::Up, engine::ModAlt}});
     define("takes.down", "Comp section from the take below", "Tracks and clips", {{Key::Down, engine::ModAlt}});
     define("view.mixer", "Show the mixer", "View", {{Key::Num1, ctrl}});

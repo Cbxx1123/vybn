@@ -920,9 +920,89 @@ void automationEditChecks(Checker &c)
     c.check(store.project().tracks[0].automation.empty(), "Automation lane: its x removes the lane");
 }
 
+// Markers in the arrangement, by input handed to the view as above. The markers lane is under the
+// ruler (30) and a gap (4), 24 tall. A double-click in empty space adds one (and asks for its name), a
+// click on one puts the playhead there, a drag moves it, a right-click opens its menu; with the global
+// lanes hidden, a click on its flag in the ruler puts the playhead there.
+void markerEditChecks(Checker &c)
+{
+    engine::Window window(1200, 520, "VYBN markers test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::ProjectStore store(daw::demoProject());
+    double sought = -1.0;
+    daw::ObjectId renamed = daw::kNoId, menu = daw::kNoId;
+    daw::TransportHooks hooks = quietTransport();
+    hooks.seek = [&sought](double beat) { sought = beat; };
+    hooks.renameMarker = [&renamed](daw::ObjectId id) { renamed = id; };
+    hooks.markerMenu = [&menu](daw::ObjectId id, double, ui::Vec2) { menu = id; };
+    ui::Context context(window, renderer, theme);
+    auto &view = context.root().add<daw::ArrangementView>(store, hooks);
+    stretch(view);
+    auto frame = [&] {
+        context.update();
+        context.buildFrame();
+    };
+    for (int i = 0; i < 4; ++i)
+        frame();
+    const ui::Rect r = view.rect();
+    const float wellX = r.x + 278.0f, laneY = r.y + 34.0f + 12.0f;
+    auto beatX = [wellX](double beat) { return wellX + static_cast<float>(beat) * 22.0f; };
+    double now = 10.0;
+    auto send = [&](ui::Vec2 at, bool down, bool pressed, bool secondary = false) {
+        ui::Input in;
+        in.mouse = at;
+        in.down = down;
+        in.pressed = pressed;
+        in.secondaryPressed = secondary;
+        in.time = now;
+        view.handleInput(in);
+        view.arrange(view.rect(), theme);
+        now += 0.5;
+    };
+
+    // A double-click at beat 8.2: a marker at 8, its name asked for
+    const double first = now;
+    send({beatX(8.2), laneY}, true, true);
+    send({beatX(8.2), laneY}, false, false);
+    now = first + 0.2;
+    send({beatX(8.2), laneY}, true, true);
+    send({beatX(8.2), laneY}, false, false);
+    const auto &markers = store.project().markers;
+    c.check(markers.size() == 1 && markers[0].beat == 8.0 && markers[0].name == "Marker 1" && markers[0].id != daw::kNoId &&
+                renamed == markers[0].id,
+            "Markers lane: a double-click adds a marker and asks for its name", std::to_string(markers.size()));
+    frame(); // the flag is drawn (its place is where it was drawn)
+
+    // A click on it puts the playhead there; a drag moves it to beat 12
+    send({beatX(8.0) + 10.0f, laneY}, true, true);
+    const bool located = sought == 8.0;
+    send({beatX(12.0) + 10.0f, laneY}, true, false);
+    send({beatX(12.0) + 10.0f, laneY}, false, false);
+    c.check(located && markers.size() == 1 && markers[0].beat == 12.0, "Markers lane: a click locates, a drag moves",
+            markers.empty() ? "" : std::to_string(markers[0].beat) + (located ? " located" : " not located, at " + std::to_string(sought)));
+    frame();
+
+    // Its menu on a right-click; the lane's (no marker) on empty space
+    send({beatX(12.0) + 10.0f, laneY}, false, false, true);
+    const bool own = menu == markers[0].id;
+    send({beatX(30.0), laneY}, false, false, true);
+    c.check(own && menu == daw::kNoId, "Markers lane: a right-click opens a marker's menu, or the lane's");
+
+    // With the lanes hidden, its flag in the ruler locates
+    view.showTiming(false);
+    for (int i = 0; i < 3; ++i)
+        frame();
+    sought = -1.0;
+    send({beatX(12.0) + 8.0f, r.y + 20.0f}, true, true);
+    send({beatX(12.0) + 8.0f, r.y + 20.0f}, false, false);
+    c.check(sought == 12.0, "Markers: a flag in the ruler locates with the lanes hidden", std::to_string(sought));
+}
+
 // Editing the tempo map in the arrangement's tempo and signature lanes, by input handed to the view as
-// above. Under the ruler (30) and a gap (4): the signature lane (26), a gap (4), the tempo lane (64,
-// its curve 8 in from top and bottom on the lanes' BPM scale).
+// above. Under the ruler (30) and a gap (4): the markers lane (24), a gap (4), the signature lane (26), a
+// gap (4), the tempo lane (64, its curve 8 in from top and bottom on the lanes' BPM scale).
 void tempoEditChecks(Checker &c)
 {
     engine::Window window(1200, 520, "VYBN tempo test", false);
@@ -944,7 +1024,7 @@ void tempoEditChecks(Checker &c)
     }
 
     const ui::Rect r = view.rect();
-    const float wellX = r.x + 278.0f, signatureY = r.y + 34.0f + 13.0f, tempoTop = r.y + 64.0f;
+    const float wellX = r.x + 278.0f, signatureY = r.y + 62.0f + 13.0f, tempoTop = r.y + 92.0f;
     auto beatX = [wellX](double beat) { return wellX + static_cast<float>(beat) * 22.0f; };
     auto bpmY = [&view, tempoTop](double bpm) {
         double low = 0.0, high = 0.0;
@@ -2248,6 +2328,7 @@ Picture sceneTempo()
     daw::Project project = daw::demoProject();
     project.timing.setPoints({{0.0, 100.0, true}, {16.0, 140.0, false}, {32.0, 90.0, false}});
     project.timing.setSignatures({{0, 4, 4}, {4, 7, 8}, {6, 6, 8}});
+    project.markers = {{1, 0.0, "Intro"}, {2, 16.0, "Verse"}, {3, 32.0, "Chorus"}};
     daw::ProjectStore store(project); // outlives the context
     return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
         stretch(context.root().add<daw::ArrangementView>(store, quietTransport()));
@@ -2399,6 +2480,7 @@ Picture sceneTempoHidden()
     daw::Project project = daw::demoProject();
     project.timing.setPoints({{0.0, 100.0, true}, {16.0, 140.0, false}, {32.0, 90.0, false}});
     project.timing.setSignatures({{0, 4, 4}, {4, 7, 8}, {6, 6, 8}});
+    project.markers = {{1, 0.0, "Intro"}, {2, 16.0, "Verse"}, {3, 32.0, "Chorus"}};
     daw::ProjectStore store(project); // outlives the context
     return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
         auto &view = context.root().add<daw::ArrangementView>(store, quietTransport());
@@ -3666,6 +3748,7 @@ int runRenderSelfTest(int argc, char **argv)
         timed("masterEditChecks", [&] { masterEditChecks(editing); });
         timed("tempoEditChecks", [&] { tempoEditChecks(editing); });
         timed("takeEditChecks", [&] { takeEditChecks(editing); });
+        timed("markerEditChecks", [&] { markerEditChecks(editing); });
         timed("foldChecks", [&] { foldChecks(editing); });
         timed("foldUiChecks", [&] { foldUiChecks(editing); });
         timed("foldMixerChecks", [&] { foldMixerChecks(editing); });
