@@ -223,13 +223,11 @@ void NotePlayer::process(AudioBlock &block)
     wasPlaying_ = true;
     expected_ = t.position + block.frames;
 
-    const double spb = t.samplesPerBeat();
-    const double first = static_cast<double>(t.position);
-    const double b0 = first / spb;
-    const double b1 = (first + block.frames) / spb;
+    const double b0 = t.beatAt(0);
+    const double b1 = t.beatAt(block.frames);
     playControls(b0);
     auto frameOf = [&](double beat) {
-        const double f = std::floor(beat * spb - first + 0.5);
+        const double f = std::floor(t.frameAt(beat) + 0.5);
         return static_cast<uint32_t>(std::clamp(f, 0.0, static_cast<double>(block.frames - 1)));
     };
 

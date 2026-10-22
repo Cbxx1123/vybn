@@ -113,7 +113,7 @@ void prepareAutosaveDemo(const std::string &demo)
     const double now = daw::unixSeconds();
     const std::string key = "crashed-demo";
     daw::Project project = daw::demoProject();
-    project.tempo = 96.0;
+    project.timing.setTempo(96.0);
     std::string file, error;
     daw::writeAutosaveVersion((fs::path(root) / key).string(), "", project, now - 600.0, false, "", 10, file, error);
     daw::SessionLock lock;
@@ -310,6 +310,15 @@ int main(int argc, char **argv)
                     app.showShortcuts();
                 else if (demo == "transport")
                     audio.transport().play();
+                else if (demo == "tempo") {
+                    // A ramp from 100 to 140 BPM over four bars, held, then 90; 7/8 from bar 5, 6/8 from
+                    // bar 7; the transport playing through the changes
+                    audio::TempoMap timing = app.store().project().timing;
+                    timing.setPoints({{0.0, 100.0, true}, {16.0, 140.0, false}, {32.0, 90.0, false}});
+                    timing.setSignatures({{0, 4, 4}, {4, 7, 8}, {6, 6, 8}});
+                    app.store().setTiming(timing);
+                    audio.transport().play();
+                }
                 else if (demo == "clip")
                     app.store().select(0, 1);
                 else if (demo == "notetools") {

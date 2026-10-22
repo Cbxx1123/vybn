@@ -3,6 +3,7 @@
 
 #include "BridgeSelfTest.h"
 #include "RoutingSelfTest.h"
+#include "TempoSelfTest.h"
 
 #include <algorithm>
 #include <chrono>
@@ -81,9 +82,8 @@ int runProjectSelfTest()
     // Values that must come back exactly
     daw::Project odd;
     odd.name = "Quote \" backslash \\ tab \t newline \n end";
-    odd.tempo = 97.25;
+    odd.timing = audio::TempoMap(97.25, 3);
     odd.bars = 7;
-    odd.beatsPerBar = 3;
     daw::Track t;
     t.name = "Synth";
     t.kind = daw::TrackKind::Instrument;
@@ -102,7 +102,7 @@ int runProjectSelfTest()
     daw::Project back;
     error.clear();
     const bool oddOk = daw::readProject(daw::writeProject(odd), back, error);
-    bool exact = oddOk && back.name == odd.name && back.tempo == odd.tempo && back.bars == 7 && back.beatsPerBar == 3 &&
+    bool exact = oddOk && back.name == odd.name && back.timing == odd.timing && back.bars == 7 &&
                  back.tracks.size() == 1;
     if (exact) {
         const daw::Track &b = back.tracks[0];
@@ -159,7 +159,7 @@ int runProjectSelfTest()
     // Splitting and trimming
     {
         daw::Project p;
-        p.tempo = 120.0; // half a second per beat
+        p.timing.setTempo(120.0); // half a second per beat
         daw::Track inst;
         inst.kind = daw::TrackKind::Instrument;
         inst.clips.push_back({"Riff", 4.0, 8.0, {{0.0, 1.0, 60, 0.8f}, {3.0, 1.0, 62, 0.8f}, {5.0, 2.0, 64, 0.8f}}});
@@ -290,7 +290,7 @@ int runProjectSelfTest()
     daw::Project h;
     error.clear();
     const bool handOk = daw::readProject(hand, h, error);
-    bool handRight = handOk && h.name == "Literal \\ string" && h.tempo == 120.0 && h.bars == 16 && h.tracks.size() == 2;
+    bool handRight = handOk && h.name == "Literal \\ string" && h.timing.tempo() == 120.0 && h.bars == 16 && h.tracks.size() == 2;
     if (handRight) {
         const daw::Track &k = h.tracks[0];
         handRight = k.name == "Keys \xC3\xA9" && k.clips.size() == 2 && k.clips[0].start == 4.0 &&
@@ -395,7 +395,7 @@ int runProjectSelfTest()
                 "History: undo takes back an edit still under way", h.redoLabel());
         p = *back;
         for (int i = 0; i < 250; ++i) {
-            p.tempo = 60.0 + i;
+            p.timing.setTempo(60.0 + i);
             h.update(p, true);
         }
         c.check(h.undoCount() == daw::History::kMaxSteps, "History: keeps at most 200 steps",
@@ -406,10 +406,10 @@ int runProjectSelfTest()
             clipCount += track.clips.size();
         const size_t stored = h.storedClips();
         const daw::Project *older = h.undo(p);
-        const bool exact = older && older->tempo == 60.0 + 248 && older->tracks.size() == p.tracks.size() &&
+        const bool exact = older && older->timing.tempo() == 60.0 + 248 && older->tracks.size() == p.tracks.size() &&
                            daw::sameContent(*older, [&] {
                                daw::Project q = p;
-                               q.tempo = 60.0 + 248;
+                               q.timing.setTempo(60.0 + 248);
                                return q;
                            }()) &&
                            daw::sameSelection(*older, p);
@@ -417,7 +417,7 @@ int runProjectSelfTest()
                 std::to_string(stored) + " clips stored for " + std::to_string(clipCount));
         p = *older;
         const daw::Project *newer = h.redo(p);
-        c.check(newer && newer->tempo == 60.0 + 249 && daw::sameSelection(*newer, p), "History: redo after sharing");
+        c.check(newer && newer->timing.tempo() == 60.0 + 249 && daw::sameSelection(*newer, p), "History: redo after sharing");
         p = *newer;
         daw::Project a = daw::demoProject();
         daw::Project b = a;
@@ -680,7 +680,7 @@ id = "vibin.synth"
         song.range = daw::ExportRangeKind::Song;
         double from = -1.0, to = -1.0;
         daw::exportTargetRange(p, song, from, to);
-        c.check(from == 0.0 && to == std::max(last, static_cast<double>(p.beatsPerBar)), "Export: a song runs to its last clip",
+        c.check(from == 0.0 && to == std::max(last, p.timing.barLength(0)), "Export: a song runs to its last clip",
                 "to " + std::to_string(to) + " beats");
     }
 
@@ -688,16 +688,16 @@ id = "vibin.synth"
     {
         daw::ProjectSession s(daw::demoProject());
         c.check(!s.modified() && s.path().empty(), "Session: a new session is saved and has no file");
-        const double tempo = s.project().tempo;
-        s.store().setTempo(tempo + 12.0);
+        const double tempo = s.project().timing.tempo();
+        s.store().setTiming(audio::TempoMap(tempo + 12.0));
         s.checkModified();
         c.check(s.modified(), "Session: an edit makes it modified");
         s.markSaved("C:/Mixes/Demo.vbp");
         c.check(!s.modified() && s.path() == "C:/Mixes/Demo.vbp", "Session: saving clears modified and sets the file");
-        s.store().setTempo(tempo);
+        s.store().setTiming(audio::TempoMap(tempo));
         s.checkModified();
         c.check(s.modified(), "Session: changing back after a save is modified again");
-        s.store().setTempo(tempo + 12.0);
+        s.store().setTiming(audio::TempoMap(tempo + 12.0));
         s.history().update(s.project(), true);
         c.check(s.history().canUndo(), "Session: an edit is a history step");
         s.replace(daw::demoProject(), "");
@@ -731,11 +731,11 @@ id = "vibin.synth"
         store.select(2, 0);
         c.check(store.selectionRevision() > s0 && store.revision() == r0, "Store: a selection moves only the selection");
 
-        const double tempo = store.project().tempo;
+        const double tempo = store.project().timing.tempo();
         r0 = store.revision();
-        store.setTempo(tempo);
+        store.setTiming(audio::TempoMap(tempo));
         const bool tempoSame = store.revision() == r0;
-        store.setTempo(tempo + 7.0);
+        store.setTiming(audio::TempoMap(tempo + 7.0));
         c.check(tempoSame && store.revision() > r0, "Store: a tempo moves the revision only when it differs");
 
         const daw::Project &p = store.project();
@@ -787,7 +787,7 @@ id = "vibin.synth"
                               store.structureRevision() > str && store.trackRevision(0) > 1 && store.mixRevision(0) > 1;
         c.check(replaced, "Store: replace moves everything");
         const uint64_t revAfter = store.revision(), structAfter = store.structureRevision(), trackAfter = store.trackRevision(0);
-        store.setTempo(store.project().tempo);
+        store.setTiming(store.project().timing);
         c.check(store.revision() >= revAfter && store.structureRevision() >= structAfter && store.trackRevision(0) >= trackAfter,
                 "Store: revisions only increase");
     }
@@ -1112,7 +1112,7 @@ id = "vibin.synth"
                         else
                             store.edit().deleteTrack(t);
                     } else if (op == 12)
-                        store.setTempo(100.0 + 10.0 * pick(4));
+                        store.setTiming(audio::TempoMap(100.0 + 10.0 * pick(4)));
                     else if (op == 13 && k >= 0)
                         store.editClip(t, k).name = "Clip " + std::to_string(pick(5));
                     else if (op == 14 && k >= 0)
@@ -1582,7 +1582,6 @@ id = "vibin.synth"
     {
         daw::Project rp;
         rp.bars = 16;
-        rp.beatsPerBar = 4;
         rp.tracks.push_back(daw::Track{});
         rp.tracks[0].clips.push_back(daw::Clip("A", 8.0, 4.0));
         rp.tracks[0].clips.push_back(daw::Clip("B", 20.0, 2.0));
@@ -1605,7 +1604,6 @@ id = "vibin.synth"
         const bool emptyBars = !daw::exportTargetRange(rp, target, s, e);
         daw::Project none;
         none.bars = 16;
-        none.beatsPerBar = 4;
         target.range = daw::ExportRangeKind::Song;
         const bool emptySong = daw::exportTargetRange(none, target, s, e) && s == 0.0 && e == 4.0;
         c.check(songOk && timelineOk && noLoop && loopOk && barsOk && emptyBars && emptySong, "Export: ranges for song, timeline, loop and bars",
@@ -2429,6 +2427,7 @@ id = "vibin.synth"
     // The audio bridge keeps processors across structural edits (its own checks)
     c.failures += runBridgeChecks();
     c.failures += runRoutingChecks();
+    c.failures += runTempoChecks();
 
     return c.finish("project");
 }

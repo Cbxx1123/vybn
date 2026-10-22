@@ -28,24 +28,30 @@ struct RecordHooks {
 };
 
 // The bar across the top: return to start, play/pause, stop and record; the position in bars,
-// beats and ticks over the clock time; tempo and time signature; the metronome; the inputs in use
+// beats and ticks over the clock time; the tempo at the playhead with a tap tempo button, and the
+// time signature there (pressed, its editor opens); the metronome; the inputs in use
 // (MIDI with an activity light, the audio input with a meter); and the output meters. Everything
 // here drives the audio system's real transport.
 class TransportBar : public ui::Panel {
 public:
+    // `editSignature` opens the editor of the time signature at the playhead
     TransportBar(ui::Context &context, audio::AudioSystem &audio, audio::Metronome &metronome, ProjectStore &store,
-                 const StereoLevels &levels, RecordHooks record);
+                 const StereoLevels &levels, RecordHooks record, std::function<void()> editSignature = {});
 
     void handleInput(const ui::Input &input) override;
 
 private:
     audio::AudioSystem &audio_;
+    ProjectStore &store_;
     const StereoLevels &levels_;
     RecordHooks record_;
     ui::Button *play_ = nullptr;
     ui::Button *recordButton_ = nullptr;
     ui::LevelMeter *inputMeter_ = nullptr;
     ui::Stepper *tempo_ = nullptr;
+    ui::Button *signature_ = nullptr;
+    std::function<void()> editSignature_;
+    std::vector<double> taps_; // the tap tempo's recent taps, in seconds
     ui::LevelMeter *meters_[2] = {};
 };
 

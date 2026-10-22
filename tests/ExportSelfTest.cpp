@@ -777,8 +777,7 @@ void midiChecks(Checker &c)
     // past it, a mod wheel ramp and a pitch bend lane), an audio track and a second instrument track
     daw::Project project;
     project.name = "Ramp Test";
-    project.tempo = 100.0;
-    project.beatsPerBar = 3;
+    project.timing = audio::TempoMap(100.0, 3);
     project.tracks.clear();
     daw::Track lead;
     lead.name = "Lead";
@@ -1073,7 +1072,7 @@ void renderChecks(Checker &c)
             song.range = ExportRangeKind::Song;
             double startBeat = 0.0, endBeat = 0.0;
             exportTargetRange(project, song, startBeat, endBeat);
-            h.frames = static_cast<uint64_t>(std::ceil(endBeat * project.secondsPerBeat() * rate));
+            h.frames = static_cast<uint64_t>(std::ceil(project.timing.secondsAt(endBeat) * rate));
             h.tail = static_cast<uint64_t>(4.0 * rate);
 
             PassOutput master;
@@ -1269,7 +1268,6 @@ void queueChecks(Checker &c)
     AudioPool pool(environment);
     ExportQueue queue(environment, nullptr, library, pool);
     const Project demo = songToRender();
-    const double secondsPerBeat = demo.secondsPerBeat();
 
     auto secondsSince = [](Clock::time_point since) {
         return std::chrono::duration<double>(Clock::now() - since).count();
@@ -1345,7 +1343,7 @@ void queueChecks(Checker &c)
         ExportTarget song;
         double startBeat = 0.0, endBeat = 0.0;
         exportTargetRange(demo, song, startBeat, endBeat);
-        return endBeat * secondsPerBeat;
+        return demo.timing.secondsAt(endBeat);
     };
 
     std::vector<std::function<bool()>> steps;

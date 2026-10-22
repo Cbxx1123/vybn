@@ -476,13 +476,13 @@ void runBlock()
     transport.flags = CLAP_TRANSPORT_HAS_TEMPO | CLAP_TRANSPORT_HAS_BEATS_TIMELINE | CLAP_TRANSPORT_HAS_SECONDS_TIMELINE |
                       CLAP_TRANSPORT_HAS_TIME_SIGNATURE | (t.playing ? CLAP_TRANSPORT_IS_PLAYING : 0);
     transport.tempo = t.tempo > 1.0 && t.tempo < 1000.0 ? t.tempo : 120.0;
+    transport.tempo_inc = t.tempoPerSample > -1.0 && t.tempoPerSample < 1.0 ? t.tempoPerSample : 0.0;
     transport.song_pos_beats = static_cast<clap_beattime>(t.beats * CLAP_BEATTIME_FACTOR);
     transport.song_pos_seconds = static_cast<clap_sectime>(t.seconds * CLAP_SECTIME_FACTOR);
-    const uint32_t beatsPerBar = t.beatsPerBar > 0 && t.beatsPerBar < 64 ? t.beatsPerBar : 4;
-    transport.tsig_num = static_cast<uint16_t>(beatsPerBar);
-    transport.tsig_denom = 4;
-    transport.bar_number = static_cast<int32_t>(t.beats / beatsPerBar);
-    transport.bar_start = static_cast<clap_beattime>(transport.bar_number * static_cast<double>(beatsPerBar) * CLAP_BEATTIME_FACTOR);
+    transport.tsig_num = static_cast<uint16_t>(t.beatsPerBar > 0 && t.beatsPerBar < 64 ? t.beatsPerBar : 4);
+    transport.tsig_denom = static_cast<uint16_t>(t.beatUnit > 0 && t.beatUnit <= 32 ? t.beatUnit : 4);
+    transport.bar_number = t.bar;
+    transport.bar_start = static_cast<clap_beattime>(t.barStart * CLAP_BEATTIME_FACTOR);
 
     // Audio: the main ports read and write the shared block
     if (l.mainInput >= 0) {

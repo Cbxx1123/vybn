@@ -207,6 +207,36 @@ void writeExportTarget(std::ostringstream &out, const ExportTarget &t)
     out << "folder = " << quote(t.folder) << "\n";
 }
 
+// The tempo map: `tempo` and `beats_per_bar` are the opening tempo and signature (all an older
+// build reads), then only what says more: the opening signature's `beat_unit` when it isn't 4, and
+// the first point's `tempo_ramp`, then the later points and signatures as arrays
+void writeTiming(std::ostringstream &out, const audio::TempoMap &timing)
+{
+    using toml::number;
+    const std::vector<audio::TempoPoint> &points = timing.points();
+    const std::vector<audio::Signature> &signatures = timing.signatures();
+    out << "tempo = " << number(points.front().bpm) << "\n";
+    if (points.front().ramp)
+        out << "tempo_ramp = true\n";
+    out << "beats_per_bar = " << signatures.front().numerator << "\n";
+    if (signatures.front().denominator != 4)
+        out << "beat_unit = " << signatures.front().denominator << "\n";
+    if (points.size() > 1) {
+        out << "tempo_changes = [\n";
+        for (size_t i = 1; i < points.size(); ++i)
+            out << "  { beat = " << number(points[i].beat) << ", bpm = " << number(points[i].bpm)
+                << (points[i].ramp ? ", ramp = true" : "") << " },\n";
+        out << "]\n";
+    }
+    if (signatures.size() > 1) {
+        out << "signature_changes = [\n";
+        for (size_t i = 1; i < signatures.size(); ++i)
+            out << "  { bar = " << signatures[i].bar << ", numerator = " << signatures[i].numerator
+                << ", denominator = " << signatures[i].denominator << " },\n";
+        out << "]\n";
+    }
+}
+
 }
 
 std::string writeProject(const Project &project, const std::string &folder)
@@ -219,8 +249,7 @@ std::string writeProject(const Project &project, const std::string &folder)
     out << "# VYBN project\n";
     out << "format = " << kProjectFormat << "\n";
     out << "name = " << quote(project.name) << "\n";
-    out << "tempo = " << number(project.tempo) << "\n";
-    out << "beats_per_bar = " << project.beatsPerBar << "\n";
+    writeTiming(out, project.timing);
     out << "bars = " << project.bars << "\n";
     if (project.masterVolume != 1.0f)
         out << "master_volume = " << number(project.masterVolume) << "\n";
@@ -509,6 +538,47 @@ bool readAutomation(FieldReader &r, const toml::Value &table, bool track, const 
     return true;
 }
 
+// Reads what writeTiming wrote. The map tidies it: values clamped, sorted, repeats dropped.
+bool readTiming(FieldReader &r, const toml::Value &root, audio::TempoMap &out)
+{
+    std::vector<audio::TempoPoint> points(1);
+    std::vector<audio::Signature> signatures(1);
+    r.real(root, "tempo", "", points[0].bpm);
+    r.flag(root, "tempo_ramp", "", points[0].ramp);
+    r.whole(root, "beats_per_bar", "", signatures[0].numerator);
+    r.whole(root, "beat_unit", "", signatures[0].denominator);
+    const toml::Array *changes = r.tables(root, "tempo_changes", "");
+    if (!r.ok())
+        return false;
+    for (size_t i = 0; changes && i < changes->size(); ++i) {
+        audio::TempoPoint point;
+        r.real((*changes)[i], "beat", at("tempo change", i), point.beat);
+        r.real((*changes)[i], "bpm", at("tempo change", i), point.bpm);
+        r.flag((*changes)[i], "ramp", at("tempo change", i), point.ramp);
+        if (!r.ok())
+            return false;
+        // Nothing but the opening tempo goes at the start
+        if (point.beat > 0.0)
+            points.push_back(point);
+    }
+    const toml::Array *metre = r.tables(root, "signature_changes", "");
+    if (!r.ok())
+        return false;
+    for (size_t i = 0; metre && i < metre->size(); ++i) {
+        audio::Signature signature;
+        r.whole((*metre)[i], "bar", at("signature change", i), signature.bar);
+        r.whole((*metre)[i], "numerator", at("signature change", i), signature.numerator);
+        r.whole((*metre)[i], "denominator", at("signature change", i), signature.denominator);
+        if (!r.ok())
+            return false;
+        if (signature.bar > 0)
+            signatures.push_back(signature);
+    }
+    out.setPoints(std::move(points));
+    out.setSignatures(std::move(signatures));
+    return true;
+}
+
 // Reads what writeDevice wrote into `device`. `instrument` says which kinds may stand there (an
 // instrument: a sampler, a synth or a plugin; an effect: a built-in one or a plugin). Unknown kinds
 // and built-in effects are refused; a built-in effect's, a sampler's or a synth's values are clamped
@@ -731,8 +801,8 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
     Project p;
     p.tracks.clear();
     r.text(root, "name", "", p.name);
-    r.real(root, "tempo", "", p.tempo);
-    r.whole(root, "beats_per_bar", "", p.beatsPerBar);
+    if (!readTiming(r, root, p.timing))
+        return false;
     r.whole(root, "bars", "", p.bars);
     r.real(root, "loop_start", "", p.loopStart);
     r.real(root, "loop_end", "", p.loopEnd);
@@ -746,8 +816,6 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
     p.loopStart = std::max(0.0, p.loopStart);
     p.loopEnd = std::max(p.loopStart, p.loopEnd);
     p.looping = p.looping && p.hasLoop();
-    p.tempo = std::clamp(p.tempo, 20.0, 400.0);
-    p.beatsPerBar = std::clamp(p.beatsPerBar, 1, 16);
     p.bars = std::clamp(p.bars, 1, 9999);
 
     const toml::Array *tracks = r.tables(root, "tracks", "");

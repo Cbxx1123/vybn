@@ -814,7 +814,9 @@ Picture renderArrangement(int timedFrames, Timing *timing, ui::FrameStats *after
 {
     daw::ProjectStore store(daw::demoProject()); // outlives the context
     return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
-        stretch(context.root().add<daw::ArrangementView>(store, quietTransport()));
+        auto &view = context.root().add<daw::ArrangementView>(store, quietTransport());
+        view.showTiming(false); // the tempo lanes have their own scene
+        stretch(view);
     }, timedFrames, timing, after);
 }
 
@@ -842,6 +844,7 @@ void automationEditChecks(Checker &c)
     hooks.automationMenu = [&menuTrack](int track, ui::Vec2) { menuTrack = track; };
     ui::Context context(window, renderer, theme);
     auto &view = context.root().add<daw::ArrangementView>(store, hooks);
+    view.showTiming(false); // the tempo lanes have their own scene
     stretch(view);
     view.showAutomation(0, true);
     for (int i = 0; i < 4; ++i) {
@@ -916,6 +919,143 @@ void automationEditChecks(Checker &c)
     c.check(store.project().tracks[0].automation.empty(), "Automation lane: its x removes the lane");
 }
 
+// Editing the tempo map in the arrangement's tempo and signature lanes, by input handed to the view as
+// above. Under the ruler (30) and a gap (4): the signature lane (26), a gap (4), the tempo lane (64,
+// its curve 8 in from top and bottom on the lanes' BPM scale).
+void tempoEditChecks(Checker &c)
+{
+    engine::Window window(1200, 520, "VYBN tempo test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::ProjectStore store(daw::demoProject());
+    int pointMenu = -1, signatureMenu = -1, edited = -1;
+    daw::TransportHooks hooks = quietTransport();
+    hooks.tempoMenu = [&pointMenu](int point, ui::Vec2) { pointMenu = point; };
+    hooks.signatureMenu = [&signatureMenu](int signature, ui::Vec2) { signatureMenu = signature; };
+    hooks.editSignature = [&edited](int signature) { edited = signature; };
+    ui::Context context(window, renderer, theme);
+    auto &view = context.root().add<daw::ArrangementView>(store, hooks);
+    stretch(view);
+    for (int i = 0; i < 4; ++i) {
+        context.update();
+        context.buildFrame();
+    }
+
+    const ui::Rect r = view.rect();
+    const float wellX = r.x + 278.0f, signatureY = r.y + 34.0f + 13.0f, tempoTop = r.y + 64.0f;
+    auto beatX = [wellX](double beat) { return wellX + static_cast<float>(beat) * 22.0f; };
+    auto bpmY = [&view, tempoTop](double bpm) {
+        double low = 0.0, high = 0.0;
+        view.timingLanes().tempoRange(low, high);
+        return tempoTop + 56.0f - static_cast<float>((bpm - low) / (high - low)) * 48.0f;
+    };
+    double now = 10.0;
+    auto send = [&](ui::Vec2 at, bool down, bool pressed, bool secondary = false) {
+        ui::Input in;
+        in.mouse = at;
+        in.down = down;
+        in.pressed = pressed;
+        in.secondaryPressed = secondary;
+        in.time = now;
+        view.handleInput(in);
+        view.arrange(view.rect(), theme);
+        now += 0.5;
+    };
+    auto points = [&store] { return store.project().timing.points(); };
+    auto signatures = [&store] { return store.project().timing.signatures(); };
+
+    // A click at beat 8.3 where 130 BPM is: a point at beat 8 (snapped), at 130
+    send({beatX(8.3), bpmY(130.0)}, true, true);
+    send({beatX(8.3), bpmY(130.0)}, false, false);
+    std::vector<audio::TempoPoint> p = points();
+    c.check(p.size() == 2 && p[1].beat == 8.0 && std::fabs(p[1].bpm - 130.0) <= 1.0, "Tempo lane: a click adds a point, snapped to the beat",
+            p.size() < 2 ? "no point" : std::to_string(p[1].beat) + " @ " + std::to_string(p[1].bpm));
+
+    // Dragging it along to beat 12, keeping its tempo
+    send({beatX(8.0), bpmY(p[1].bpm)}, true, true);
+    send({beatX(12.2), bpmY(p[1].bpm)}, true, false);
+    send({beatX(12.2), bpmY(p[1].bpm)}, false, false);
+    const double kept = p.size() == 2 ? p[1].bpm : 0.0;
+    p = points();
+    c.check(p.size() == 2 && p[1].beat == 12.0 && std::fabs(p[1].bpm - kept) <= 1.0, "Tempo lane: dragging a point moves it",
+            p.size() < 2 ? "no point" : std::to_string(p[1].beat) + " @ " + std::to_string(p[1].bpm));
+
+    // The first point moves only in tempo
+    send({beatX(0.0), bpmY(120.0)}, true, true);
+    send({beatX(4.0), bpmY(110.0)}, true, false);
+    send({beatX(4.0), bpmY(110.0)}, false, false);
+    p = points();
+    c.check(p.size() == 2 && p[0].beat == 0.0 && p[0].bpm < 120.0, "Tempo lane: the first point stays at the start",
+            std::to_string(p[0].beat) + " @ " + std::to_string(p[0].bpm));
+
+    // A right-click on a point opens its menu
+    send({beatX(12.0), bpmY(p[1].bpm)}, false, false, true);
+    c.check(pointMenu == 1, "Tempo lane: a right-click opens a point's menu", std::to_string(pointMenu));
+
+    // A double-click in bar 3 adds a signature change there and opens its editor
+    const double first = now;
+    send({beatX(9.0), signatureY}, true, true);
+    send({beatX(9.0), signatureY}, false, false);
+    now = first + 0.2;
+    send({beatX(9.0), signatureY}, true, true);
+    send({beatX(9.0), signatureY}, false, false);
+    std::vector<audio::Signature> s = signatures();
+    c.check(s.size() == 2 && s[1].bar == 2 && s[1].numerator == 4 && edited == 1, "Signature lane: a double-click adds a change at the bar",
+            std::to_string(s.size()) + " signatures, editor " + std::to_string(edited));
+
+    // Dragging its marker to bar 5; the first marker doesn't move
+    send({beatX(8.0) + 10.0f, signatureY}, true, true);
+    send({beatX(16.3) + 10.0f, signatureY}, true, false);
+    send({beatX(16.3) + 10.0f, signatureY}, false, false);
+    send({beatX(0.0) + 10.0f, signatureY}, true, true);
+    send({beatX(4.0) + 10.0f, signatureY}, true, false);
+    send({beatX(4.0) + 10.0f, signatureY}, false, false);
+    s = signatures();
+    c.check(s.size() == 2 && s[0].bar == 0 && s[1].bar == 4, "Signature lane: a marker drags along the bars, the first stays",
+            s.size() < 2 ? "" : "bar " + std::to_string(s[1].bar));
+
+    // A right-click on a marker opens its menu
+    send({beatX(16.0) + 10.0f, signatureY}, false, false, true);
+    c.check(signatureMenu == 1, "Signature lane: a right-click opens a change's menu", std::to_string(signatureMenu));
+
+    // A click selects a point (for Delete); a press elsewhere lets go of it
+    p = points();
+    send({beatX(12.0), bpmY(p[1].bpm)}, true, true);
+    send({beatX(12.0), bpmY(p[1].bpm)}, false, false);
+    const int selected = view.timingLanes().selectedPoint();
+    send({r.x + 600.0f, r.y + 300.0f}, true, true);
+    send({r.x + 600.0f, r.y + 300.0f}, false, false);
+    c.check(selected == 1 && view.timingLanes().selectedPoint() == -1, "Tempo lane: a click selects a point, a press elsewhere lets go",
+            std::to_string(selected));
+
+    // Right-clicking empty lane space opens the lane's menu at the beat
+    double menuBeat = -1.0;
+    bool menuTempo = false;
+    hooks.timingLaneMenu = [&](ui::Vec2, double beat, bool tempo) {
+        menuBeat = beat;
+        menuTempo = tempo;
+    };
+    {
+        daw::ArrangementView other(store, hooks); // laid out where the first one is, outside the tree
+        other.arrange(view.rect(), theme);
+        ui::Input in;
+        in.mouse = {beatX(20.2), bpmY(100.0)};
+        in.secondaryPressed = true;
+        in.time = now;
+        other.handleInput(in);
+        c.check(menuBeat == 20.0 && menuTempo, "Tempo lane: a right-click on empty space opens the lane's menu",
+                std::to_string(menuBeat));
+    }
+
+    // The corner chip hides the lanes and shows them again
+    send({r.x + 60.0f, r.y + 15.0f}, true, true);
+    const bool hidden = !view.timingShown();
+    send({r.x + 60.0f, r.y + 15.0f}, false, false);
+    send({r.x + 60.0f, r.y + 15.0f}, true, true);
+    c.check(hidden && view.timingShown(), "Arrangement: the corner chip hides and shows the tempo lanes");
+}
+
 // The master's row, by input handed to the view as above: two tracks, then the master's header (name and
 // A toggle, 56 pixels) and, shown, its volume lane. A click in the lane adds a point to the project's
 // master lane; the add strip opens the master's menu (not a track's); the lane's x removes it; and the
@@ -937,6 +1077,7 @@ void masterEditChecks(Checker &c)
     hooks.automationMenu = [&trackMenu](int, ui::Vec2) { trackMenu = true; };
     ui::Context context(window, renderer, theme);
     auto &view = context.root().add<daw::ArrangementView>(store, hooks);
+    view.showTiming(false); // the tempo lanes have their own scene
     stretch(view);
     view.showMasterAutomation(true);
     for (int i = 0; i < 4; ++i) {
@@ -1031,6 +1172,7 @@ void foldChecks(Checker &c)
     daw::ProjectStore store(project);
     ui::Context context(window, renderer, theme);
     auto &view = context.root().add<daw::ArrangementView>(store, quietTransport());
+    view.showTiming(false); // the tempo lanes have their own scene
     stretch(view);
     auto settle = [&] {
         for (int i = 0; i < 3; ++i) {
@@ -1152,6 +1294,7 @@ void foldUiChecks(Checker &c)
     daw::FoldState folds(store);
     ui::Context context(window, renderer, theme);
     auto &view = context.root().add<daw::ArrangementView>(store, quietTransport(), &folds);
+    view.showTiming(false); // the tempo lanes have their own scene
     stretch(view);
     auto settle = [&] {
         for (int i = 0; i < 3; ++i) {
@@ -1234,6 +1377,7 @@ void foldDragChecks(Checker &c)
         daw::ProjectStore store(project);
         ui::Context context(window, renderer, theme);
         auto &view = context.root().add<daw::ArrangementView>(store, quietTransport());
+        view.showTiming(false); // the tempo lanes have their own scene
         stretch(view);
         for (int i = 0; i < 3; ++i) {
             context.update();
@@ -1256,6 +1400,7 @@ void foldDragChecks(Checker &c)
             ids.push_back(t.id);
         ui::Context context(window, renderer, theme);
         auto &view = context.root().add<daw::ArrangementView>(store, quietTransport());
+        view.showTiming(false); // the tempo lanes have their own scene
         stretch(view);
         auto settle = [&] {
             for (int i = 0; i < 3; ++i) {
@@ -1368,6 +1513,7 @@ Picture renderFolding(ui::FrameStats *after)
     daw::FoldState folds(store);      //   (and so does this)
     return renderPicture(1200, 740, daw::studioTheme(true), [&store, &folds](ui::Context &context) {
         auto &view = context.root().add<daw::ArrangementView>(store, quietTransport(), &folds);
+        view.showTiming(false); // the tempo lanes have their own scene
         stretch(view);
         view.fold(2, true);
         view.showAutomation(4, true);
@@ -2088,7 +2234,36 @@ Picture sceneAutomation()
     daw::ProjectStore store(project); // outlives the context
     return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
         auto &view = context.root().add<daw::ArrangementView>(store, quietTransport());
+        view.showTiming(false); // the tempo lanes have their own scene
         view.showAutomation(0, true);
+        stretch(view);
+    }, 0, nullptr);
+}
+
+// The arrangement with its tempo and signature lanes: a ramp from 100 to 140 BPM over four bars, held,
+// then a drop to 90; two bars of 7/8 from bar 5, then 6/8. The ruler and the grid follow the bars.
+Picture sceneTempo()
+{
+    daw::Project project = daw::demoProject();
+    project.timing.setPoints({{0.0, 100.0, true}, {16.0, 140.0, false}, {32.0, 90.0, false}});
+    project.timing.setSignatures({{0, 4, 4}, {4, 7, 8}, {6, 6, 8}});
+    daw::ProjectStore store(project); // outlives the context
+    return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
+        stretch(context.root().add<daw::ArrangementView>(store, quietTransport()));
+    }, 0, nullptr);
+}
+
+// The same song with the lanes hidden: the ruler marks the signature changes by their bars' numbers
+// and each tempo change with a dot, and the corner chip offers the lanes
+Picture sceneTempoHidden()
+{
+    daw::Project project = daw::demoProject();
+    project.timing.setPoints({{0.0, 100.0, true}, {16.0, 140.0, false}, {32.0, 90.0, false}});
+    project.timing.setSignatures({{0, 4, 4}, {4, 7, 8}, {6, 6, 8}});
+    daw::ProjectStore store(project); // outlives the context
+    return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
+        auto &view = context.root().add<daw::ArrangementView>(store, quietTransport());
+        view.showTiming(false);
         stretch(view);
     }, 0, nullptr);
 }
@@ -2113,6 +2288,7 @@ Picture renderMaster(ui::FrameStats *after)
     };
     return renderPicture(1200, 740, daw::studioTheme(true), [&store, &hooks](ui::Context &context) {
         auto &view = context.root().add<daw::ArrangementView>(store, hooks);
+        view.showTiming(false); // the tempo lanes have their own scene
         view.showMasterAutomation(true);
         stretch(view);
     }, 0, nullptr, after);
@@ -2211,7 +2387,9 @@ Picture renderWaveforms(int timedFrames, Timing *timing, ui::FrameStats *after =
     };
     daw::ProjectStore store(waveformProject()); // outlives the context
     return renderPicture(1200, 520, daw::studioTheme(true), [&store, &hooks](ui::Context &context) {
-        stretch(context.root().add<daw::ArrangementView>(store, hooks));
+        auto &view = context.root().add<daw::ArrangementView>(store, hooks);
+        view.showTiming(false); // the tempo lanes have their own scene
+        stretch(view);
     }, timedFrames, timing, after);
 }
 
@@ -3160,6 +3338,8 @@ const SceneEntry kScenes[] = {
     {"controls", sceneControls},
     {"arrangement", sceneArrangement},
     {"automation", sceneAutomation},
+    {"tempo", sceneTempo},
+    {"tempo-hidden", sceneTempoHidden},
     {"master", sceneMaster},
     {"folding", sceneFolding},
     {"mixer", sceneMixer},
@@ -3343,6 +3523,7 @@ int runRenderSelfTest(int argc, char **argv)
         Checker editing;
         timed("automationEditChecks", [&] { automationEditChecks(editing); });
         timed("masterEditChecks", [&] { masterEditChecks(editing); });
+        timed("tempoEditChecks", [&] { tempoEditChecks(editing); });
         timed("foldChecks", [&] { foldChecks(editing); });
         timed("foldUiChecks", [&] { foldUiChecks(editing); });
         timed("foldMixerChecks", [&] { foldMixerChecks(editing); });

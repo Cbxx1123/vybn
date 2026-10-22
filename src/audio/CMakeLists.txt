@@ -24,6 +24,7 @@ vybn_module(vybn_audio SOURCES
     Synth.cpp
     SynthPresets.cpp
     SynthTables.cpp
+    TempoMap.cpp
     Track.cpp
 )
 target_link_libraries(vybn_audio PUBLIC vybn_env vybn_plugin PRIVATE vybn_miniaudio)
@@ -41,6 +42,6 @@ if(VYBN_OPTIMISE_AUDIO AND NOT MSVC)
     set_source_files_properties(
         AudioSystem.cpp Automation.cpp ClipPlayer.cpp DeviceChain.cpp Effects.cpp Encoders.cpp Mastering.cpp
         Memory.cpp NotePlayer.cpp PluginEffect.cpp PluginInstrument.cpp Preview.cpp Processors.cpp Recorder.cpp
-        Sampler.cpp Synth.cpp SynthTables.cpp Track.cpp
+        Sampler.cpp Synth.cpp SynthTables.cpp TempoMap.cpp Track.cpp
         PROPERTIES COMPILE_OPTIONS "-O3")
 endif()

@@ -18,7 +18,8 @@ struct MidiExportOptions {
 };
 
 // Writes a Standard MIDI File (type 1, 480 ticks a beat): a conductor track with the project's name,
-// tempo and time signature, then one track per exported instrument track. Notes are written from
+// the tempo and time signature in force at the start and each change in range (a tempo ramp as a step
+// every 1/16 beat), then one track per exported instrument track. Notes are written from
 // every clip (muted ones left out, cut at the clip's end and at the range's end), controller lanes
 // as controller changes (ramps sampled every 1/32 beat, only where the value changes) and the pitch
 // bend as 14-bit messages. Time 0 of the file is `fromBeat`. Written beside `path` and renamed, so a

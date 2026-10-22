@@ -101,7 +101,7 @@ private:
         uint64_t notesRevision = 0;
         uint64_t clipsRevision = 0;
         uint64_t clipsPoolVersion = ~0ull;
-        double clipsTempo = 0.0;
+        uint64_t clipsTempo = 0; // the tempo map's points, hashed
         std::string requested = std::string(1, '\0'); // the instrument asked for (never a name at first)
         audio::SamplerDevice *sampler = nullptr;    // the sampler the request went to
         std::shared_ptr<const audio::SampleSet> pendingSet; // loaded, waiting for the sampler

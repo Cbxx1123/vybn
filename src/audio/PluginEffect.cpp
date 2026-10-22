@@ -1,6 +1,7 @@
 #include "PluginEffect.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace audio {
 
@@ -12,6 +13,19 @@ plugin::TransportInfo pluginTransport(const TransportState *transport, double sa
     info.playing = transport->playing ? 1 : 0;
     info.tempo = transport->tempo;
     info.beats = transport->beatAt(0);
+    if (const TempoMap *map = transport->map) {
+        const Signature &signature = map->signatureAt(info.beats);
+        info.beatsPerBar = static_cast<uint32_t>(signature.numerator);
+        info.beatUnit = static_cast<uint32_t>(signature.denominator);
+        info.bar = map->barAt(info.beats);
+        info.barStart = map->barStart(info.bar);
+        // BPM per beat, times beats per sample
+        const double rate = transport->sampleRate > 0.0 ? transport->sampleRate : sampleRate;
+        info.tempoPerSample = map->slopeAt(info.beats) * info.tempo / 60.0 / rate;
+    } else {
+        info.bar = static_cast<int32_t>(std::floor(info.beats / 4.0));
+        info.barStart = info.bar * 4.0;
+    }
     info.seconds = static_cast<double>(transport->position) / (transport->sampleRate > 0.0 ? transport->sampleRate : sampleRate);
     return info;
 }

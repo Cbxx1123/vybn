@@ -275,6 +275,18 @@ private:
     const audio::AudioData *clipAudio(int track, int clip);
     void openClipMenu(ui::Vec2 at, double beat);
     void openTrackMenu(int track, ui::Vec2 at);
+    // The tempo map's points and signature changes (by index): a point's menu (ramp to the next,
+    // its tempo, delete), a change's menu (edit, delete) and its editor (numerator and unit)
+    void openTempoMenu(int point, ui::Vec2 at);
+    void openTempoDialog(int point);
+    void openSignatureMenu(int signature, ui::Vec2 at);
+    void openSignatureDialog(int signature);
+    // Empty space in the tempo or signature lane, at `beat`: add a change there, reset, hide the lanes
+    void openTimingLaneMenu(ui::Vec2 at, double beat, bool tempo);
+    // The tempo map's edits shared by those menus and the transport bar: the tempo at a beat (the
+    // point in force there), a signature at a bar (a change there, added if there isn't one)
+    void setTempoAt(double beat, double bpm);
+    void setSignatureAt(int bar, int numerator, int denominator);
     // What a track can automate: its volume and pan, then each of its devices' parameters (a
     // submenu each). Picking one adds its lane (empty, so it plays nothing yet) and shows the lanes.
     void openAutomationMenu(int track, ui::Vec2 at);

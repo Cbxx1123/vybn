@@ -285,6 +285,17 @@ MasterHeader::MasterHeader(const TransportHooks &hooks, std::function<bool()> au
 ArrangementView::ArrangementView(ProjectStore &store, TransportHooks transport, FoldState *folds)
     : store_(store), transport_(std::move(transport)), ownFolds_(store), folds_(folds ? folds : &ownFolds_)
 {
+    TimingHooks timing;
+    timing.beatX = [this](double beat) { return beatX(beat); };
+    timing.xBeat = [this](float x) { return xBeat(x); };
+    timing.snap = [this](double beat, bool free) { return laneSnap(beat, free); };
+    timing.position = transport_.position;
+    timing.tempoMenu = transport_.tempoMenu;
+    timing.signatureMenu = transport_.signatureMenu;
+    timing.editTempo = transport_.editTempo;
+    timing.editSignature = transport_.editSignature;
+    timing.laneMenu = transport_.timingLaneMenu;
+    timing_ = std::make_unique<TimingLanes>(store_, std::move(timing));
     rebuild();
 }
 
@@ -347,10 +358,15 @@ Vec2 ArrangementView::measure(const Theme &) const
 void ArrangementView::arrange(const Rect &rect, const Theme &theme)
 {
     rect_ = rect;
-    const float laneHeight = std::max(0.0f, rect.h - kRulerHeight - kBarHeight - kGap);
-    headerArea_ = {rect.x, rect.y + kRulerHeight, kHeaderWidth, laneHeight};
+    // Under the ruler, the tempo and signature lanes (when shown), then the tracks
+    const float timing = timingShown_ ? TimingLanes::height() : 0.0f;
+    const float top = rect.y + kRulerHeight + timing;
+    const float laneHeight = std::max(0.0f, rect.h - kRulerHeight - timing - kBarHeight - kGap);
+    headerArea_ = {rect.x, top, kHeaderWidth, laneHeight};
     ruler_ = {rect.x + kHeaderWidth + kGap, rect.y, std::max(0.0f, rect.w - kHeaderWidth - kGap), kRulerHeight};
-    well_ = {ruler_.x, rect.y + kRulerHeight, ruler_.w, laneHeight};
+    well_ = {ruler_.x, top, ruler_.w, laneHeight};
+    timing_->arrange({rect.x, rect.y + kRulerHeight + TimingLanes::kGap, kHeaderWidth, timing},
+                     {ruler_.x, rect.y + kRulerHeight + TimingLanes::kGap, ruler_.w, timing});
     lanes_ = well_;
     bar_ = {well_.x, well_.y + well_.h + kGap, well_.w, kBarHeight};
     layoutRows();
@@ -727,7 +743,16 @@ void ArrangementView::handleInput(const Input &input)
         }
     }
 
-    // Automation lanes and their headers take the input over them
+    // The corner chip shows and hides the tempo and signature lanes
+    chipHovered_ = timingChip().contains(input.mouse);
+    if (chipHovered_) {
+        input.setCursor(engine::Cursor::Hand);
+        if (input.pressed)
+            showTiming(!timingShown_);
+    }
+    // The tempo and signature lanes, then the automation lanes and their headers, take the input over them
+    if (timingShown_)
+        timing_->handleInput(input);
     const bool inLanes = handleLaneInput(input);
 
     // What's under the mouse in the lanes
@@ -818,9 +843,10 @@ void ArrangementView::handleInput(const Input &input)
             } else if (const Track *t = project().track(hoveredTrack_)) {
                 if (doubleClick && t->kind == TrackKind::Instrument) {
                     // A one-bar clip in the bar that was clicked, if it fits on the timeline
-                    const double bar = project().beatsPerBar;
-                    const double start = std::floor(xBeat(input.mouse.x) / bar) * bar;
-                    if (start >= 0.0 && start + bar <= project().lengthBeats()) {
+                    const audio::TempoMap &timing = project().timing;
+                    const int clicked = timing.barAt(xBeat(input.mouse.x));
+                    const double start = timing.barStart(clicked), bar = timing.barLength(clicked);
+                    if (start >= 0.0 && start + bar <= project().lengthBeats() + 1e-9) {
                         store_.editTrack(hoveredTrack_).clips.push_back({"Clip", start, bar, {}});
                         store_.select(hoveredTrack_,
                                       static_cast<int>(project().tracks[static_cast<size_t>(hoveredTrack_)].clips.size()) - 1);
@@ -842,9 +868,9 @@ void ArrangementView::handleInput(const Input &input)
             start = std::min(from, at);
             end = std::max(from, at);
         } else if (loopDrag_ == 2) {
-            start = std::min(at, end - (input.shift ? 1.0 : project().beatsPerBar));
+            start = std::min(at, end - (input.shift ? 1.0 : project().timing.barLength(project().timing.barAt(end - 1e-9))));
         } else if (loopDrag_ == 3) {
-            end = std::max(at, start + (input.shift ? 1.0 : project().beatsPerBar));
+            end = std::max(at, start + (input.shift ? 1.0 : project().timing.barLength(project().timing.barAt(start))));
         }
         start = std::max(0.0, start);
         if (!input.down) {
@@ -883,7 +909,7 @@ void ArrangementView::handleInput(const Input &input)
                                                    ? transport_.audioFor(project().selectedTrack, project().selectedClip)
                                                    : nullptr;
                 if (clip->hasAudio() && data)
-                    end = std::min(end, clip->start + (data->seconds() - clip->offset) / project().secondsPerBeat());
+                    end = std::min(end, clip->start + project().beatsFor(clip->start, data->seconds() - clip->offset));
                 store_.editClip(project().selectedTrack, project().selectedClip).length = std::max(0.25, end - clip->start);
             }
         } else {
@@ -973,7 +999,10 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
         const float cy = body.y + body.h * 0.5f;
         const float half = body.h * 0.5f + 2.0f;
         if (data) {
-            const double spb = project().secondsPerBeat();
+            // Seconds into the clip at a beat into it (the tempo doesn't stretch the sound)
+            const audio::TempoMap &timing = project().timing;
+            const double clipSeconds = timing.secondsAt(clip.start);
+            auto secondsIn = [&](double beats) { return timing.secondsAt(clip.start + beats) - clipSeconds; };
             // The waveform's columns, each a low and a high value (after gain, clamped), one plot
             const float firstX = std::max(r.x, visibleStart);
             std::vector<float> pairs;
@@ -985,7 +1014,7 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
                 if (b0 >= clip.length)
                     break;
                 float low = 0.0f, high = 0.0f;
-                data->range(clip.offset + b0 * spb, clip.offset + b1 * spb, low, high);
+                data->range(clip.offset + secondsIn(b0), clip.offset + secondsIn(b1), low, high);
                 pairs.push_back(std::max(-1.0f, low * clip.gain));
                 pairs.push_back(std::min(1.0f, high * clip.gain));
                 ++columns;
@@ -1027,9 +1056,11 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
                 list.add(curve);
             };
             if (clip.fadeIn > 0.0)
-                fade(0.0, clip.fadeIn / spb, true);
-            if (clip.fadeOut > 0.0)
-                fade(clip.length - clip.fadeOut / spb, clip.fadeOut / spb, false);
+                fade(0.0, project().beatsFor(clip.start, clip.fadeIn), true);
+            if (clip.fadeOut > 0.0) {
+                const double outStart = timing.beatAt(timing.secondsAt(clip.start + clip.length) - clip.fadeOut) - clip.start;
+                fade(outStart, clip.length - outStart, false);
+            }
         } else {
             const std::string note = clip.hasAudio() ? "Loading..." : recording ? "Waiting for input..." : "Empty";
             list.add(theme.text(note, body, TextStyle::Caption, TextTone::Muted, TextAlign::Start));
@@ -1095,6 +1126,9 @@ uint64_t ArrangementView::contentKey(bool recording) const
     // The project (every edit moves revision) and the selection
     fp.add(store_.revision());
     fp.add(store_.selectionRevision());
+    fp.add(timingShown_);
+    if (timingShown_)
+        fp.add(timing_->key());
     // Layout and view
     fp.add(rect_);
     fp.add(headerArea_);
@@ -1145,13 +1179,20 @@ uint64_t ArrangementView::contentKey(bool recording) const
 
 void ArrangementView::drawContent(DrawList &list, const Theme &theme) const
 {
-    const int beatsPerBar = std::max(1, project().beatsPerBar);
-    const float barPixels = pixelsPerBeat_ * static_cast<float>(beatsPerBar);
+    // The bars in view (they can differ in length: the signatures)
+    const audio::TempoMap &timing = project().timing;
+    const double viewStart = std::max(0.0, xBeat(lanes_.x)), viewEnd = std::min(project().lengthBeats(), xBeat(lanes_.x + lanes_.w));
+    const float barPixels = pixelsPerBeat_ * static_cast<float>(timing.signatureAt(viewStart).barLength());
     int labelEvery = 1;
     while (barPixels * static_cast<float>(labelEvery) < 44.0f)
         labelEvery *= 2;
-    const int firstBar = std::max(0, static_cast<int>(scrollX_ / barPixels));
-    const int lastBar = std::min(project().bars, static_cast<int>((scrollX_ + lanes_.w) / barPixels) + 1);
+    // Each bar line in view (the timeline's end too), with its signature
+    auto forEachBarLine = [&](auto &&f) {
+        timing.forEachBar(viewStart, viewEnd + 1e-9, [&](int bar, double start, const audio::Signature &s) {
+            if (bar <= project().bars)
+                f(bar, beatX(start), s);
+        });
+    };
 
     // Ruler: the loop strip (an inset groove, the loop a raised accent band in it), bar numbers
     // and ticks
@@ -1165,32 +1206,51 @@ void ArrangementView::drawContent(DrawList &list, const Theme &theme) const
         list.add(theme.accent(loop, Shape::Pill, project().looping ? 0.85f : 0.3f));
     }
     const float rulerBottom = ruler_.y + ruler_.h;
-    for (int bar = firstBar; bar <= lastBar; ++bar) {
-        const float x = beatX(static_cast<double>(bar) * beatsPerBar);
+    forEachBarLine([&](int bar, float x, const audio::Signature &s) {
         list.add(theme.ink({x, rulerBottom - 12.0f, 1.0f, 10.0f}, Shape::Rounded, TextTone::Muted, true, 0.8f));
+        const std::string number = std::to_string(bar + 1);
         if (bar % labelEvery == 0 && bar < project().bars)
-            list.add(theme.text(std::to_string(bar + 1), {x + 5.0f, band.y + band.h, 40.0f, rulerBottom - band.y - band.h - 3.0f}, TextStyle::Caption,
+            list.add(theme.text(number, {x + 5.0f, band.y + band.h, 40.0f, rulerBottom - band.y - band.h - 3.0f}, TextStyle::Caption,
                                 TextTone::Secondary, TextAlign::Start));
-        if (pixelsPerBeat_ >= 10.0f && bar < project().bars) {
-            for (int b = 1; b < beatsPerBar; ++b)
-                list.add(theme.ink({x + static_cast<float>(b) * pixelsPerBeat_, rulerBottom - 7.0f, 1.0f, 5.0f},
+        // With the lanes hidden, a signature change is marked by its bar's number
+        if (!timingShown_ && bar > 0 && s.bar == bar) {
+            const float after = x + 9.0f + theme.measureText(number, TextStyle::Caption).x;
+            list.add(theme.text(std::to_string(s.numerator) + "/" + std::to_string(s.denominator),
+                                {after, band.y + band.h, 40.0f, rulerBottom - band.y - band.h - 3.0f}, TextStyle::Caption,
+                                TextTone::Accent, TextAlign::Start));
+        }
+        const float unit = pixelsPerBeat_ * static_cast<float>(s.unit());
+        if (unit >= 10.0f && bar < project().bars) {
+            for (int b = 1; b < s.numerator; ++b)
+                list.add(theme.ink({x + static_cast<float>(b) * unit, rulerBottom - 7.0f, 1.0f, 5.0f},
                                    Shape::Rounded, TextTone::Muted, true, 0.6f));
+        }
+    });
+    // With the lanes hidden, a dot on the ruler at each tempo change
+    if (!timingShown_) {
+        for (const audio::TempoPoint &p : timing.points()) {
+            const float x = beatX(p.beat);
+            if (p.beat > 0.0 && x >= ruler_.x && x <= ruler_.x + ruler_.w)
+                list.add(theme.accent({x - 3.0f, rulerBottom - 6.0f, 6.0f, 6.0f}, Shape::Circle, 0.8f));
         }
     }
     list.popClip();
 
+    if (timingShown_)
+        timing_->drawLanes(list, theme);
+
     // The lanes, in one well
     list.add(theme.surface(well_, Shape::Soft, Elevation::Inset, 0.6f));
     list.pushClip(well_.inset(2.0f));
-    for (int bar = firstBar; bar <= lastBar; ++bar) {
-        const float x = beatX(static_cast<double>(bar) * beatsPerBar);
+    forEachBarLine([&](int bar, float x, const audio::Signature &s) {
         list.add(theme.ink({x, well_.y, 1.0f, well_.h}, Shape::Rounded, TextTone::Muted, true, 0.28f));
-        if (pixelsPerBeat_ >= 14.0f && bar < project().bars) {
-            for (int b = 1; b < beatsPerBar; ++b)
-                list.add(theme.ink({x + static_cast<float>(b) * pixelsPerBeat_, well_.y, 1.0f, well_.h}, Shape::Rounded,
+        const float unit = pixelsPerBeat_ * static_cast<float>(s.unit());
+        if (unit >= 14.0f && bar < project().bars) {
+            for (int b = 1; b < s.numerator; ++b)
+                list.add(theme.ink({x + static_cast<float>(b) * unit, well_.y, 1.0f, well_.h}, Shape::Rounded,
                                    TextTone::Muted, true, 0.1f));
         }
-    }
+    });
     const int tracks = static_cast<int>(project().tracks.size());
     for (int i = 0; i < tracks; ++i) {
         if (hidden(i))
@@ -1312,6 +1372,24 @@ void ArrangementView::draw(DrawList &list, const Theme &theme) const
     if (!lifted)
         drawLaneHeaders(list, theme);
     list.popClip();
+    if (timingShown_)
+        timing_->drawHeaders(list, theme);
+
+    // The corner chip: the tempo and signature at the playhead, and whether the lanes are shown
+    {
+        const Rect chip = timingChip();
+        const double at = transport_.position ? std::max(0.0, transport_.position()) : 0.0;
+        const audio::TempoMap &timing = project().timing;
+        const audio::Signature &s = timing.signatureAt(at);
+        list.add(theme.surface(chip, Shape::Pill, chipHovered_ ? Elevation::Raised : Elevation::Inset, chipHovered_ ? 0.6f : 0.35f,
+                               chipHovered_ ? Finish::Convex : Finish::Flat));
+        list.add(theme.text("Tempo", {chip.x + 12.0f, chip.y, 60.0f, chip.h}, TextStyle::Caption, TextTone::Muted, TextAlign::Start));
+        list.add(theme.text(format("%.1f BPM", timing.bpmAt(at)) + "   " + std::to_string(s.numerator) + "/" + std::to_string(s.denominator),
+                            {chip.x + 62.0f, chip.y, chip.w - 90.0f, chip.h}, TextStyle::Caption,
+                            timingShown_ ? TextTone::Accent : TextTone::Secondary, TextAlign::Start));
+        drawIcon(list, theme, timingShown_ ? Icon::Up : Icon::ChevronDown, {chip.x + chip.w - 26.0f, chip.y + 4.0f, 16.0f, chip.h - 8.0f},
+                 chipHovered_ ? TextTone::Accent : TextTone::Secondary);
+    }
 
     // The dragged track's preview: its header lifted above the others, following the mouse
     if (reorderFrom_ >= 0 && reorderMoved_ && static_cast<size_t>(reorderFrom_) < headers_.size()) {
@@ -1379,12 +1457,13 @@ double ArrangementView::laneSnap(double beat, bool free) const
     if (free)
         return beat;
     // The finest of a bar, a beat, a half and a quarter whose lines stay at least 12 pixels apart
-    double step = std::max(1, project().beatsPerBar);
+    double step = 0.0; // a bar
     for (double finer : {1.0, 0.5, 0.25}) {
         if (finer * pixelsPerBeat_ >= 12.0)
             step = finer;
     }
-    return std::clamp(std::round(beat / step) * step, 0.0, project().lengthBeats());
+    const double snapped = step > 0.0 ? std::round(beat / step) * step : project().timing.nearestBar(beat);
+    return std::clamp(snapped, 0.0, project().lengthBeats());
 }
 
 const audio::AutomationLane *ArrangementView::laneOf(int track, const AutomationRow &row) const
@@ -1695,6 +1774,21 @@ bool ArrangementView::handleLaneInput(const Input &input)
     return true;
 }
 
+void ArrangementView::showTiming(bool shown)
+{
+    if (shown == timingShown_)
+        return;
+    timingShown_ = shown;
+    Component::treeChanged(); // the lanes take room or give it back: lay out again
+    if (transport_.timingShown)
+        transport_.timingShown(shown);
+}
+
+Rect ArrangementView::timingChip() const
+{
+    return {rect_.x + 8.0f, rect_.y + 3.0f, kHeaderWidth - 16.0f, kRulerHeight - 6.0f};
+}
+
 Rect ArrangementView::loopBand() const
 {
     return {ruler_.x, ruler_.y + 1.0f, ruler_.w, 10.0f};
@@ -1702,8 +1796,8 @@ Rect ArrangementView::loopBand() const
 
 double ArrangementView::loopSnap(double beat, bool shift) const
 {
-    const double step = shift ? 1.0 : std::max(1, project().beatsPerBar);
-    return std::clamp(std::round(beat / step) * step, 0.0, project().lengthBeats());
+    const double snapped = shift ? std::round(beat) : project().timing.nearestBar(beat);
+    return std::clamp(snapped, 0.0, project().lengthBeats());
 }
 
 }

@@ -138,7 +138,7 @@ std::string describeEffects(const std::vector<audio::DeviceSetting> &a, const st
 
 bool sameContent(const Project &a, const Project &b)
 {
-    if (a.name != b.name || a.tempo != b.tempo || a.beatsPerBar != b.beatsPerBar || a.bars != b.bars ||
+    if (a.name != b.name || a.timing != b.timing || a.bars != b.bars ||
         a.masterEffects != b.masterEffects || a.masterVolume != b.masterVolume ||
         a.masterAutomation != b.masterAutomation || a.exportPresets != b.exportPresets ||
         a.exportMetadata != b.exportMetadata || a.tracks.size() != b.tracks.size())
@@ -225,7 +225,7 @@ bool sameSavedTrack(const Track &a, const Track &b)
 
 bool sameSaved(const Project &a, const Project &b)
 {
-    if (a.name != b.name || a.tempo != b.tempo || a.beatsPerBar != b.beatsPerBar || a.bars != b.bars ||
+    if (a.name != b.name || a.timing != b.timing || a.bars != b.bars ||
         a.hasLoop() != b.hasLoop() || a.masterEffects.size() != b.masterEffects.size() || a.masterVolume != b.masterVolume ||
         a.masterAutomation != b.masterAutomation ||
         a.exportPresets != b.exportPresets || a.exportMetadata != b.exportMetadata || a.tracks.size() != b.tracks.size())
@@ -274,9 +274,11 @@ std::string describeChange(const Project &a, const Project &b)
         if (a.tracks[i].id != b.tracks[i].id)
             return "Move track";
     }
-    if (a.tempo != b.tempo)
+    if (a.timing.points() != b.timing.points())
         return "Change tempo";
-    if (a.name != b.name || a.beatsPerBar != b.beatsPerBar || a.bars != b.bars)
+    if (a.timing.signatures() != b.timing.signatures())
+        return "Change time signature";
+    if (a.name != b.name || a.bars != b.bars)
         return "Project settings";
 
     if (a.masterEffects != b.masterEffects)
@@ -417,8 +419,7 @@ Project rootOf(const Project &p)
 {
     Project r;
     r.name = p.name;
-    r.tempo = p.tempo;
-    r.beatsPerBar = p.beatsPerBar;
+    r.timing = p.timing;
     r.bars = p.bars;
     r.loopStart = p.loopStart;
     r.loopEnd = p.loopEnd;
@@ -442,7 +443,7 @@ bool identicalShell(const Track &a, const Track &b)
 // Whether the project's own fields (all but the tracks and the selection) differ from the shell's
 bool fieldsDiffer(const Project &project, const Project &shell, bool master)
 {
-    return project.name != shell.name || project.tempo != shell.tempo || project.beatsPerBar != shell.beatsPerBar ||
+    return project.name != shell.name || project.timing != shell.timing ||
            project.bars != shell.bars || project.exportPresets != shell.exportPresets ||
            project.exportMetadata != shell.exportMetadata || (master && (project.masterEffects != shell.masterEffects || project.masterVolume != shell.masterVolume ||
                                                     project.masterAutomation != shell.masterAutomation));
@@ -506,15 +507,15 @@ HistoryRestore History::makePlan(const Snapshot &from, const Snapshot &to, const
     bool structural = from.tracks.size() != to.tracks.size();
     for (size_t i = 0; i < from.tracks.size() && !structural; ++i)
         structural = from.tracks[i].shell->id != to.tracks[i].shell->id || from.tracks[i].shell->kind != to.tracks[i].shell->kind;
-    plan.tempo = from.shell.tempo != to.shell.tempo;
+    plan.timing = from.shell.timing != to.shell.timing;
     if (structural) {
         plan.structural = true;
-        plan.tempo = true;
+        plan.timing = true;
         plan.project = unpack(to);
         return plan;
     }
     plan.project = rootOf(to.shell);
-    plan.settings = from.shell.name != to.shell.name || from.shell.beatsPerBar != to.shell.beatsPerBar || from.shell.bars != to.shell.bars;
+    plan.settings = from.shell.name != to.shell.name || from.shell.bars != to.shell.bars;
     plan.presets = from.shell.exportPresets != to.shell.exportPresets;
     plan.metadata = from.shell.exportMetadata != to.shell.exportMetadata;
     plan.master = from.shell.masterEffects != to.shell.masterEffects || from.shell.masterVolume != to.shell.masterVolume ||
@@ -598,8 +599,7 @@ void History::sync(const Project &project, const std::vector<char> &moved, bool 
     Project &shell = state_.shell;
     if (fields) {
         shell.name = project.name;
-        shell.tempo = project.tempo;
-        shell.beatsPerBar = project.beatsPerBar;
+        shell.timing = project.timing;
         shell.bars = project.bars;
         shell.loopStart = project.loopStart;
         shell.loopEnd = project.loopEnd;

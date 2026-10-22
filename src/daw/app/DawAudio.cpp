@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -236,7 +237,7 @@ void DawApp::importAudioFiles(const std::vector<std::string> &files, int track)
             errors += (errors.empty() ? "" : "\n") + error;
             continue;
         }
-        Clip c(fs::path(file).stem().string(), beat, data->seconds() / project().secondsPerBeat());
+        Clip c(fs::path(file).stem().string(), beat, project().beatsFor(beat, data->seconds()));
         c.audioFile = file;
         auto &clips = session_.store().editTrack(index).clips;
         clips.push_back(c);
@@ -244,9 +245,8 @@ void DawApp::importAudioFiles(const std::vector<std::string> &files, int track)
         beat += c.length;
     }
     // The timeline grows to hold them
-    const double bar = std::max(1, project().beatsPerBar);
     if (beat > project().lengthBeats())
-        session_.store().edit().bars = static_cast<int>(std::ceil(beat / bar)) + 1;
+        session_.store().edit().bars = project().timing.barAt(beat - 1e-9) + 2;
     if (added >= 0)
         session_.store().select(index, added);
     if (!errors.empty())
@@ -426,7 +426,7 @@ void DawApp::openClipDialog()
         const Track *t = project().track(track);
         return t && index >= 0 && static_cast<size_t>(index) < t->clips.size() ? &session_.store().editClip(track, index) : nullptr;
     };
-    const double bar = project().beatsPerBar;
+    const audio::BarPosition at = project().timing.position(clip->start);
     Dialog &dialog = Dialog::open(gui_, "Clip", "Where it starts on the timeline and how long it is.");
     dialog.setWidth(420.0f);
     Container &body = dialog.body();
@@ -436,18 +436,22 @@ void DawApp::openClipDialog()
         if (Clip *c = target(); c && !text.empty())
             c->name = text;
     });
-    // The start as a bar and a beat in it (from 1), keeping any fraction of a beat
+    // The start as a bar and a beat in it (from 1; a beat is the signature's unit), keeping any
+    // fraction of a beat
     auto setStart = [this, target](double startBar, double beat) {
         if (Clip *c = target()) {
-            const double fraction = c->start - std::floor(c->start);
-            const double start = (startBar - 1.0) * project().beatsPerBar + (beat - 1.0) + fraction;
+            const audio::TempoMap &timing = project().timing;
+            const double fraction = timing.position(c->start).fraction;
+            const int bar = std::max(0, static_cast<int>(startBar) - 1);
+            const audio::Signature &s = timing.signatureAtBar(bar);
+            const double unit = std::clamp(beat, 1.0, static_cast<double>(s.numerator)) - 1.0;
+            const double start = timing.barStart(bar) + (unit + fraction) * s.unit();
             c->start = std::clamp(start, 0.0, std::max(0.0, project().lengthBeats() - c->length));
         }
     };
-    auto &barStepper = labelled(body, "Bar").add<Stepper>(static_cast<float>(std::floor(clip->start / bar)) + 1.0f, 1.0f,
+    auto &barStepper = labelled(body, "Bar").add<Stepper>(static_cast<float>(at.bar + 1), 1.0f,
                                                           static_cast<float>(project().bars), 1.0f);
-    auto &beatStepper = labelled(body, "Beat").add<Stepper>(static_cast<float>(std::fmod(std::floor(clip->start), bar)) + 1.0f, 1.0f,
-                                                            static_cast<float>(bar), 1.0f);
+    auto &beatStepper = labelled(body, "Beat").add<Stepper>(static_cast<float>(at.unit + 1), 1.0f, 16.0f, 1.0f);
     Stepper *barRaw = &barStepper, *beatRaw = &beatStepper;
     barStepper.onChange([setStart, beatRaw](float v) { setStart(v, beatRaw->value()); });
     beatStepper.onChange([setStart, barRaw](float v) { setStart(barRaw->value(), v); });
@@ -1045,6 +1049,247 @@ void DawApp::buildInputSettings(Container &body)
 
 // Project dialogs
 
+namespace {
+
+// A time signature's denominators, as the dialogs offer them
+const int kBeatUnits[] = {2, 4, 8, 16};
+const std::vector<std::string> kBeatUnitNames = {"Half note (/2)", "Quarter note (/4)", "Eighth note (/8)", "Sixteenth note (/16)"};
+
+int beatUnitIndex(int denominator)
+{
+    for (int i = 0; i < 4; ++i) {
+        if (kBeatUnits[i] == denominator)
+            return i;
+    }
+    return 1;
+}
+
+}
+
+// The tempo map's menus and editors (from the arrangement's tempo and signature lanes, and the
+// transport bar)
+
+namespace {
+
+// The signatures offered with one click
+const audio::Signature kCommonSignatures[] = {{0, 2, 4}, {0, 3, 4}, {0, 4, 4}, {0, 5, 4}, {0, 6, 8}, {0, 7, 8}, {0, 9, 8}, {0, 12, 8}};
+
+std::string signatureName(int numerator, int denominator)
+{
+    return std::to_string(numerator) + "/" + std::to_string(denominator);
+}
+
+}
+
+void DawApp::setTempoAt(double beat, double bpm)
+{
+    audio::TempoMap timing = project().timing;
+    std::vector<audio::TempoPoint> points = timing.points();
+    points[timing.pointAt(beat)].bpm = bpm;
+    timing.setPoints(std::move(points));
+    session_.store().setTiming(timing);
+}
+
+void DawApp::setSignatureAt(int bar, int numerator, int denominator)
+{
+    audio::TempoMap timing = project().timing;
+    std::vector<audio::Signature> signatures = timing.signatures();
+    auto at = std::find_if(signatures.begin(), signatures.end(), [bar](const audio::Signature &s) { return s.bar == bar; });
+    if (at != signatures.end()) {
+        at->numerator = numerator;
+        at->denominator = denominator;
+    } else {
+        signatures.push_back({bar, numerator, denominator});
+    }
+    timing.setSignatures(std::move(signatures));
+    session_.store().setTiming(timing);
+}
+
+void DawApp::openTempoMenu(int point, Vec2 at)
+{
+    const auto &points = project().timing.points();
+    if (point < 0 || static_cast<size_t>(point) >= points.size())
+        return;
+    // Each edit finds the point again by its beat, in case the map changed while the menu was open
+    const double beat = points[static_cast<size_t>(point)].beat;
+    auto change = [this, beat](auto &&f) {
+        audio::TempoMap timing = project().timing;
+        std::vector<audio::TempoPoint> edited = timing.points();
+        const size_t i = timing.pointAt(beat);
+        if (edited[i].beat != beat)
+            return;
+        f(edited, i);
+        timing.setPoints(std::move(edited));
+        session_.store().setTiming(timing);
+    };
+    const bool last = static_cast<size_t>(point) + 1 == points.size();
+    std::vector<MenuItem> items{
+        MenuItem::toggle("Ramp to the next point", [this, beat] {
+            const audio::TempoMap &timing = project().timing;
+            return timing.points()[timing.pointAt(beat)].ramp;
+        }, [change] { change([](std::vector<audio::TempoPoint> &p, size_t i) { p[i].ramp = !p[i].ramp; }); }).when([last] { return !last; }),
+        MenuItem::item("Set the tempo...", [this, point] { openTempoDialog(point); }),
+        MenuItem::item("Half the tempo", [change] { change([](std::vector<audio::TempoPoint> &p, size_t i) { p[i].bpm /= 2.0; }); }),
+        MenuItem::item("Double the tempo", [change] { change([](std::vector<audio::TempoPoint> &p, size_t i) { p[i].bpm *= 2.0; }); }),
+        MenuItem::divider(),
+        MenuItem::item("Move the playhead here", [this, beat] { seekBeats(audio_, beat); }),
+    };
+    if (point > 0) {
+        items.push_back(MenuItem::divider());
+        items.push_back(MenuItem::item("Delete point", [change] {
+            change([](std::vector<audio::TempoPoint> &p, size_t i) { p.erase(p.begin() + static_cast<std::ptrdiff_t>(i)); });
+        }, "edit.delete"));
+    }
+    openContextMenu(gui_, items, at);
+}
+
+void DawApp::openTempoDialog(int point)
+{
+    const auto &points = project().timing.points();
+    if (point < 0 || static_cast<size_t>(point) >= points.size())
+        return;
+    const audio::TempoPoint now = points[static_cast<size_t>(point)];
+    // Typed: a number from 20 to 400 changes the point as it is typed; anything else waits
+    auto apply = [this, beat = now.beat](const std::string &text) {
+        char *end = nullptr;
+        const double bpm = std::strtod(text.c_str(), &end);
+        if (end == text.c_str() || bpm < audio::TempoMap::kMinBpm || bpm > audio::TempoMap::kMaxBpm)
+            return;
+        const audio::TempoMap &timing = project().timing;
+        if (timing.points()[timing.pointAt(beat)].beat == beat)
+            setTempoAt(beat, std::round(bpm * 100.0) / 100.0);
+    };
+    Dialog &dialog = Dialog::open(gui_, "Tempo", "The tempo from " + barsBeats(now.beat, project().timing) +
+                                                     ". Type a number from 20 to 400.");
+    dialog.setWidth(380.0f);
+    Container &body = dialog.body();
+    auto &field = labelled(body, "BPM").add<TextField>("120");
+    field.setText(format("%g", now.bpm)).setSize(Size::Small);
+    field.onChange(apply);
+    field.onSubmit([apply, &dialog](const std::string &text) {
+        apply(text);
+        dialog.close();
+    });
+    field.focus();
+    field.selectAll();
+    if (static_cast<size_t>(point) + 1 < points.size()) {
+        body.add<Checkbox>("Ramp to the next point", now.ramp, [this, beat = now.beat](bool on) {
+            audio::TempoMap timing = project().timing;
+            std::vector<audio::TempoPoint> edited = timing.points();
+            const size_t i = timing.pointAt(beat);
+            if (edited[i].beat != beat)
+                return;
+            edited[i].ramp = on;
+            timing.setPoints(std::move(edited));
+            session_.store().setTiming(timing);
+        }).setSize(Size::Small);
+    }
+    dialog.addButton("Done", {}, true);
+}
+
+void DawApp::openSignatureMenu(int signature, Vec2 at)
+{
+    const auto &signatures = project().timing.signatures();
+    if (signature < 0 || static_cast<size_t>(signature) >= signatures.size())
+        return;
+    const int bar = signatures[static_cast<size_t>(signature)].bar;
+    std::vector<MenuItem> items;
+    // The common signatures, ticked when it is one
+    for (const audio::Signature &s : kCommonSignatures) {
+        items.push_back(MenuItem::toggle(signatureName(s.numerator, s.denominator), [this, bar, s] {
+            const audio::Signature &now = project().timing.signatureAtBar(bar);
+            return now.numerator == s.numerator && now.denominator == s.denominator;
+        }, [this, bar, s] { setSignatureAt(bar, s.numerator, s.denominator); }));
+    }
+    items.push_back(MenuItem::item("Other...", [this, signature] { openSignatureDialog(signature); }));
+    items.push_back(MenuItem::divider());
+    items.push_back(MenuItem::item("Move the playhead here", [this, bar] { seekBeats(audio_, project().timing.barStart(bar)); }));
+    if (signature > 0) {
+        items.push_back(MenuItem::divider());
+        items.push_back(MenuItem::item("Delete change", [this, bar] {
+            audio::TempoMap timing = project().timing;
+            std::vector<audio::Signature> edited = timing.signatures();
+            edited.erase(std::remove_if(edited.begin(), edited.end(), [bar](const audio::Signature &s) { return s.bar == bar; }),
+                         edited.end());
+            timing.setSignatures(std::move(edited));
+            session_.store().setTiming(timing);
+        }, "edit.delete"));
+    }
+    openContextMenu(gui_, items, at);
+}
+
+void DawApp::openSignatureDialog(int signature)
+{
+    const auto &signatures = project().timing.signatures();
+    if (signature < 0 || static_cast<size_t>(signature) >= signatures.size())
+        return;
+    const audio::Signature now = signatures[static_cast<size_t>(signature)];
+    auto current = [this, bar = now.bar] { return project().timing.signatureAtBar(bar); };
+    auto change = [this, bar = now.bar](int numerator, int denominator) { setSignatureAt(bar, numerator, denominator); };
+    Dialog &dialog = Dialog::open(gui_, "Time signature", "From bar " + std::to_string(now.bar + 1) + " on.");
+    dialog.setWidth(420.0f);
+    Container &body = dialog.body();
+    auto &beats = labelled(body, "Beats per bar")
+                      .add<Stepper>(static_cast<float>(now.numerator), 1.0f, 16.0f, 1.0f,
+                                    [change, current](float n) { change(static_cast<int>(n), current().denominator); });
+    beats.setSize(Size::Small);
+    auto &unit = labelled(body, "Beat unit")
+                     .add<Dropdown>(gui_, kBeatUnitNames, beatUnitIndex(now.denominator),
+                                    [change, current](int i) { change(current().numerator, kBeatUnits[i]); });
+    unit.setSize(Size::Small);
+    // The common ones in one click (the controls above follow)
+    auto &common = labelled(body, "Common").add<Container>(Direction::Row);
+    for (const audio::Signature &s : kCommonSignatures) {
+        Stepper *stepper = &beats;
+        Dropdown *dropdown = &unit;
+        common.add<Button>([change, s, stepper, dropdown] {
+            change(s.numerator, s.denominator);
+            stepper->setValue(static_cast<float>(s.numerator));
+            dropdown->setSelected(beatUnitIndex(s.denominator));
+        }).setLabel(signatureName(s.numerator, s.denominator)).setSize(Size::Small);
+    }
+    dialog.addButton("Done", {}, true);
+}
+
+void DawApp::openTimingLaneMenu(Vec2 at, double beat, bool tempo)
+{
+    std::vector<MenuItem> items;
+    if (tempo) {
+        items.push_back(MenuItem::item("Add a tempo change here", [this, beat] {
+            audio::TempoMap timing = project().timing;
+            std::vector<audio::TempoPoint> points = timing.points();
+            if (std::none_of(points.begin(), points.end(), [beat](const audio::TempoPoint &p) { return p.beat == beat; }))
+                points.push_back({beat, timing.bpmAt(beat), false});
+            timing.setPoints(std::move(points));
+            session_.store().setTiming(timing);
+        }).when([beat] { return beat > 0.0; }));
+        items.push_back(MenuItem::item("One tempo for the whole song", [this] {
+            audio::TempoMap timing = project().timing;
+            timing.setPoints({timing.points().front()});
+            std::vector<audio::TempoPoint> one = timing.points();
+            one.front().ramp = false;
+            timing.setPoints(std::move(one));
+            session_.store().setTiming(timing);
+        }).when([this] { return project().timing.points().size() > 1; }));
+    } else {
+        const int bar = project().timing.barAt(beat);
+        // A change at this bar, as one of the common signatures
+        for (const audio::Signature &s : kCommonSignatures) {
+            items.push_back(MenuItem::item("From bar " + std::to_string(bar + 1) + ": " + signatureName(s.numerator, s.denominator),
+                                           [this, bar, s] { setSignatureAt(bar, s.numerator, s.denominator); })
+                                .when([bar] { return bar > 0; }));
+        }
+        items.push_back(MenuItem::item("One signature for the whole song", [this] {
+            audio::TempoMap timing = project().timing;
+            timing.setSignatures({timing.firstSignature()});
+            session_.store().setTiming(timing);
+        }).when([this] { return project().timing.signatures().size() > 1; }));
+    }
+    items.push_back(MenuItem::divider());
+    items.push_back(MenuItem::item("Hide the tempo and signature lanes", [this] { arrangement_->showTiming(false); }, "view.timing"));
+    openContextMenu(gui_, items, at);
+}
+
 void DawApp::openProjectSettings()
 {
     Dialog &dialog = Dialog::open(gui_, "Project settings");
@@ -1054,15 +1299,31 @@ void DawApp::openProjectSettings()
     name.setText(project().name);
     name.setSize(Size::Small).setGrow(1.0f);
     name.onChange([this](const std::string &text) { session_.store().edit().name = text; });
-    audio::Transport &transport = audio_.transport();
+    // The opening tempo and time signature (later changes are on the arrangement's tempo and
+    // signature lanes)
     labelled(body, "Tempo")
-        .add<Stepper>(static_cast<float>(transport.tempo()), 20.0f, 400.0f, 1.0f,
-                      [&transport](float bpm) { transport.setTempo(bpm); })
+        .add<Stepper>(static_cast<float>(project().timing.tempo()), 20.0f, 400.0f, 1.0f, [this](float bpm) {
+            audio::TempoMap timing = project().timing;
+            timing.setTempo(bpm);
+            session_.store().setTiming(timing);
+        })
         .setSuffix(" BPM")
         .setSize(Size::Small);
+    auto setSignature = [this](int numerator, int denominator) {
+        audio::TempoMap timing = project().timing;
+        std::vector<audio::Signature> signatures = timing.signatures();
+        signatures.front().numerator = numerator;
+        signatures.front().denominator = denominator;
+        timing.setSignatures(std::move(signatures));
+        session_.store().setTiming(timing);
+    };
     labelled(body, "Beats per bar")
-        .add<Stepper>(static_cast<float>(project().beatsPerBar), 1.0f, 16.0f, 1.0f,
-                      [this](float beats) { session_.store().edit().beatsPerBar = static_cast<int>(beats); })
+        .add<Stepper>(static_cast<float>(project().timing.firstSignature().numerator), 1.0f, 16.0f, 1.0f,
+                      [this, setSignature](float beats) { setSignature(static_cast<int>(beats), project().timing.firstSignature().denominator); })
+        .setSize(Size::Small);
+    labelled(body, "Beat unit")
+        .add<Dropdown>(gui_, kBeatUnitNames, beatUnitIndex(project().timing.firstSignature().denominator),
+                       [this, setSignature](int i) { setSignature(project().timing.firstSignature().numerator, kBeatUnits[i]); })
         .setSize(Size::Small);
     labelled(body, "Length")
         .add<Stepper>(static_cast<float>(project().bars), 4.0f, 999.0f, 4.0f,
@@ -1098,6 +1359,9 @@ void DawApp::openNewProjectDialog()
     labelled(body, "Beats per bar")
         .add<Stepper>(static_cast<float>(options->beatsPerBar), 1.0f, 16.0f, 1.0f,
                       [options](float beats) { options->beatsPerBar = static_cast<int>(beats); })
+        .setSize(Size::Small);
+    labelled(body, "Beat unit")
+        .add<Dropdown>(gui_, kBeatUnitNames, beatUnitIndex(options->beatUnit), [options](int i) { options->beatUnit = kBeatUnits[i]; })
         .setSize(Size::Small);
     labelled(body, "Length")
         .add<Stepper>(static_cast<float>(options->bars), 4.0f, 999.0f, 4.0f,

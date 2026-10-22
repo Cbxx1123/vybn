@@ -89,7 +89,7 @@ DawApp::DawApp(env::Environment &env, UISystem &ui, audio::AudioSystem &audio)
                       [this](std::string message) { notify(std::move(message)); }});
     applyAudioSettings(); // the devices from the settings, before the device starts
     syncInputs();
-    audio.transport().setTempo(project().tempo);
+    audio.transport().setTiming(project().timing);
     syncTracks(); // the demo project's tracks join the graph before the device starts
     // The keyboard actions and the user's changes to their keys, before the menus show them
     defineActions(ui_.keymap());
@@ -266,8 +266,6 @@ void DawApp::buildBody()
         }
         for (uint32_t c = 0; c < 2; ++c)
             levels_.peak[c] = audio_.takePeak(c);
-        metronome_.beatsPerBar = project().beatsPerBar;
-        session_.store().setTempo(audio_.transport().tempo()); // the tempo is edited on the transport
         // The store's safety net (only with VYBN_VERIFY_STORE=1): changes its revisions didn't count
         if (env_.frame() % 60 == 0)
             session_.verify();
@@ -331,7 +329,10 @@ void DawApp::buildBody()
         return peak;
     };
     record.notice = [this] { return notice(); };
-    body.add<TransportBar>(gui_, audio_, metronome_, session_.store(), levels_, record);
+    body.add<TransportBar>(gui_, audio_, metronome_, session_.store(), levels_, record, [this] {
+        const audio::TempoMap &timing = project().timing;
+        openSignatureDialog(static_cast<int>(timing.signatureIndexAt(timing.barAt(transportBeats(audio_)))));
+    });
 
     // The arrangement, the mixer, the editor and the effects are dock panels: each can be torn off
     // into a window of its own and docked back anywhere in the grid, which fills the window
@@ -373,8 +374,19 @@ void DawApp::buildBody()
         return device ? device->params() : std::vector<audio::DeviceParam>{};
     };
     hooks.automationMenu = [this](int track, Vec2 at) { openAutomationMenu(track, at); };
+    hooks.tempoMenu = [this](int point, Vec2 at) { openTempoMenu(point, at); };
+    hooks.signatureMenu = [this](int signature, Vec2 at) { openSignatureMenu(signature, at); };
+    hooks.editTempo = [this](int point) { openTempoDialog(point); };
+    hooks.editSignature = [this](int signature) { openSignatureDialog(signature); };
+    hooks.timingLaneMenu = [this](Vec2 at, double beat, bool tempo) { openTimingLaneMenu(at, beat, tempo); };
+    hooks.timingShown = [this](bool shown) {
+        settings_.timingLanes = shown;
+        std::string error;
+        settings_.save(error);
+    };
     arrangement_ = &arrangementPanel_->add<ArrangementView>(session_.store(), hooks, &folds_);
     arrangement_->setGrow(1.0f);
+    arrangement_->showTiming(settings_.timingLanes);
     ArrangementView &arrangement = *arrangement_;
     tools.add<SmallToggle>("Follow", [&arrangement] { return arrangement.follow(); },
                            [&arrangement](bool on) { arrangement.setFollow(on); });
@@ -523,14 +535,16 @@ void DawApp::buildBody()
     rollTools.add<ScrubField>("Start", [this, first] {
         const Note *n = first();
         const Clip *c = pianoRoll_->clip();
-        return n && c ? barsBeats(c->start + n->start, std::max(1, project().beatsPerBar)) : std::string();
+        return n && c ? barsBeats(c->start + n->start, project().timing) : std::string();
     }, [this](int steps, bool fine) { pianoRoll_->nudgeSelection(steps * pianoRoll_->snap() / (fine ? 4.0 : 1.0)); }, selected)
         .setValueWidth(62.0f);
     rollTools.add<ScrubField>("Length", [this, first] {
         const Note *n = first();
         if (!n)
             return std::string();
-        const std::string name = gridName(n->length, std::max(1, project().beatsPerBar));
+        const Clip *c = pianoRoll_->clip();
+        const double bar = project().timing.signatureAt(c ? c->start + n->start : 0.0).barLength();
+        const std::string name = gridName(n->length, bar);
         return name.find("beats") == std::string::npos ? name : format("%.3g", n->length);
     }, [this](int steps, bool fine) { pianoRoll_->resizeSelection(steps * pianoRoll_->snap() / (fine ? 4.0 : 1.0)); }, selected)
         .setValueWidth(44.0f);
@@ -850,7 +864,7 @@ void DawApp::stepsDemo()
     // The track is made here, not through addTrack: that posts the change and then asks for an instrument
     Track &track = session_.store().editTrack(index);
     track.name = "Drums";
-    track.clips.push_back(Clip("Beat", 0.0, 2.0 * std::max(1, project().beatsPerBar), notes));
+    track.clips.push_back(Clip("Beat", 0.0, project().timing.barStart(2), notes));
     session_.store().select(index, static_cast<int>(track.clips.size()) - 1);
     steps_->selectRow(36);
     setStepMode(true);
@@ -953,8 +967,7 @@ void DawApp::replaceProject(Project project, std::string path, const Project *sa
     audio::Transport &transport = audio_.transport();
     transport.stop();
     transport.locate(0);
-    transport.setTempo(project.tempo);
-    project.tempo = transport.tempo(); // as the transport clamped it
+    transport.setTiming(project.timing);
 
     bridge_->dropAll();
     // Sound files only the old project used can go
@@ -1008,8 +1021,6 @@ void DawApp::redo()
 void DawApp::restore(HistoryRestore plan)
 {
     restoring_ = false;
-    if (plan.tempo)
-        audio_.transport().setTempo(plan.project.tempo);
     session_.restoreState(std::move(plan));
     syncTracks();
 }
@@ -1325,6 +1336,8 @@ void DawApp::buildMenus()
         MenuItem::divider(),
         MenuItem::item("Fold all groups", [&arrangement] { arrangement.foldAll(); }, "view.foldAll"),
         MenuItem::item("Unfold all groups", [&arrangement] { arrangement.unfoldAll(); }, "view.unfoldAll"),
+        MenuItem::toggle("Tempo and signature lanes", [&arrangement] { return arrangement.timingShown(); },
+                         [&arrangement] { arrangement.showTiming(!arrangement.timingShown()); }, "view.timing"),
         MenuItem::divider(),
         MenuItem::toggle("Appearance", [this] { return appearanceOpen(); }, [this] { showAppearance(); },
                          "view.appearance"),

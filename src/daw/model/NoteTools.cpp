@@ -1014,11 +1014,11 @@ double autoGrid(double pixelsPerBeat, double minPixels, bool triplet)
     return grid;
 }
 
-std::string gridName(double beats, int beatsPerBar)
+std::string gridName(double beats, double barLength)
 {
     if (beats <= 0.0)
         return "Off";
-    if (std::fabs(beats - beatsPerBar) < 1e-9)
+    if (std::fabs(beats - barLength) < 1e-9)
         return "1 bar";
     // A whole note is four beats; a triplet is two thirds of the plain value
     for (bool triplet : {false, true}) {

@@ -123,7 +123,7 @@ OfflineEngine::OfflineEngine(env::Environment &env, plugin::PluginManager *plugi
     midi_ = &audio_.add<audio::MidiHub>();
     bridge_ = std::make_unique<AudioBridge>(audio_, *midi_, plugins_, library_, sounds_);
     audio_.masterGain().set(masterGain);
-    audio_.transport().setTempo(store_.project().tempo);
+    audio_.transport().setTiming(store_.project().timing);
     audio_.masterEffects().setOffline(true);
     audio_.prepareOffline(sampleRate);
 }
@@ -203,8 +203,8 @@ void OfflineEngine::beginRender(double startBeat, const std::vector<int> &tracks
     for (uint32_t done = 0; done < rate_ / 4; done += 1024)
         audio_.renderOffline(settle.data(), 1024, rate_);
 
-    const double seconds = startBeat * project.secondsPerBeat();
-    transport.locate(static_cast<uint64_t>(std::llround(seconds * rate_)));
+    transport.setTiming(project.timing);
+    transport.locate(transport.sampleOf(startBeat, rate_));
     transport.play();
 }
 
@@ -762,10 +762,10 @@ void writeMidiJob(std::shared_ptr<const Project> project, MidiExportOptions opti
     storeReport(*results, output, std::move(report));
 }
 
-// Frames of a file at `beats` from its pass's start
-uint64_t framesAt(double beats, double secondsPerBeat, double rate)
+// Frames of `seconds`
+uint64_t framesAt(double seconds, double rate)
 {
-    const long long frames = std::llround(beats * secondsPerBeat * rate);
+    const long long frames = std::llround(seconds * rate);
     return frames < 0 ? 0 : static_cast<uint64_t>(frames);
 }
 
@@ -1006,15 +1006,16 @@ void RenderJob::plan()
     }
 
     // Each output's range and tail, in frames from its pass's start
-    const double secondsPerBeat = project.secondsPerBeat();
+    const audio::TempoMap &timing = project.timing;
     for (PlannedOutput &o : outputs_) {
         if (o.skipped || o.midi)
             continue;
         const PlannedPass &pass = passes_[static_cast<size_t>(o.pass)];
         const double rate = static_cast<double>(pass.rate);
-        o.from = framesAt(o.startBeat - pass.startBeat, secondsPerBeat, rate);
-        o.to = framesAt(o.endBeat - pass.startBeat, secondsPerBeat, rate);
-        o.tail = framesAt(std::max(0.0, o.target.tailSeconds) / secondsPerBeat, secondsPerBeat, rate);
+        const double passStart = timing.secondsAt(pass.startBeat);
+        o.from = framesAt(timing.secondsAt(o.startBeat) - passStart, rate);
+        o.to = framesAt(timing.secondsAt(o.endBeat) - passStart, rate);
+        o.tail = framesAt(std::max(0.0, o.target.tailSeconds), rate);
     }
 
     for (size_t i = 0; i < outputs_.size(); ++i) {
@@ -1115,7 +1116,7 @@ void RenderJob::startMidi(size_t index)
     options.tracks = o.tracks;
     options.fromBeat = o.startBeat;
     options.toBeat = o.endBeat;
-    const double seconds = (o.endBeat - o.startBeat) * snapshot_.secondsPerBeat();
+    const double seconds = snapshot_.timing.secondsAt(o.endBeat) - snapshot_.timing.secondsAt(o.startBeat);
     status_ = "Finishing " + o.name + " MIDI";
     std::shared_ptr<RenderResults> results = results_;
     env::runJob(env_, env::Lane::Background,

@@ -180,11 +180,26 @@ void AudioBridge::reconcile(const Project &project)
     tracks_ = std::move(next);
 }
 
+// The tempo points, which place audio clips in time (the signatures don't)
+uint64_t tempoHash(const audio::TempoMap &timing)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (const audio::TempoPoint &p : timing.points()) {
+        mix(h, &p.beat, sizeof(p.beat));
+        mix(h, &p.bpm, sizeof(p.bpm));
+        mix(h, &p.ramp, sizeof(p.ramp));
+    }
+    return h;
+}
+
 void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
 {
     // Every track and clip gets its id first, so the tracks can be matched to the audio side by id
     store.normalizeIds();
     const Project &project = store.project();
+    // The tempo map (published only when it changed)
+    audio_.transport().setTiming(project.timing);
+    const uint64_t tempo = tempoHash(project.timing);
     reconcile(project);
     levels_.resize(tracks_.size());
     // The master effects
@@ -231,18 +246,18 @@ void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
         levels_[i] = std::max(p.takePeak(0), p.takePeak(1));
 
         if (audio::AudioClipPlayer *clips = state.clips) {
-            // The clips are looked at again only when the track, the pool or the tempo moved. A clip
+            // The clips are looked at again only when the track, the pool or the tempo map moved. A clip
             // sequence not sent yet (the queue is full) is sent again next frame, as before.
             const uint64_t trackRevision = store.trackRevision(static_cast<int>(i));
             const uint64_t poolVersion = pool_.version();
             if (trackRevision != state.clipsRevision || poolVersion != state.clipsPoolVersion ||
-                project.tempo != state.clipsTempo) {
+                tempo != state.clipsTempo) {
                 const uint64_t hash = hashClips(project, t);
                 if (hash == state.clipHash || clips->setSequence(clipSequenceFor(project, t))) {
                     state.clipHash = hash;
                     state.clipsRevision = trackRevision;
                     state.clipsPoolVersion = poolVersion;
-                    state.clipsTempo = project.tempo;
+                    state.clipsTempo = tempo;
                 }
             }
             clips->monitor = t.armed && t.monitor && t.inputChannel >= 0;
@@ -664,7 +679,8 @@ uint64_t AudioBridge::hashClips(const Project &project, const Track &t) const
         mix(h, c.audioFile.data(), c.audioFile.size());
     }
     // A tempo change moves clips in time; a file finishing loading adds it
-    mix(h, &project.tempo, sizeof(project.tempo));
+    const uint64_t tempo = tempoHash(project.timing);
+    mix(h, &tempo, sizeof(tempo));
     const uint64_t version = pool_.version();
     mix(h, &version, sizeof(version));
     return h;
@@ -690,7 +706,7 @@ std::unique_ptr<audio::ClipSequence> AudioBridge::clipSequenceFor(const Project 
         sequence->regions.push_back(std::move(r));
     }
     sequence->sort();
-    sequence->crossfade(project.tempo);
+    sequence->crossfade(project.timing);
     return sequence;
 }
 

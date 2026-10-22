@@ -263,7 +263,7 @@ void Project::toggleLoop()
         loopEnd = c->start + c->length;
     } else {
         loopStart = 0.0;
-        loopEnd = 4.0 * beatsPerBar;
+        loopEnd = timing.barStart(4);
     }
     looping = true;
 }
@@ -277,7 +277,7 @@ bool Project::splitClip(double beat)
     Clip right = *c;
     right.start = beat;
     right.length = c->length - at;
-    right.offset = c->offset + at * secondsPerBeat();
+    right.offset = c->offset + timing.secondsAt(beat) - timing.secondsAt(c->start);
     right.fadeIn = 0.0;
     right.notes.clear();
     right.controls = cutLanes(c->controls, at);
@@ -307,9 +307,9 @@ void Project::trimStart(Clip &c, double beat, double minimum) const
     start = std::max(0.0, start);
     // An audio clip can't start before its file does
     if (c.hasAudio())
-        start = std::max(start, c.start - c.offset / secondsPerBeat());
+        start = std::max(start, timing.beatAt(timing.secondsAt(c.start) - c.offset));
     const double moved = start - c.start;
-    c.offset = std::max(0.0, c.offset + moved * secondsPerBeat());
+    c.offset = std::max(0.0, c.offset + timing.secondsAt(start) - timing.secondsAt(c.start));
     // Controller curves keep their place: what is before the new start goes, its value stays
     for (ControlLane &lane : c.controls) {
         const float value = lane.valueAt(moved);
@@ -473,13 +473,12 @@ Project newProject(const audio::DeviceSetting &instrument, const NewProjectOptio
     Project p;
     p.exportPresets = defaultExportPresets();
     p.name = options.name.empty() ? "Untitled" : options.name;
-    p.tempo = options.tempo;
-    p.beatsPerBar = std::clamp(options.beatsPerBar, 1, 16);
+    p.timing = audio::TempoMap(options.tempo, options.beatsPerBar, options.beatUnit);
     p.bars = std::clamp(options.bars, 1, 9999);
     if (options.instrumentTrack) {
         p.addTrack(TrackKind::Instrument);
         p.tracks.back().instrument = instrument;
-        p.tracks.back().clips.push_back({"Clip 1", 0.0, 4.0 * p.beatsPerBar});
+        p.tracks.back().clips.push_back({"Clip 1", 0.0, p.timing.barStart(4)});
     }
     if (options.audioTrack)
         p.addTrack(TrackKind::Audio);

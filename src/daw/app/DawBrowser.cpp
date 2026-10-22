@@ -113,7 +113,7 @@ void DawApp::buildBrowser()
     hooks.addSound = [this](const std::string &path) { addSound(path); };
     hooks.soundTarget = [this] {
         const Track *t = project().track(project().selectedTrack);
-        const double bar = std::floor(transportBeats(audio_) / std::max(1, project().beatsPerBar)) + 1.0;
+        const double bar = project().timing.barAt(transportBeats(audio_)) + 1.0;
         const std::string at = format("at bar %.0f", bar);
         return (t && t->kind == TrackKind::Audio ? "to " + t->name : std::string("to a new audio track")) + ", " + at;
     };

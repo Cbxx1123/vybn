@@ -29,8 +29,8 @@ struct HistoryRestore {
     std::string label; // what it undoes or redoes ("Delete notes")
     bool structural = false;
     Project project;
-    bool tempo = false;     // the tempo differs (a structural plan always sets it)
-    bool settings = false;  // name, beats per bar or length differ
+    bool timing = false;    // the tempo map differs (a structural plan always sets it)
+    bool settings = false;  // name or length differ
     bool presets = false;   // export presets differ
     bool metadata = false;  // export details differ
     bool master = false;    // the master's effects differ
@@ -48,7 +48,7 @@ struct HistoryRestore {
 // the mixer, the inspector, imports, the browser) can be undone without knowing about it.
 //
 // Steps are snapshots held in two levels, so a step costs about what it changed rather than a copy
-// of every note: the project's own fields (tempo, master effects, settings) are copied, and each
+// of every note: the project's own fields (tempo map, master effects, settings) are copied, and each
 // track is a shell (everything but its clips: name, mix, devices...) plus its clips, each held by
 // pointer and shared with the neighbouring snapshot wherever it didn't change. The last state
 // recorded is kept in the same form, so a selection change or an edit still waiting to settle
