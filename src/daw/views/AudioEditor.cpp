@@ -83,9 +83,9 @@ Rect AudioEditorView::clipRect(const Clip &c) const
 AudioEditorView::Drag AudioEditorView::hitTestHandles(const Clip &c, Vec2 p) const
 {
     const Rect r = clipRect(c);
-    const double spb = project().secondsPerBeat();
-    const float inX = beatX(c.start + c.fadeIn / spb);
-    const float outX = beatX(c.start + c.length - c.fadeOut / spb);
+    const audio::TempoMap &timing = project().timing;
+    const float inX = beatX(timing.beatAt(timing.secondsAt(c.start) + c.fadeIn));
+    const float outX = beatX(timing.beatAt(timing.secondsAt(c.start + c.length) - c.fadeOut));
     if (std::fabs(p.x - inX) <= kHandle && std::fabs(p.y - (r.y + kHandle)) <= kHandle)
         return Drag::FadeIn;
     if (std::fabs(p.x - outX) <= kHandle && std::fabs(p.y - (r.y + kHandle)) <= kHandle)
@@ -147,9 +147,10 @@ void AudioEditorView::handleInput(const Input &input)
     if (!c || drag_ == Drag::None || drag_ == Drag::Ruler)
         return;
 
-    const double spb = project().secondsPerBeat();
+    // Fades are in seconds, the clip's edges in beats: the tempo map turns one into the other
+    const audio::TempoMap &timing = project().timing;
     const double beat = xBeat(input.mouse.x);
-    const double lengthSeconds = c->length * spb;
+    const double lengthSeconds = timing.secondsAt(c->start + c->length) - timing.secondsAt(c->start);
     const audio::AudioData *data = hooks_.audioFor ? hooks_.audioFor(*c) : nullptr;
     // The drag changes the selected clip as it moves, so the edit is made here, each frame it is dragged
     const int trackIndex = project().selectedTrack;
@@ -163,21 +164,23 @@ void AudioEditorView::handleInput(const Input &input)
         // Not past the end of the sound file
         double end = std::max(beat, edited.start + 0.0625);
         if (data)
-            end = std::min(end, edited.start + (data->seconds() - edited.offset) / spb);
+            end = std::min(end, edited.start + project().beatsFor(edited.start, data->seconds() - edited.offset));
         edited.length = std::max(0.0625, end - edited.start);
         break;
     }
     case Drag::FadeIn:
-        edited.fadeIn = std::clamp((beat - edited.start) * spb, 0.0, std::max(0.0, lengthSeconds - edited.fadeOut));
+        edited.fadeIn = std::clamp(timing.secondsAt(beat) - timing.secondsAt(edited.start), 0.0, std::max(0.0, lengthSeconds - edited.fadeOut));
         break;
     case Drag::FadeOut:
-        edited.fadeOut = std::clamp((edited.start + edited.length - beat) * spb, 0.0, std::max(0.0, lengthSeconds - edited.fadeIn));
+        edited.fadeOut = std::clamp(timing.secondsAt(edited.start + edited.length) - timing.secondsAt(beat), 0.0,
+                                    std::max(0.0, lengthSeconds - edited.fadeIn));
         break;
     default:
         break;
     }
-    edited.fadeIn = std::min(edited.fadeIn, edited.length * spb);
-    edited.fadeOut = std::min(edited.fadeOut, edited.length * spb - edited.fadeIn);
+    const double editedSeconds = timing.secondsAt(edited.start + edited.length) - timing.secondsAt(edited.start);
+    edited.fadeIn = std::min(edited.fadeIn, editedSeconds);
+    edited.fadeOut = std::min(edited.fadeOut, editedSeconds - edited.fadeIn);
 }
 
 uint64_t AudioEditorView::contentKey(const Clip *c, const audio::AudioData *data) const
@@ -223,28 +226,30 @@ void AudioEditorView::draw(DrawList &list, const Theme &theme) const
 
 void AudioEditorView::drawContent(DrawList &list, const Theme &theme) const
 {
-    const int beatsPerBar = std::max(1, project().beatsPerBar);
-    // Ruler
+    const audio::TempoMap &timing = project().timing;
+    // Ruler: bars (of the signatures' lengths) and their units
     list.add(theme.surface(ruler_, Shape::Soft, Elevation::Raised, 0.35f));
     list.pushClip(ruler_);
-    const double first = std::floor(viewStart_ / beatsPerBar) * beatsPerBar;
+    const double first = std::max(0.0, viewStart_);
     const double last = xBeat(ruler_.x + ruler_.w);
-    const float barPixels = pixelsPerBeat_ * static_cast<float>(beatsPerBar);
+    const float barPixels = pixelsPerBeat_ * static_cast<float>(timing.signatureAt(first).barLength());
     int every = 1;
     while (barPixels * static_cast<float>(every) < 50.0f)
         every *= 2;
-    for (double b = std::max(0.0, first); b <= last; b += 1.0) {
-        const float x = beatX(b);
-        const bool bar = std::fmod(b, beatsPerBar) == 0.0;
-        if (!bar && pixelsPerBeat_ < 10.0f)
-            continue;
-        list.add(theme.ink({x, ruler_.y + ruler_.h - (bar ? 10.0f : 5.0f), 1.0f, bar ? 8.0f : 3.0f}, Shape::Rounded,
-                           TextTone::Muted, true, 0.8f));
-        const int barIndex = static_cast<int>(b) / beatsPerBar;
-        if (bar && barIndex % every == 0)
-            list.add(theme.text(std::to_string(barIndex + 1), {x + 4.0f, ruler_.y, 40.0f, ruler_.h - 6.0f},
+    timing.forEachBar(first, last + 1e-9, [&](int barIndex, double start, const audio::Signature &s) {
+        const float unit = pixelsPerBeat_ * static_cast<float>(s.unit());
+        for (int u = 0; u < s.numerator; ++u) {
+            const bool bar = u == 0;
+            if (!bar && unit < 10.0f)
+                break;
+            const float x = beatX(start + u * s.unit());
+            list.add(theme.ink({x, ruler_.y + ruler_.h - (bar ? 10.0f : 5.0f), 1.0f, bar ? 8.0f : 3.0f}, Shape::Rounded,
+                               TextTone::Muted, true, 0.8f));
+        }
+        if (barIndex % every == 0)
+            list.add(theme.text(std::to_string(barIndex + 1), {beatX(start) + 4.0f, ruler_.y, 40.0f, ruler_.h - 6.0f},
                                 TextStyle::Caption, TextTone::Secondary, TextAlign::Start));
-    }
+    });
     list.popClip();
 
     list.add(theme.surface(area_, Shape::Soft, Elevation::Inset, 0.6f));
@@ -258,7 +263,6 @@ void AudioEditorView::drawContent(DrawList &list, const Theme &theme) const
     const Rect r = clipRect(*c);
     list.add(theme.surface(r.inset(1.0f), Shape::Soft, Elevation::Raised, 0.6f, Finish::Convex));
 
-    const double spb = project().secondsPerBeat();
     const float mid = area_.y + area_.h * 0.5f;
     const float half = area_.h * 0.44f;
     if (!data) {
@@ -266,8 +270,9 @@ void AudioEditorView::drawContent(DrawList &list, const Theme &theme) const
                             TextStyle::Caption, TextTone::Muted));
     } else {
         // The whole file, brighter inside the clip
-        const double fileStart = c->start - c->offset / spb;
-        const double fileEnd = fileStart + data->seconds() / spb;
+        const double fileSeconds = timing.secondsAt(c->start) - c->offset; // where the file starts in time
+        const double fileStart = timing.beatAt(fileSeconds);
+        const double fileEnd = timing.beatAt(fileSeconds + data->seconds());
         const float from = std::max(area_.x, beatX(fileStart));
         const float to = std::min(area_.x + area_.w, beatX(fileEnd));
         // Runs of columns that are all inside the clip or all outside it, one Range plot per run
@@ -293,7 +298,7 @@ void AudioEditorView::drawContent(DrawList &list, const Theme &theme) const
             const double b0 = xBeat(x);
             const double b1 = xBeat(x + 2.0f);
             float low = 0.0f, high = 0.0f;
-            data->range((b0 - fileStart) * spb, (b1 - fileStart) * spb, low, high);
+            data->range(timing.secondsAt(b0) - fileSeconds, timing.secondsAt(b1) - fileSeconds, low, high);
             const bool inside = b0 >= c->start && b0 < c->start + c->length;
             const float g = inside ? c->gain : 1.0f;
             const float lo = std::max(-1.0f, std::min(1.0f, low * g));
@@ -338,9 +343,12 @@ void AudioEditorView::drawContent(DrawList &list, const Theme &theme) const
         list.add(curve);
     };
     if (c->fadeIn > 0.0)
-        fade(c->start, c->fadeIn / spb, true);
-    if (c->fadeOut > 0.0)
-        fade(c->start + c->length - c->fadeOut / spb, c->fadeOut / spb, false);
+        fade(c->start, project().beatsFor(c->start, c->fadeIn), true);
+    if (c->fadeOut > 0.0) {
+        const double end = c->start + c->length;
+        const double outStart = timing.beatAt(timing.secondsAt(end) - c->fadeOut);
+        fade(outStart, end - outStart, false);
+    }
     auto handle = [&](float x, bool active) {
         const Rect h{x - kHandle * 0.5f, r.y + kHandle * 0.5f, kHandle, kHandle};
         if (active)
@@ -348,8 +356,8 @@ void AudioEditorView::drawContent(DrawList &list, const Theme &theme) const
         else
             list.add(theme.surface(h, Shape::Circle, Elevation::Raised, 0.6f, Finish::Convex));
     };
-    handle(beatX(c->start + c->fadeIn / spb), hover_ == Drag::FadeIn || drag_ == Drag::FadeIn);
-    handle(beatX(c->start + c->length - c->fadeOut / spb), hover_ == Drag::FadeOut || drag_ == Drag::FadeOut);
+    handle(beatX(c->start + project().beatsFor(c->start, c->fadeIn)), hover_ == Drag::FadeIn || drag_ == Drag::FadeIn);
+    handle(beatX(timing.beatAt(timing.secondsAt(c->start + c->length) - c->fadeOut)), hover_ == Drag::FadeOut || drag_ == Drag::FadeOut);
     // Edges, lit while grabbed
     if (hover_ == Drag::Start || drag_ == Drag::Start)
         list.add(theme.accent({r.x - 1.0f, r.y, 3.0f, r.h}, Shape::Pill));

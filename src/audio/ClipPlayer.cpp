@@ -26,9 +26,8 @@ void ClipSequence::sort()
                      [](const ClipRegion &a, const ClipRegion &b) { return a.start < b.start; });
 }
 
-void ClipSequence::crossfade(double tempo)
+void ClipSequence::crossfade(const TempoMap &timing)
 {
-    const double secondsPerBeat = 60.0 / tempo;
     for (size_t i = 0; i < regions.size(); ++i) {
         for (size_t j = i + 1; j < regions.size(); ++j) {
             ClipRegion &a = regions[i];
@@ -36,7 +35,7 @@ void ClipSequence::crossfade(double tempo)
             if (b.start >= a.end)
                 continue;
             // b starts inside a: the overlap, but not past either's end
-            const double overlap = (std::min(a.end, b.end) - b.start) * secondsPerBeat;
+            const double overlap = timing.secondsAt(std::min(a.end, b.end)) - timing.secondsAt(b.start);
             if (b.end <= a.end)
                 continue; // b sits wholly inside a; leave both alone
             a.fadeOut = std::max(a.fadeOut, overlap);
@@ -87,37 +86,38 @@ void AudioClipPlayer::process(AudioBlock &block)
     if (current_ && outputs > 0) {
         // Streamed clips under the playhead or starting soon ask for their audio ahead of time,
         // playing or not (so pressing play finds it in memory)
-        const double secondsPerBeat = 60.0 / t.tempo;
+        const double nowSeconds = static_cast<double>(t.position) / t.sampleRate;
         const double now = t.beatAt(0);
-        const double ahead = now + kLookaheadSeconds / secondsPerBeat;
+        const double ahead = t.map ? t.map->beatAt(nowSeconds + kLookaheadSeconds) : now + kLookaheadSeconds * t.tempo / 60.0;
         for (const ClipRegion &r : current_->regions) {
             if (r.start >= ahead)
                 break;
             if (r.end <= now || !r.data || !r.data->streamed())
                 continue;
-            const double elapsed = std::max(0.0, (now - r.start) * secondsPerBeat);
+            const double elapsed = std::max(0.0, nowSeconds - t.secondsAt(r.start));
             r.data->prefetch(static_cast<uint64_t>(std::max(0.0, (r.offset + elapsed) * r.data->sampleRate)));
         }
     }
     if (current_ && t.playing && outputs > 0) {
-        const double spb = t.samplesPerBeat();
-        const double secondsPerBeat = 60.0 / t.tempo;
         const double first = t.beatAt(0);
         const double last = t.beatAt(block.frames);
+        const double firstSeconds = static_cast<double>(t.position) / t.sampleRate;
         for (const ClipRegion &r : current_->regions) {
             if (r.start >= last)
                 break; // sorted: nothing later starts in this block
             if (r.end <= first || !r.data || r.data->frames == 0)
                 continue;
             const AudioData &d = *r.data;
-            const auto from = static_cast<uint32_t>(std::clamp((r.start - first) * spb, 0.0, double(block.frames)));
-            const auto to = static_cast<uint32_t>(std::clamp(std::ceil((r.end - first) * spb), 0.0, double(block.frames)));
-            const double length = (r.end - r.start) * secondsPerBeat;
+            // Time in the clip goes with the samples, whatever the tempo does
+            const double startSeconds = t.secondsAt(r.start);
+            const auto from = static_cast<uint32_t>(std::clamp(t.frameAt(r.start), 0.0, double(block.frames)));
+            const auto to = static_cast<uint32_t>(std::clamp(std::ceil(t.frameAt(r.end)), 0.0, double(block.frames)));
+            const double length = t.secondsAt(r.end) - startSeconds;
             const double rate = d.sampleRate;
             const uint32_t ch = d.channels;
             AudioData::Span span; // fresh each block: a streamed chunk's pointer lasts one callback
             for (uint32_t i = from; i < to; ++i) {
-                const double elapsed = (t.beatAt(i) - r.start) * secondsPerBeat;
+                const double elapsed = firstSeconds + i / t.sampleRate - startSeconds;
                 if (elapsed < 0.0 || elapsed >= length)
                     continue;
                 const double pos = (r.offset + elapsed) * rate;

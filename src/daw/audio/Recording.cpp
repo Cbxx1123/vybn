@@ -79,16 +79,16 @@ bool RecordingSession::start(const std::string &takeFolder, std::string &why, do
     pedal_ = false;
     audio::Transport &transport = audio_.transport();
     const double rate = audio_.sampleRate() > 0 ? audio_.sampleRate() : 48000.0;
-    const double beat = static_cast<double>(transport.position()) / (rate * 60.0 / transport.tempo());
-    const double bar = std::max(1, project().beatsPerBar);
+    const double beat = project().timing.beatAtSample(static_cast<double>(transport.position()), rate);
     // MIDI clips exist from the start, from the bar the take starts in
     for (Target &t : targets_) {
         if (t.audio)
             continue;
         Track &track = store_.editTrack(t.track);
-        t.clipStart = std::floor(beat / bar) * bar;
+        const int bar = project().timing.barAt(beat);
+        t.clipStart = project().timing.barStart(bar);
         t.clipName = "Take " + std::to_string(takeNumber_);
-        track.clips.push_back({t.clipName, t.clipStart, bar});
+        track.clips.push_back({t.clipName, t.clipStart, project().timing.barLength(bar)});
         t.clip = static_cast<int>(track.clips.size()) - 1;
     }
     if (audioTargets_) {
@@ -141,7 +141,7 @@ double RecordingSession::beatOf(const audio::StampedMidi &m) const
     // The player heard the output a buffer late, so what they played belongs that much earlier
     const double latency = audio_.bufferFrames();
     const double position = std::max(0.0, static_cast<double>(m.position) - latency);
-    return position / (m.sampleRate * 60.0 / m.tempo);
+    return project().timing.beatAtSample(position, m.sampleRate);
 }
 
 void RecordingSession::endNote(Target &t, int key, double beat)
@@ -231,7 +231,7 @@ void RecordingSession::growAudio(size_t newFrames)
         t.preview->frames = total;
         if (const Clip *clip = clipOf(t)) {
             // Only when the length really moves (this runs every frame of an audio take)
-            const double length = std::max(1.0 / 64.0, (total / rate - clip->offset) / project().secondsPerBeat());
+            const double length = std::max(1.0 / 64.0, project().beatsFor(clip->start, total / rate - clip->offset));
             if (length != clip->length)
                 editClipOf(t)->length = length;
         }
@@ -262,13 +262,14 @@ std::string RecordingSession::update()
     if (recording_) {
         // MIDI clips reach the bar the playhead is in
         const double rate = audio_.sampleRate() > 0 ? audio_.sampleRate() : 48000.0;
-        const double beat = static_cast<double>(audio_.transport().position()) / (rate * project().secondsPerBeat());
-        const double bar = std::max(1, project().beatsPerBar);
+        const audio::TempoMap &timing = project().timing;
+        const double beat = timing.beatAtSample(static_cast<double>(audio_.transport().position()), rate);
+        const double barEnd = timing.barStart(timing.barAt(beat) + 1);
         for (Target &t : targets_) {
             if (t.audio)
                 continue;
             if (const Clip *clip = clipOf(t)) {
-                const double length = std::max(clip->length, std::ceil((beat - t.clipStart) / bar + 1e-9) * bar);
+                const double length = std::max(clip->length, barEnd - t.clipStart);
                 if (length != clip->length)
                     editClipOf(t)->length = length;
             }
@@ -288,7 +289,7 @@ std::string RecordingSession::update()
                 Track &track = store_.editTrack(t.track);
                 Clip clip;
                 clip.name = t.clipName = "Take " + std::to_string(takeNumber_);
-                clip.start = t.clipStart = std::max(0.0, startFrames) / (rate * project().secondsPerBeat());
+                clip.start = t.clipStart = project().timing.beatAtSample(std::max(0.0, startFrames), rate);
                 clip.offset = std::max(0.0, -startFrames) / rate; // what came before the timeline's start
                 clip.length = 1.0 / 64.0;
                 track.clips.push_back(clip);
@@ -313,9 +314,8 @@ void RecordingSession::stop()
         return;
     recording_ = false;
     const double rate = audio_.sampleRate() > 0 ? audio_.sampleRate() : 48000.0;
-    const double beat = std::max(0.0, static_cast<double>(audio_.transport().position()) - audio_.bufferFrames()) /
-                        (rate * project().secondsPerBeat());
-    const double bar = std::max(1, project().beatsPerBar);
+    const audio::TempoMap &timing = project().timing;
+    const double beat = timing.beatAtSample(std::max(0.0, static_cast<double>(audio_.transport().position()) - audio_.bufferFrames()), rate);
     for (Target &t : targets_) {
         if (t.audio)
             continue;
@@ -339,7 +339,9 @@ void RecordingSession::stop()
         double end = beat;
         for (const Note &n : edited->notes)
             end = std::max(end, t.clipStart + n.start + n.length);
-        edited->length = std::max(bar, std::ceil((end - t.clipStart) / bar - 1e-9) * bar);
+        // To the bar line at or after the end, at least a bar
+        const double barEnd = timing.barStart(timing.barAt(end - 1e-9) + 1);
+        edited->length = std::max(timing.barStart(timing.barAt(t.clipStart) + 1), barEnd) - t.clipStart;
     }
     if (audioTargets_) {
         armPending_ = false;
@@ -398,7 +400,7 @@ std::string RecordingSession::finish()
         pool_.addRecording(path, rate, channels, std::move(samples)); // streams from the file if long
         Clip &edited = *editClipOf(t);
         edited.audioFile = path;
-        edited.length = std::max(1.0 / 64.0, (frames / rate - edited.offset) / project().secondsPerBeat());
+        edited.length = std::max(1.0 / 64.0, project().beatsFor(edited.start, frames / rate - edited.offset));
     }
     if (recorder_.dropped() > 0)
         message = "The input fell behind: " + std::to_string(recorder_.dropped() * 1000 / static_cast<uint64_t>(rate)) +

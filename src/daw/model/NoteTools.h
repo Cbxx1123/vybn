@@ -163,8 +163,8 @@ NoteBounds noteBounds(const std::vector<Note> &notes);
 // The grid that fits a zoom: the finest of 4, 2, 1, 1/2 ... 1/64 beats (times 2/3 for triplets)
 // whose lines stay at least `minPixels` apart
 double autoGrid(double pixelsPerBeat, double minPixels, bool triplet);
-// A grid's name: "1/16", "1/8T", "1 bar" (in a bar of `beatsPerBar` beats)
-std::string gridName(double beats, int beatsPerBar);
+// A grid's name: "1/16", "1/8T", "1 bar" (in a bar `barLength` beats long)
+std::string gridName(double beats, double barLength);
 
 // Controller lanes (see ControlLane): the clip's lane for a controller (null when it has none),
 // or one made for it

@@ -657,7 +657,7 @@ int runEngineSelfTest()
                 b.gain = 0.7f;
                 sequence->regions = {a, b};
                 sequence->sort();
-                sequence->crossfade(120.0);
+                sequence->crossfade(audio::TempoMap(120.0));
             }
             clips->setSequence(std::move(sequence));
             std::vector<float> block(64);

@@ -24,7 +24,8 @@
 namespace plugin {
 
 constexpr uint32_t kMagic = 0x48504256; // "VBPH"
-constexpr uint32_t kProtocolVersion = 3; // 2: the sidechain key in the block; 3: the Probe request
+constexpr uint32_t kProtocolVersion = 4; // 2: the sidechain key in the block; 3: the Probe request;
+                                         // 4: the time signature, bar and tempo ramp in the transport
 constexpr uint32_t kMaxFrames = 4096;    // a block; longer ones are split
 constexpr uint32_t kMaxChannels = 2;     // of the main ports: stereo
 constexpr uint32_t kMaxBlockEvents = 512;
@@ -100,9 +101,13 @@ struct SharedRing {
 // The transport as the plugin is told it, for the block
 struct TransportInfo {
     uint32_t playing = 0;
-    uint32_t beatsPerBar = 4;
+    uint32_t beatsPerBar = 4; // the signature's numerator
+    uint32_t beatUnit = 4;    // and its denominator
+    int32_t bar = 0;          // the bar the block starts in, from 0
     double tempo = 120.0;
+    double tempoPerSample = 0.0; // how the tempo changes over the block (in a ramp)
     double beats = 0.0;   // position, from the timeline's start
+    double barStart = 0.0; // that bar's start, in beats
     double seconds = 0.0;
 };
 

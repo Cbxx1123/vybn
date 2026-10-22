@@ -56,6 +56,8 @@ public:
     // The grid over the clip now (stepGrid of its length, the step size and the swing); a 4-beat
     // grid when there's no clip
     StepGrid grid() const;
+    // Beats in a bar of the signature where the clip starts (the bars its header and grid mark)
+    double barLength() const;
 
     // How it is set, kept between runs (Settings' `stepSequencer` line)
     struct ViewSettings {

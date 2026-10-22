@@ -11,6 +11,7 @@
 #include "daw/model/FoldState.h"
 #include "daw/model/Project.h"
 #include "daw/model/ProjectStore.h"
+#include "daw/views/TimingLanes.h"
 #include "daw/widgets/Widgets.h"
 #include "audio/AudioFile.h"
 #include "ui/DrawCache.h"
@@ -50,6 +51,15 @@ struct TransportHooks {
     std::function<void(ui::Vec2 at)> masterAutomationMenu;
     std::function<bool()> masterAutomationArmed;
     std::function<void(bool on)> armMasterAutomation;
+    // The tempo and signature lanes (TimingLanes): a tempo point's menu and a signature change's,
+    // opened at `at`, their editors, and the menu of empty lane space at `beat`
+    std::function<void(int point, ui::Vec2 at)> tempoMenu;
+    std::function<void(int signature, ui::Vec2 at)> signatureMenu;
+    std::function<void(int point)> editTempo;
+    std::function<void(int signature)> editSignature;
+    std::function<void(ui::Vec2 at, double beat, bool tempo)> timingLaneMenu;
+    // The lanes were shown or hidden (to remember it)
+    std::function<void(bool shown)> timingShown;
 };
 
 // The controls at the start of one track's row: number, name, kind and input, and a disc of its
@@ -134,8 +144,9 @@ private:
     ui::Container *names_ = nullptr;
 };
 
-// The timeline: a ruler of bars over one lane per track, each with its clips, beside the track
-// headers. A playhead follows the transport.
+// The timeline: a ruler of bars, the song's tempo and time signatures (TimingLanes, which can be
+// hidden), and one lane per track, each with its clips, beside the track headers. A playhead
+// follows the transport.
 // - Press or drag on the ruler to move the playhead. Along its top, the loop strip: drag to set
 //   the project's loop (by bars; Shift by beats), drag its ends, click in it to loop or not.
 // - Press a clip to select it and drag it along its lane (snapped to beats) or onto another
@@ -155,6 +166,8 @@ private:
 // - Under the last track is the master's row: a header (its A toggle shows the master's lanes: its
 //   volume and its effects' parameters, edited like a track's; TransportHooks::masterAutomationMenu)
 //   and no clips. It is never a track: rowAt, drops, reordering and clip dragging skip it.
+// - Under the ruler, the tempo and signature lanes (TimingLanes). Hidden, the ruler marks each
+//   signature change ("7/8" by its bar's number) and each tempo change (a dot).
 // - The wheel scrolls the tracks; Shift or a sideways wheel scrolls in time, as does the bar
 //   under the lanes. zoom() changes the scale.
 // It follows the playhead while the transport plays.
@@ -198,6 +211,12 @@ public:
     // The same for the master row's lanes
     bool masterAutomationShown() const { return openMaster_; }
     void showMasterAutomation(bool shown);
+    // Whether the tempo and signature lanes are shown (a view setting, kept by the app through
+    // TransportHooks::timingShown). The chip in the corner left of the ruler, which shows the tempo
+    // and signature at the playhead, shows and hides them too.
+    bool timingShown() const { return timingShown_; }
+    void showTiming(bool shown);
+    const TimingLanes &timingLanes() const { return *timing_; }
 
     ui::Vec2 measure(const ui::Theme &theme) const override;
     void arrange(const ui::Rect &rect, const ui::Theme &theme) override;
@@ -331,6 +350,12 @@ private:
     double lastPointPress_ = -1.0;
     int lastPressedPoint_ = -1;
     bool lanePress_ = false; // this frame's press was in the lanes or their headers (handleLaneInput took it)
+
+    // The tempo and signature lanes under the ruler
+    std::unique_ptr<TimingLanes> timing_;
+    bool timingShown_ = true;
+    ui::Rect timingChip() const; // the corner chip
+    bool chipHovered_ = false;
 };
 
 }

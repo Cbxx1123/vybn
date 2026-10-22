@@ -28,8 +28,8 @@ struct ClipSequence {
 
     void sort();
     // Where regions overlap, the earlier fades out and the later fades in across the overlap,
-    // unless their own fades are longer: a crossfade. tempo turns beats into seconds.
-    void crossfade(double tempo);
+    // unless their own fades are longer: a crossfade. `timing` turns beats into seconds.
+    void crossfade(const TempoMap &timing);
 };
 
 // An audio track's source: plays its clips in time with the transport (at the file's own speed,

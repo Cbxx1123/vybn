@@ -27,14 +27,14 @@ private:
     Smoothed pitch_;
 };
 
-// Clicks on every beat while the transport plays, higher on the first beat of each bar.
+// Clicks on every unit of the time signature while the transport plays (quarters in 4/4, eighths
+// in 6/8), higher on the first of each bar. Without a tempo map, on every beat in 4/4.
 class Metronome : public AudioProcessor {
 public:
     Metronome();
 
     AudioParam gain{0.5f, 0.0f, 1.0f};
     std::atomic<bool> enabled{false};
-    std::atomic<int> beatsPerBar{4};
 
     void prepare(double sampleRate, uint32_t maxFrames) override;
     void process(AudioBlock &block) override;
@@ -42,9 +42,10 @@ public:
     // Clicks started so far (any thread), for tests and displays
     uint64_t clicks() const { return clicks_.load(std::memory_order_relaxed); }
 
-    // A count-in: clicks for `beats` beats while the transport is stopped, at the transport's tempo.
-    // Any thread. countInDone() turns true once the last beat has passed.
-    void startCountIn(int beats);
+    // A count-in: `clicks` clicks `unit` beats apart while the transport is stopped, at the tempo at
+    // the playhead, the first of every `perBar` higher. Any thread. countInDone() turns true once
+    // the last has passed.
+    void startCountIn(int clicks, int perBar, double unit);
     void cancelCountIn();
     bool countInDone() const { return countInDone_.load(std::memory_order_acquire); }
 
@@ -59,6 +60,9 @@ private:
 
     // Count-in: the main thread sets the requests; the audio thread runs the count
     std::atomic<int> countInRequest_{0};
+    std::atomic<int> countInPerBar_{4};
+    std::atomic<double> countInUnit_{1.0};
+    int countPerBar_ = 4;
     std::atomic<bool> countInCancel_{false};
     std::atomic<bool> countInDone_{false};
     bool counting_ = false;

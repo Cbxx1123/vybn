@@ -416,15 +416,16 @@ int runAudioSelfTest()
     transport.locate(96000);
     render(system, 10.0 / kRate);
     c.check(transport.position() == 96010, "Locate moves the position", number("position %.0f", static_cast<double>(transport.position())));
-    // Looping in [100000, 110000): 13990 frames to its end, then three laps of 10000 and 4010 more
-    transport.setLoop(100000, 110000);
+    // Looping in beats [4.25, 4.625) at 120 BPM, samples [102000, 111000): 14990 frames to its end,
+    // then three laps of 9000 and 6010 more
+    transport.setLoop(4.25, 4.625);
     transport.setLooping(true);
     render(system, 1.0);
-    c.check(transport.position() == 104010, "The loop jumps back to its start on the sample",
+    c.check(transport.position() == 108010, "The loop jumps back to its start on the sample",
             number("position %.0f", static_cast<double>(transport.position())));
     transport.setLooping(false);
     render(system, 10.0 / kRate);
-    c.check(transport.position() == 104020, "Without looping it plays on", number("position %.0f", static_cast<double>(transport.position())));
+    c.check(transport.position() == 108020, "Without looping it plays on", number("position %.0f", static_cast<double>(transport.position())));
 
     // The metronome at 120 BPM clicks on beats 0, 0.5, 1 and 1.5 s: four clicks in two seconds
     auto &metronome = system.add<audio::Metronome>();
@@ -553,6 +554,57 @@ int runAudioSelfTest()
     c.check(std::abs(crossings - 704) <= 3, "An octave up plays at twice the pitch", number("%.0f crossings in 0.4 s (880 Hz)", crossings));
     player.release(81);
     render(system, 0.3);
+
+    // The tempo map. A new map keeps the playhead on its beat: 2 beats at 120 BPM is sample 48000,
+    // at 60 BPM sample 96000.
+    {
+        const bool clicking = metronome.enabled.load();
+        metronome.enabled = false;
+        transport.stop();
+        transport.setTempo(120.0);
+        transport.locate(48000);
+        render(system, 0.01);
+        transport.setTempo(60.0);
+        render(system, 0.01);
+        c.check(transport.position() == 96000, "Tempo map: the playhead keeps its beat when the tempo changes",
+                number("position %.0f", static_cast<double>(transport.position())));
+
+        // A note on beat 5 after 4 beats at 120 and then 60 BPM starts at 2 + 1 = 3 s
+        audio::TempoMap change;
+        change.setPoints({{0.0, 120.0, false}, {4.0, 60.0, false}});
+        transport.setTiming(change);
+        transport.locate(0);
+        auto sequence = std::make_unique<audio::NoteSequence>();
+        sequence->notes.push_back({5.0, 6.0, 69, 1.0f});
+        player.setSequence(std::move(sequence));
+        render(system, 0.01);
+        transport.play();
+        const std::vector<float> played = render(system, 3.5);
+        size_t onset = 0;
+        while (onset < played.size() / 2 && std::fabs(played[onset * 2]) < 0.01f)
+            ++onset;
+        c.check(onset >= 144000 && onset < 144000 + 48, "Tempo map: a note after a tempo change starts on its sample",
+                number("at %.0f", static_cast<double>(onset)));
+        transport.stop();
+        player.setSequence(std::make_unique<audio::NoteSequence>());
+        render(system, 0.3);
+
+        // In 6/8 at 120 BPM the click is on every eighth: 8 in two seconds
+        metronome.enabled = true;
+        transport.setTiming(audio::TempoMap(120.0, 6, 8));
+        transport.locate(0);
+        render(system, 0.01);
+        const uint64_t clicks = metronome.clicks();
+        transport.play();
+        render(system, 2.0);
+        c.check(metronome.clicks() - clicks == 8, "Tempo map: the metronome clicks the signature's unit",
+                number("%.0f clicks", static_cast<double>(metronome.clicks() - clicks)));
+        transport.stop();
+        transport.setTempo(120.0);
+        transport.locate(0);
+        render(system, 0.3);
+        metronome.enabled = clicking;
+    }
 
     // Velocity layers and loops: a soft zone (0.2) and a hard one (0.8) on one key, each a
     // quarter of a second of 480 Hz looped (100-frame periods), so they sound past their end
@@ -734,7 +786,7 @@ int runAudioSelfTest()
         auto sequence = std::make_unique<audio::ClipSequence>();
         sequence->regions = std::move(regions);
         sequence->sort();
-        sequence->crossfade(120.0);
+        sequence->crossfade(audio::TempoMap(120.0));
         clips.setSequence(std::move(sequence));
         transport.stop();
         transport.locate(0);
@@ -854,7 +906,7 @@ int runAudioSelfTest()
             auto sequence = std::make_unique<audio::ClipSequence>();
             sequence->regions = {a, b};
             sequence->sort();
-            sequence->crossfade(120.0);
+            sequence->crossfade(audio::TempoMap(120.0));
             player.setSequence(std::move(sequence));
             streamTransport.stop();
             streamTransport.locate(0);

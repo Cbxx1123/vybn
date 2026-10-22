@@ -7,18 +7,32 @@
 #include <string>
 #include <utility>
 
+#include "audio/TempoMap.h"
+
 namespace audio {
 
 // The transport as the audio thread sees it at the start of a block
 struct TransportState {
     bool playing = false;
     uint64_t position = 0; // samples since the start of the timeline
-    double tempo = 120.0;  // beats per minute
+    double tempo = 120.0;  // beats per minute at the block's start
     double sampleRate = 48000.0;
+    const TempoMap *map = nullptr; // the tempo map; none: `tempo` throughout
 
-    double samplesPerBeat() const { return sampleRate * 60.0 / tempo; }
     // Beats since the start of the timeline at `frame` frames into the block
-    double beatAt(uint32_t frame) const { return static_cast<double>(position + frame) / samplesPerBeat(); }
+    double beatAt(double frame) const
+    {
+        const double sample = static_cast<double>(position) + frame;
+        return map ? map->beatAtSample(sample, sampleRate) : sample * tempo / (sampleRate * 60.0);
+    }
+    // Frames from the block's start to `beat` (negative before it)
+    double frameAt(double beat) const
+    {
+        const double sample = map ? map->samplesAt(beat, sampleRate) : beat * sampleRate * 60.0 / tempo;
+        return sample - static_cast<double>(position);
+    }
+    // Seconds from the start of the timeline to `beat`
+    double secondsAt(double beat) const { return map ? map->secondsAt(beat) : beat * 60.0 / tempo; }
 };
 
 // One block of audio to produce: planar channels (one float array each). Processors add their

@@ -56,9 +56,9 @@ bool overlaps(const Rect &a, const Rect &b)
     return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
-std::string lengthText(double beats, int beatsPerBar)
+std::string lengthText(double beats, double barLength)
 {
-    const std::string name = gridName(beats, beatsPerBar);
+    const std::string name = gridName(beats, barLength);
     return name.find("beats") == std::string::npos ? name : format("%.3g beats", beats);
 }
 
@@ -86,7 +86,8 @@ double PianoRollView::snap() const
 
 std::string PianoRollView::gridText() const
 {
-    return gridName(snap(), std::max(1, project().beatsPerBar));
+    const Clip *c = clip();
+    return gridName(snap(), project().timing.signatureAt(c ? c->start : 0.0).barLength());
 }
 
 const Clip *PianoRollView::clip() const
@@ -229,8 +230,8 @@ void PianoRollView::loopSelection()
     }
     setLoop(c->start + start, c->start + end);
     setLooping(true);
-    message_ = "Looping " + barsBeats(project().loopStart, std::max(1, project().beatsPerBar)) + " to " +
-               barsBeats(project().loopEnd, std::max(1, project().beatsPerBar));
+    message_ = "Looping " + barsBeats(project().loopStart, project().timing) + " to " +
+               barsBeats(project().loopEnd, project().timing);
 }
 
 // --- The view ------------------------------------------------------------------------------
@@ -1995,16 +1996,17 @@ std::string PianoRollView::readout() const
     const Clip *c = clip();
     if (!c || !dragMoved_)
         return {};
-    const int bpb = std::max(1, project().beatsPerBar);
+    const audio::TempoMap &timing = project().timing;
+    const double bar = timing.signatureAt(c->start).barLength();
     const Note *a = anchor_ >= 0 && anchor_ < static_cast<int>(c->notes.size()) ? &c->notes[static_cast<size_t>(anchor_)] : nullptr;
     switch (drag_) {
     case Drag::Move:
-        return a ? audio::keyName(a->key) + "   " + barsBeats(c->start + a->start, bpb) : std::string();
+        return a ? audio::keyName(a->key) + "   " + barsBeats(c->start + a->start, timing) : std::string();
     case Drag::Draw:
-        return a ? audio::keyName(a->key) + "   " + lengthText(a->length, bpb) : std::string();
+        return a ? audio::keyName(a->key) + "   " + lengthText(a->length, bar) : std::string();
     case Drag::Resize:
     case Drag::ResizeStart:
-        return a ? "Length " + lengthText(a->length, bpb) : std::string();
+        return a ? "Length " + lengthText(a->length, bar) : std::string();
     case Drag::Stretch: {
         const NoteBounds b = noteBounds(c->notes);
         const double span = pressBounds_.end - pressBounds_.start;
@@ -2018,9 +2020,9 @@ std::string PianoRollView::readout() const
     case Drag::CcLine: return laneName() + "  " + valueText(shownVelocity_);
     case Drag::Loop:
     case Drag::LoopStart:
-    case Drag::LoopEnd: return hasLoop() ? "Loop " + barsBeats(project().loopStart, bpb) + " - " + barsBeats(project().loopEnd, bpb) : std::string();
+    case Drag::LoopEnd: return hasLoop() ? "Loop " + barsBeats(project().loopStart, timing) + " - " + barsBeats(project().loopEnd, timing) : std::string();
     case Drag::ClipStart:
-    case Drag::ClipEnd: return "Clip " + barsBeats(c->start, bpb) + ",  " + format("%.3g beats", c->length);
+    case Drag::ClipEnd: return "Clip " + barsBeats(c->start, timing) + ",  " + format("%.3g beats", c->length);
     default: return {};
     }
 }
@@ -2065,7 +2067,6 @@ void PianoRollView::drawKeyboard(DrawList &list, const Theme &theme, const bool 
 void PianoRollView::drawGrid(DrawList &list, const Theme &theme, const Clip &c) const
 {
     const Scale *s = scale();
-    const int beatsPerBar = std::max(1, project().beatsPerBar);
     const int firstRow = std::max(0, static_cast<int>(std::floor(scrollY_ / rowHeight_)));
     const int lastRow = std::min(static_cast<int>(rows_.size()) - 1, static_cast<int>((scrollY_ + grid_.h) / rowHeight_));
     for (int row = firstRow; row <= lastRow; ++row) {
@@ -2097,16 +2098,20 @@ void PianoRollView::drawGrid(DrawList &list, const Theme &theme, const Clip &c) 
     double step = snap();
     while (pixelsPerBeat_ * step < 9.0f)
         step *= 2.0;
+    const audio::TempoMap &timing = project().timing;
     const double first = std::floor(xBeat(grid_.x) / step) * step;
     const double last = xBeat(grid_.x + grid_.w) + step;
     for (double b = first; b <= last; b += step) {
-        const float x = beatX(b);
         const double absolute = c.start + b;
-        const double inBar = std::fmod(std::fmod(absolute, static_cast<double>(beatsPerBar)) + beatsPerBar, beatsPerBar);
-        const bool bar = inBar < 1e-6 || beatsPerBar - inBar < 1e-6;
+        if (std::fabs(timing.nearestBar(absolute) - absolute) < 1e-6)
+            continue; // drawn with the bars below
         const bool beat = std::fabs(absolute - std::round(absolute)) < 1e-6;
-        list.add(theme.ink({x, grid_.y, 1.0f, grid_.h}, Shape::Rounded, TextTone::Muted, true, bar ? 0.4f : beat ? 0.16f : 0.07f));
+        list.add(theme.ink({beatX(b), grid_.y, 1.0f, grid_.h}, Shape::Rounded, TextTone::Muted, true, beat ? 0.16f : 0.07f));
     }
+    // Bar lines, wherever the signatures put them
+    timing.forEachBar(c.start + first, c.start + last, [&](int, double start, const audio::Signature &) {
+        list.add(theme.ink({beatX(start - c.start), grid_.y, 1.0f, grid_.h}, Shape::Rounded, TextTone::Muted, true, 0.4f));
+    });
 
     // Outside the clip, notes don't play
     const float start = beatX(0.0), end = beatX(c.length);
@@ -2233,7 +2238,6 @@ void PianoRollView::drawNotes(DrawList &list, const Theme &theme, const Clip &c)
 
 void PianoRollView::drawRuler(DrawList &list, const Theme &theme, const Clip &c) const
 {
-    const int beatsPerBar = std::max(1, project().beatsPerBar);
     // The loop strip: an inset groove with the range as an accent band
     list.add(theme.surface(loopBand_, Shape::Pill, Elevation::Inset, 0.4f));
     list.pushClip(ruler_);
@@ -2246,26 +2250,28 @@ void PianoRollView::drawRuler(DrawList &list, const Theme &theme, const Clip &c)
     }
 
     const float rulerBottom = ruler_.y + ruler_.h;
-    const double first = std::floor(xBeat(ruler_.x));
-    const double last = xBeat(ruler_.x + ruler_.w) + 1.0;
-    for (double b = first; b <= last; b += 1.0) {
-        const float x = beatX(b);
-        const double absolute = c.start + b;
-        if (absolute < -1e-9)
-            continue;
-        const bool bar = std::fmod(absolute + 1e-9, static_cast<double>(beatsPerBar)) < 1e-6;
-        if (!bar && pixelsPerBeat_ < 14.0f)
-            continue;
-        const bool inside = b >= -1e-9 && b <= c.length + 1e-9;
-        list.add(theme.ink({x, rulerBottom - (bar ? 11.0f : 5.0f), 1.0f, bar ? 9.0f : 3.0f}, Shape::Rounded, TextTone::Muted, true,
-                           (bar ? 0.8f : 0.6f) * (inside ? 1.0f : 0.5f)));
-        // Bar numbers (every other one when they crowd)
-        const int barNumber = static_cast<int>(std::floor(absolute / beatsPerBar + 1e-9)) + 1;
-        if (bar && (pixelsPerBeat_ * beatsPerBar >= 28.0f || barNumber % 2 == 1))
-            list.add(theme.text(std::to_string(barNumber), {x + (std::fabs(b) < 1e-9 ? 13.0f : 4.0f), loopBand_.y + loopBand_.h, 40.0f,
-                                                             rulerBottom - loopBand_.y - loopBand_.h - 3.0f},
-                                TextStyle::Caption, inside ? TextTone::Secondary : TextTone::Muted, TextAlign::Start));
-    }
+    // Each bar and the units of its signature (beats in 4/4, eighths in 6/8)
+    const audio::TempoMap &timing = project().timing;
+    const double first = std::max(0.0, c.start + xBeat(ruler_.x));
+    const double last = c.start + xBeat(ruler_.x + ruler_.w) + 1.0;
+    timing.forEachBar(first, last, [&](int barIndex, double start, const audio::Signature &s) {
+        for (int u = 0; u < s.numerator; ++u) {
+            const bool bar = u == 0;
+            if (!bar && pixelsPerBeat_ * s.unit() < 14.0)
+                break;
+            const double b = start + u * s.unit() - c.start;
+            const float x = beatX(b);
+            const bool inside = b >= -1e-9 && b <= c.length + 1e-9;
+            list.add(theme.ink({x, rulerBottom - (bar ? 11.0f : 5.0f), 1.0f, bar ? 9.0f : 3.0f}, Shape::Rounded, TextTone::Muted, true,
+                               (bar ? 0.8f : 0.6f) * (inside ? 1.0f : 0.5f)));
+            // Bar numbers (every other one when they crowd)
+            const int barNumber = barIndex + 1;
+            if (bar && (pixelsPerBeat_ * s.barLength() >= 28.0 || barNumber % 2 == 1))
+                list.add(theme.text(std::to_string(barNumber), {x + (std::fabs(b) < 1e-9 ? 13.0f : 4.0f), loopBand_.y + loopBand_.h, 40.0f,
+                                                                 rulerBottom - loopBand_.y - loopBand_.h - 3.0f},
+                                    TextStyle::Caption, inside ? TextTone::Secondary : TextTone::Muted, TextAlign::Start));
+        }
+    });
     // The clip's ends: raised flags to drag
     for (int side : {-1, 1}) {
         const Rect h = clipHandle(side);

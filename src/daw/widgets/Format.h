@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <string>
 
+#include "audio/TempoMap.h"
+
 namespace daw {
 
 // printf-style formatting of one number
@@ -29,14 +31,13 @@ inline std::string decibels(float gain)
     return db <= -90.0f ? std::string("-inf") : format("%+.1f", db);
 }
 
-// Bars, beats and ticks (960 per beat), 1-based
-inline std::string barsBeats(double beats, int beatsPerBar)
+// Bars, units of the signature (beats in 4/4, eighths in 6/8) and ticks (960 per unit), 1-based
+inline std::string barsBeats(double beats, const audio::TempoMap &timing)
 {
-    beats = std::max(0.0, beats);
-    const long whole = static_cast<long>(std::floor(beats));
-    const int ticks = static_cast<int>((beats - whole) * 960.0);
+    const audio::BarPosition p = timing.position(std::max(0.0, beats));
+    const int ticks = std::min(959, static_cast<int>(p.fraction * 960.0));
     char buffer[48];
-    std::snprintf(buffer, sizeof(buffer), "%ld.%ld.%03d", whole / beatsPerBar + 1, whole % beatsPerBar + 1, ticks);
+    std::snprintf(buffer, sizeof(buffer), "%d.%d.%03d", p.bar + 1, p.unit + 1, ticks);
     return buffer;
 }
 

@@ -126,12 +126,12 @@ void ProjectStore::select(int track, int clip)
         selectionRevision_ = bump();
 }
 
-void ProjectStore::setTempo(double bpm)
+void ProjectStore::setTiming(const audio::TempoMap &timing)
 {
     settle();
-    if (project_.tempo == bpm)
+    if (project_.timing == timing)
         return;
-    project_.tempo = bpm;
+    project_.timing = timing;
     revision_ = bump();
 }
 
@@ -220,12 +220,11 @@ void ProjectStore::restore(HistoryRestore plan)
         if (project_.masterAutomation != fields.masterAutomation)
             editMasterAutomation() = fields.masterAutomation;
     }
-    if (plan.tempo)
-        setTempo(fields.tempo);
+    if (plan.timing)
+        setTiming(fields.timing);
     if (plan.settings) {
         Project &p = editSettings();
         p.name = fields.name;
-        p.beatsPerBar = fields.beatsPerBar;
         p.bars = fields.bars;
     }
     if (plan.presets)

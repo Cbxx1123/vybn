@@ -4,8 +4,9 @@ A digital audio workstation for Windows, written in C++17.
 
 - **Tracks**: instrument tracks (the built-in synth, the sample library, or CLAP plugins) and audio
   tracks (imported or recorded), with return tracks fed by sends and group tracks that fold.
-- **Editing**: an arrangement with automation lanes, a piano roll with note tools and an arpeggiator,
-  a step sequencer, an audio clip editor, and undo for every edit.
+- **Editing**: an arrangement with automation lanes and a tempo map (tempo changes and ramps, time
+  signature changes), a piano roll with note tools and an arpeggiator, a step sequencer, an audio
+  clip editor, and undo for every edit.
 - **Mixing**: a mixer with sends, groups and a master volume, built-in effects (EQ, filter, gate and
   compressor with sidechains, limiter, saturation, delay, reverb), CLAP effects in a sandbox, and delay
   compensation across the whole routing.

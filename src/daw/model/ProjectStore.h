@@ -40,7 +40,7 @@ public:
     float &editMasterVolume();
     // The master volume's automation lanes: moves the master's revision too
     std::vector<audio::AutomationLane> &editMasterAutomation();
-    // ONLY the project's name, beats per bar and length in bars: saved, but not a track's or the
+    // ONLY the project's name and length in bars: saved, but not a track's or the
     // structure, so only revision() moves
     Project &editSettings();
     // The export presets and the export details: saved, but not a track's, so only revision() moves
@@ -50,8 +50,8 @@ public:
     audio::DeviceSetting *editDevice(const DevicePlace &place);
     // The selection, as Project::select does it
     void select(int track, int clip = -1);
-    // The tempo; edits only when it differs
-    void setTempo(double bpm);
+    // The tempo map; edits only when it differs
+    void setTiming(const audio::TempoMap &timing);
     // The loop (saved, but not undoable); edits only when it differs
     void setLoop(double start, double end, bool looping);
     // Project::toggleLoop
@@ -60,7 +60,7 @@ public:
     void replace(Project project);
     // Applies an undo or redo (see HistoryRestore) through the edit calls above, so only what the
     // plan changes has its revisions move: a track's content through editTrack, its mix through
-    // editMix, the master's effects, the tempo, the settings, the export presets and details, and
+    // editMix, the master's effects, the tempo map, the settings, the export presets and details, and
     // the selection each only when they differ. Arming, monitoring and the loop stay as they are.
     // A structural plan replaces the whole project instead, keeping those by track id.
     void restore(HistoryRestore plan);

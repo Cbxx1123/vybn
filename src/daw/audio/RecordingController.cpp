@@ -58,11 +58,14 @@ void RecordingController::toggleRecording()
 void RecordingController::beginCountIn()
 {
     // Clicks only: the transport stays where the playhead is, and starts the track when the count
-    // ends, so the track and the take begin together from that position
-    const int bar = std::max(1, store_.project().beatsPerBar);
-    const int beats = countInChoice_ == 1 ? 1 : countInChoice_ == 2 ? bar : 2 * bar;
+    // ends, so the track and the take begin together from that position. It counts in the signature
+    // at the playhead: one unit of it, or its bars.
+    const double rate = audio_.sampleRate() > 0 ? audio_.sampleRate() : 48000.0;
+    const audio::Signature &signature = store_.project().timing.signatureAt(audio_.transport().beats(rate));
+    const int bar = signature.numerator;
+    const int clicks = countInChoice_ == 1 ? 1 : countInChoice_ == 2 ? bar : 2 * bar;
     audio_.transport().stop();
-    metronome_.startCountIn(beats);
+    metronome_.startCountIn(clicks, bar, signature.unit());
     countingIn_ = true;
 }
 

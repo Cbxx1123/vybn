@@ -64,6 +64,7 @@ void defineActions(ui::Keymap &keymap)
     define("view.appearance", "Appearance", "View", {});
     define("view.foldAll", "Fold all groups", "View", {});
     define("view.unfoldAll", "Unfold all groups", "View", {});
+    define("view.timing", "Tempo and signature lanes", "View", {{Key::M, ctrlShift}});
     define("view.mixer", "Show the mixer", "View", {{Key::Num1, ctrl}});
     define("view.editor", "Show the clip editor", "View", {{Key::Num2, ctrl}});
     define("view.effects", "Show the devices", "View", {{Key::Num3, ctrl}});

@@ -33,7 +33,6 @@ struct StampedMidi {
     uint64_t position = 0; // samples on the timeline
     bool playing = false;
     double sampleRate = 48000.0;
-    double tempo = 120.0;
 };
 
 // MIDI input: keyboards and controllers plugged in (Windows' MIDI API; elsewhere none are

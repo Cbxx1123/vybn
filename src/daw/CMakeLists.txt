@@ -49,6 +49,7 @@ vybn_module(vybn_daw SOURCES
     views/StepMenus.cpp
     views/StepSequencer.cpp
     views/SynthView.cpp
+    views/TimingLanes.cpp
     views/TransportBar.cpp
     # Controls and text formats the views share
     widgets/Widgets.cpp

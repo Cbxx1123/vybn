@@ -224,6 +224,67 @@ Bytes trackChunk(const std::string &name, const std::vector<Event> &events)
     return chunk;
 }
 
+struct MetaEvent {
+    long long tick;
+    uint8_t type;
+    Bytes data;
+};
+
+Bytes tempoData(double bpm)
+{
+    const auto microseconds = static_cast<uint32_t>(std::llround(60e6 / bpm));
+    return {static_cast<uint8_t>(microseconds >> 16), static_cast<uint8_t>(microseconds >> 8), static_cast<uint8_t>(microseconds)};
+}
+
+// Time signature: the numerator over the denominator as a power of 2, 24 clocks a click, 8
+// notated 32nds a quarter
+Bytes signatureData(const audio::Signature &s)
+{
+    uint8_t power = 0;
+    while ((1 << power) < s.denominator)
+        ++power;
+    return {static_cast<uint8_t>(std::clamp(s.numerator, 1, 255)), power, 24, 8};
+}
+
+// The tempo and signature events over [from, to), in order: what is in force at `from`, then each
+// change. A ramp is written as steps every 1/16 beat (at the tempo in the middle of each step).
+std::vector<MetaEvent> conductorEvents(const audio::TempoMap &timing, double from, double to)
+{
+    std::vector<MetaEvent> events;
+    events.push_back({0, 0x51, tempoData(timing.bpmAt(from))});
+    events.push_back({0, 0x58, signatureData(timing.signatureAt(from))});
+    const std::vector<audio::TempoPoint> &points = timing.points();
+    for (size_t i = 0; i < points.size(); ++i) {
+        const double start = points[i].beat;
+        const double end = i + 1 < points.size() ? points[i + 1].beat : to;
+        if (start >= to || end <= from)
+            continue;
+        if (start > from)
+            events.push_back({tickAt(start, from), 0x51, tempoData(points[i].bpm)});
+        if (points[i].ramp && i + 1 < points.size()) {
+            constexpr double kStep = 1.0 / 16.0;
+            for (double b = std::max(start, std::ceil(from / kStep) * kStep); b < std::min(end, to); b += kStep)
+                events.push_back({tickAt(b, from), 0x51, tempoData(timing.bpmAt(std::min(b + kStep / 2.0, end)))});
+        }
+    }
+    for (const audio::Signature &s : timing.signatures()) {
+        const double at = timing.barStart(s.bar);
+        if (at > from && at < to)
+            events.push_back({tickAt(at, from), 0x58, signatureData(s)});
+    }
+    // In time; at the same tick the later one wins, so only the last of each type is kept there
+    std::stable_sort(events.begin(), events.end(), [](const MetaEvent &a, const MetaEvent &b) { return a.tick < b.tick; });
+    std::vector<MetaEvent> kept;
+    for (MetaEvent &e : events) {
+        auto same = std::find_if(kept.begin(), kept.end(), [&](const MetaEvent &k) { return k.tick == e.tick && k.type == e.type; });
+        if (same != kept.end())
+            *same = std::move(e);
+        else
+            kept.push_back(std::move(e));
+    }
+    return kept;
+}
+
 }
 
 bool writeMidiFile(const Project &project, const MidiExportOptions &options, const std::string &path, std::string &error)
@@ -251,22 +312,19 @@ bool writeMidiFile(const Project &project, const MidiExportOptions &options, con
             chosen.push_back(index);
     }
 
-    // Track 0 is the conductor: the name, tempo and time signature
-    const int beatsPerBar = std::clamp(project.beatsPerBar, 1, 255);
-    const double tempo = project.tempo > 0.0 ? project.tempo : 120.0;
+    // Track 0 is the conductor: the name, then the tempo and time signature at the start and at
+    // every change in the range
     Bytes conductor;
     {
         Bytes name(project.name.begin(), project.name.end());
-        const auto microseconds = static_cast<uint32_t>(std::llround(60e6 / tempo));
-        const Bytes tempoData = {static_cast<uint8_t>(microseconds >> 16), static_cast<uint8_t>(microseconds >> 8), static_cast<uint8_t>(microseconds)};
-        // Time signature: beats per bar over a quarter note, 24 clocks a click, 8 notated 32nds a quarter
-        const Bytes signature = {static_cast<uint8_t>(beatsPerBar), 2, 24, 8};
         putVlq(conductor, 0);
         putMeta(conductor, 0x03, name);
-        putVlq(conductor, 0);
-        putMeta(conductor, 0x51, tempoData);
-        putVlq(conductor, 0);
-        putMeta(conductor, 0x58, signature);
+        long long last = 0;
+        for (const MetaEvent &e : conductorEvents(project.timing, from, to)) {
+            putVlq(conductor, static_cast<uint32_t>(e.tick - last));
+            putMeta(conductor, e.type, e.data);
+            last = e.tick;
+        }
         putVlq(conductor, 0);
         putMeta(conductor, 0x2F, {});
     }

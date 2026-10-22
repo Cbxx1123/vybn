@@ -85,6 +85,12 @@ const Clip *StepSequencerView::clip() const
     return project().clip();
 }
 
+double StepSequencerView::barLength() const
+{
+    const Clip *c = clip();
+    return project().timing.signatureAt(c ? c->start : 0.0).barLength();
+}
+
 StepGrid StepSequencerView::grid() const
 {
     const double length = clip() ? clip()->length : 4.0;
@@ -514,7 +520,7 @@ uint64_t StepSequencerView::contentKey() const
     for (int key : added_)
         fp.add(key);
     fp.add(selectedRow_);
-    fp.add(project().beatsPerBar); // the bars drawn in the header and grid
+    fp.add(barLength()); // the bars drawn in the header and grid
     // Hover over the "Add row" line
     fp.add(addHot_);
     // Layout and scroll
@@ -548,8 +554,8 @@ void StepSequencerView::draw(DrawList &list, const Theme &theme) const
     const uint64_t base = contentKey();
     const StepGrid g = grid();
     const int perBeat = std::max(1, static_cast<int>(std::lround(1.0 / g.step)));
-    const int beatsPerBar = std::max(1, project().beatsPerBar);
-    const int perBar = perBeat * beatsPerBar;
+    // Bars as long as the signature where the clip starts
+    const int perBar = std::max(1, static_cast<int>(std::lround(barLength() * perBeat)));
     int playingStep = -1;
     if (hooks_.playing && hooks_.playing() && hooks_.position) {
         const double at = hooks_.position() - c->start;

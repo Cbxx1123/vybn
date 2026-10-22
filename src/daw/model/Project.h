@@ -8,13 +8,15 @@
 
 #include "daw/model/ExportModel.h"
 #include "audio/Device.h"
+#include "audio/TempoMap.h"
 
 namespace daw {
 
 // The session the DAW edits: tracks with clips on a beat timeline. DawApp mirrors each track's
 // gain, pan, mute and solo into an audio::TrackProcessor, plays instrument tracks' notes through
 // their instrument and audio tracks' clips from their sound files. Positions and lengths are in
-// beats; times inside sound files are in seconds (audio isn't stretched by the tempo).
+// beats (quarter notes), turned into time and bars by `timing`; times inside sound files are in
+// seconds (audio isn't stretched by the tempo).
 
 // A MIDI note in a clip, positioned from the clip's start
 struct Note {
@@ -151,9 +153,8 @@ struct DevicePlace {
 struct Project {
     std::string name = "Untitled";
     std::vector<Track> tracks;
-    double tempo = 120.0; // BPM; DawApp keeps it in step with the transport
-    double secondsPerBeat() const { return 60.0 / tempo; }
-    int beatsPerBar = 4;
+    // The tempo and time signatures over the song; DawApp hands each change to the transport
+    audio::TempoMap timing;
     int bars = 64; // length of the timeline
     // The loop, in beats (none while the end isn't after the start), and whether playback loops
     // in it. Saved, but not part of the undo history (like the transport).
@@ -217,7 +218,10 @@ struct Project {
     void trimStart(Clip &clip, double beat, double minimum = 0.25) const;
     // Copies the selected clip to just after itself and selects the copy
     void duplicateClip();
-    double lengthBeats() const { return static_cast<double>(bars) * beatsPerBar; }
+    double lengthBeats() const { return timing.barStart(bars); }
+    // The beats `seconds` of sound last from `start` (an audio clip's length, which the tempo
+    // doesn't stretch)
+    double beatsFor(double start, double seconds) const { return timing.beatAt(timing.secondsAt(start) + seconds) - start; }
 };
 
 // The tracks' ids and kinds in order (one number each). Views that make something per track
@@ -232,6 +236,7 @@ struct NewProjectOptions {
     std::string name = "Untitled";
     double tempo = 120.0;
     int beatsPerBar = 4;
+    int beatUnit = 4; // the signature's denominator
     int bars = 32;
     bool instrumentTrack = true;
     bool audioTrack = true;

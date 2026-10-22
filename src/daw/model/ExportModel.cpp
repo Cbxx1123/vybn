@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <sstream>
 #include <utility>
@@ -292,7 +293,7 @@ uint32_t mp3RateFor(uint32_t rate)
 
 bool exportTargetRange(const Project &project, const ExportTarget &target, double &startBeat, double &endBeat)
 {
-    const double bar = project.beatsPerBar;
+    const audio::TempoMap &timing = project.timing;
     switch (target.range) {
     case ExportRangeKind::Song: {
         double end = 0.0;
@@ -301,7 +302,7 @@ bool exportTargetRange(const Project &project, const ExportTarget &target, doubl
                 end = std::max(end, c.start + c.length);
         }
         startBeat = 0.0;
-        endBeat = std::max(end, bar);
+        endBeat = std::max(end, timing.barStart(1));
         return true;
     }
     case ExportRangeKind::Timeline:
@@ -315,8 +316,8 @@ bool exportTargetRange(const Project &project, const ExportTarget &target, doubl
         endBeat = project.loopEnd;
         return true;
     case ExportRangeKind::Bars:
-        startBeat = std::max(0.0, (target.fromBar - 1.0) * bar);
-        endBeat = std::max(0.0, (target.toBar - 1.0) * bar);
+        startBeat = std::max(0.0, timing.barStart(static_cast<int>(std::lround(target.fromBar)) - 1));
+        endBeat = std::max(0.0, timing.barStart(static_cast<int>(std::lround(target.toBar)) - 1));
         return endBeat > startBeat;
     }
     return false;
