@@ -25,6 +25,7 @@ when every suite passed.
 tools/test.sh            the runner: one process per suite, longest first, one table, exit code
   output/vybn.exe --X-selftest      a suite (tests/XSelfTest.cpp), run on its own
     tests/Harness.h                 the shared Checker, the tier switches, the Pacer
+tools/coverage.sh        a coverage build of its own, the suites run against it, gcov's table (below)
 ```
 
 **One process per suite.** The suites share nothing (each builds its own environment, audio system and
@@ -178,11 +179,23 @@ and after the refactors:
 8. **Check a new test can fail**: break the code it covers and watch it go red. Two such mutations were
    used on this rehaul (`moveTrack`'s selection shift, and the arrangement's cache key); both were caught.
 
+## Coverage
+
+`tools/coverage.sh` shows which lines of the modules (`src/`) the suites run: it configures and builds a
+tree of its own, `build-coverage/` (`VYBN_COVERAGE` on, so every module is compiled with `--coverage`;
+the audio code not optimised; everything in `output-coverage/`), runs the suites against it one at a time
+(about 50 s; two processes ending together would write the same counters), and prints each source
+file's lines run, least covered first, from gcov. `--report` prints the table again, `--all` lists every
+file, and suite names run only those. Not counted: `main.cpp`, the tests, and the plugin host (its process
+is sandboxed and can't write its counters). Measured on this branch: 56.7% of 39,878 lines. The files at
+0% are those only the running app reaches (`DawApp` and its parts, the dialogs, docking, the transport
+bar, HTTP, the file dialogs).
+
 ## Not done, and why
 
-- **Splitting the export suite** into two processes (the render checks and the rest) would bring the wall
-  time from ~15.6 s toward ~10 s. It needs a group argument through `runExportSelfTest`; not worth it yet.
-- **Coverage.** Nothing measures which source is exercised. A `--coverage` build with gcov would find
-  untested code (not stale tests, which the review above looked for); it needs a second build tree.
-- **The UI drag** (track reorder, instrument picker order) has no automated check: the render suite draws
-  scenes but sends no input. The model-level pieces are tested.
+- **Splitting the export suite** in two. It was 15.6 s of a 15.6 s wall; it is now 5-6 s, beside the
+  render (5.5 s) and engine (5.2 s) suites, and the wall (about 10 s) is that group's 6 s and then the
+  plugin suite alone. Splitting it would save under half a second.
+- **The UI drag**: the track reorder drag is checked (`foldDragChecks` drags headers by input), and so are
+  the browser's instrument drag and the arrangement's drop rows (`browserDragChecks`). What joins them
+  in the app (the drag's ghost and the drop, `DawApp::dropInstrument`) is not: no test makes a `DawApp`.

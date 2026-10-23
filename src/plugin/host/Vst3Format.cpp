@@ -11,6 +11,10 @@
 // processor in the next block and back to the app; the processor's output changes back to the app
 // and on to the controller. Only the audio thread pushes into the ring to the app while the plugin
 // is active, so edits made then go through it.
+//
+// A parameter's units (IUnitInfo) are its module, as a CLAP plugin's module path; a program-change
+// parameter whose unit has a program list is a list of the programs, by name. A plugin that only
+// processes doubles gets them, converted to and from the block's floats.
 
 #include "plugin/host/Host.h"
 
@@ -20,6 +24,8 @@
 #include <map>
 
 #include <clap/clap.h>
+
+#include "plugin/ModuleInfo.h"
 
 #include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/base/ipluginbase.h"
@@ -34,6 +40,7 @@
 #include "pluginterfaces/vst/ivstmidicontrollers.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
+#include "pluginterfaces/vst/ivstunits.h"
 
 namespace host {
 
@@ -94,44 +101,6 @@ bool cidOf(const std::string &id, TUID cid)
         cid[i] = static_cast<char>(hi * 16 + lo);
     }
     return true;
-}
-
-// A class's subcategories ("Instrument|Synth", "Fx|Delay") as CLAP's feature words, which the app
-// asks ("instrument synthesizer", "audio-effect delay")
-std::string featuresOf(const std::string &subcategories)
-{
-    static const std::map<std::string, std::string> words = {
-        {"instrument", "instrument"}, {"fx", "audio-effect"},      {"synth", "synthesizer"},   {"sampler", "sampler"},
-        {"drum", "drum-machine"},     {"delay", "delay"},          {"reverb", "reverb"},       {"dynamics", "compressor"},
-        {"eq", "equalizer"},          {"filter", "filter"},        {"distortion", "distortion"}, {"analyzer", "analyzer"},
-        {"modulation", "modulation"}, {"pitch shift", "pitch-shifter"}, {"mastering", "mastering"}, {"restoration", "restoration"},
-        {"mono", "mono"},             {"stereo", "stereo"},        {"surround", "surround"},   {"tools", "utility"},
-        {"generator", "instrument"},  {"piano", "piano"},          {"external", "external"},   {"spatial", "spatial"},
-    };
-    std::string out;
-    bool instrument = false, effect = false;
-    size_t start = 0;
-    while (start <= subcategories.size()) {
-        size_t end = subcategories.find('|', start);
-        if (end == std::string::npos)
-            end = subcategories.size();
-        std::string word = subcategories.substr(start, end - start);
-        std::transform(word.begin(), word.end(), word.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        start = end + 1;
-        if (word.empty())
-            continue;
-        const auto found = words.find(word);
-        std::string feature = found != words.end() ? found->second : word;
-        std::replace(feature.begin(), feature.end(), ' ', '-');
-        if ((" " + out + " ").find(" " + feature + " ") != std::string::npos)
-            continue;
-        instrument = instrument || feature == "instrument";
-        effect = effect || feature == "audio-effect";
-        out += (out.empty() ? "" : " ") + feature;
-    }
-    if (!instrument && !effect)
-        out = "audio-effect" + std::string(out.empty() ? "" : " ") + out;
-    return out;
 }
 
 uint32_t channelsOf(SpeakerArrangement arrangement)
@@ -441,15 +410,44 @@ public:
 class Vst3Format;
 Vst3Format *current = nullptr; // the one the host made: the handler, the frame and the window reach it
 
-class ComponentHandler : public IComponentHandler {
+// The controller's way back to the host: its edits and restarts; its state changing in ways its
+// parameters don't show (setDirty); its program lists changing. Grouped edits arrive one by one, as
+// any others, and the app opens editors itself
+class ComponentHandler : public IComponentHandler, public IComponentHandler2, public IUnitHandler {
 public:
-    tresult PLUGIN_API queryInterface(const TUID iid, void **obj) override { return answer<IComponentHandler>(this, iid, IComponentHandler_iid, obj); }
+    tresult PLUGIN_API queryInterface(const TUID iid, void **obj) override
+    {
+        if (same(iid, FUnknown_iid) || same(iid, IComponentHandler_iid))
+            *obj = static_cast<IComponentHandler *>(this);
+        else if (same(iid, IComponentHandler2_iid))
+            *obj = static_cast<IComponentHandler2 *>(this);
+        else if (same(iid, IUnitHandler_iid))
+            *obj = static_cast<IUnitHandler *>(this);
+        else
+            return *obj = nullptr, kNoInterface;
+        return kResultOk;
+    }
     VYBN_FOREVER
 
     tresult PLUGIN_API beginEdit(ParamID id) override;
     tresult PLUGIN_API performEdit(ParamID id, ParamValue value) override;
     tresult PLUGIN_API endEdit(ParamID id) override;
     tresult PLUGIN_API restartComponent(int32 flags) override;
+
+    tresult PLUGIN_API setDirty(TBool state) override
+    {
+        if (state) {
+            stateDirty = true;
+            wake();
+        }
+        return kResultOk;
+    }
+    tresult PLUGIN_API requestOpenEditor(FIDString) override { return kResultFalse; }
+    tresult PLUGIN_API startGroupEdit() override { return kResultOk; }
+    tresult PLUGIN_API finishGroupEdit() override { return kResultOk; }
+
+    tresult PLUGIN_API notifyUnitSelection(UnitID) override { return kResultOk; }
+    tresult PLUGIN_API notifyProgramListChange(ProgramListID, int32) override;
 };
 
 class PlugFrame : public IPlugFrame {
@@ -478,6 +476,9 @@ constexpr ParamID kNoParam = 0xFFFFFFFFu;
 struct Bus {
     std::vector<float *> channels;
     std::vector<std::vector<float>> scratch;
+    // A plugin that processes doubles reads and writes these; the block is converted around it
+    std::vector<double *> wideChannels;
+    std::vector<std::vector<double>> wide;
 };
 
 class Vst3Format : public Format {
@@ -582,9 +583,13 @@ public:
             return false;
         }
         processor_ = static_cast<IAudioProcessor *>(p);
+        // Floats as the block is, else doubles
         if (processor_->canProcessSampleSize(kSample32) != kResultTrue) {
-            error = "The plugin can't process 32-bit audio";
-            return false;
+            if (processor_->canProcessSampleSize(kSample64) != kResultTrue) {
+                error = "The plugin can't process 32-bit or 64-bit audio";
+                return false;
+            }
+            doubles_ = true;
         }
         // Its edit controller: the component itself, or a class of its own, connected to it
         if (component_->queryInterface(IEditController_iid, &p) == kResultOk && p) {
@@ -621,6 +626,8 @@ public:
             controller_->setComponentHandler(&handler_);
             if (controller_->queryInterface(IMidiMapping_iid, &p) == kResultOk && p)
                 midiMapping_ = static_cast<IMidiMapping *>(p);
+            if (controller_->queryInterface(IUnitInfo_iid, &p) == kResultOk && p)
+                unitInfo_ = static_cast<IUnitInfo *>(p);
         }
         buildTables();
 
@@ -650,7 +657,7 @@ public:
         rate_ = rate;
         buildTables();
         buildBuses();
-        ProcessSetup setup{kRealtime, kSample32, static_cast<int32>(kMaxFrames), rate};
+        ProcessSetup setup{kRealtime, doubles_ ? kSample64 : kSample32, static_cast<int32>(kMaxFrames), rate};
         if (processor_->setupProcessing(setup) != kResultOk) {
             error = "The plugin refused the sample rate";
             return false;
@@ -672,6 +679,7 @@ public:
         std::vector<ParamInfo> list;
         if (!controller_)
             return list;
+        readUnits();
         const int32 n = controller_->getParameterCount();
         for (int32 i = 0; i < n && i < 10000; ++i) {
             ParameterInfo info{};
@@ -679,7 +687,11 @@ public:
                 continue;
             ParamInfo p;
             p.id = info.id;
-            if (info.stepCount > 0 || (info.flags & ParameterInfo::kIsList))
+            p.module = modulePath(info.unitId);
+            const int32 stepCount = stepsFor(info);
+            if (programListOf(info) != kNoProgramListId)
+                info.flags |= ParameterInfo::kIsList;
+            if (stepCount > 0 || (info.flags & ParameterInfo::kIsList))
                 p.flags |= CLAP_PARAM_IS_STEPPED;
             if (info.flags & ParameterInfo::kIsList)
                 p.flags |= CLAP_PARAM_IS_ENUM;
@@ -694,21 +706,28 @@ public:
             if (info.flags & ParameterInfo::kCanAutomate)
                 p.flags |= CLAP_PARAM_IS_AUTOMATABLE;
             p.name = utf8(info.title, 128);
-            const double steps = info.stepCount > 0 ? info.stepCount : 1.0;
+            const double steps = stepCount > 0 ? stepCount : 1.0;
             p.min = 0.0;
             p.max = steps;
             p.def = info.defaultNormalizedValue * steps;
             p.value = controller_->getParamNormalized(info.id) * steps;
-            if (info.stepCount > 0)
+            if (stepCount > 0)
                 p.def = static_cast<double>(static_cast<int64_t>(p.def + 0.5)), p.value = static_cast<double>(static_cast<int64_t>(p.value + 0.5));
             list.push_back(p);
         }
         return list;
     }
 
+    // A program list's parameter shows its program's name; any other the controller's words
     bool paramText(uint32_t id, double value, std::string &text) override
     {
         String128 buffer = {};
+        const auto program = programParams_.find(id);
+        if (program != programParams_.end() && unitInfo_ &&
+            unitInfo_->getProgramName(program->second, static_cast<int32>(value + 0.5), buffer) == kResultOk && buffer[0]) {
+            text = utf8(buffer, 128);
+            return true;
+        }
         if (!controller_ || controller_->getParamStringByValue(id, normalised(id, value), buffer) != kResultOk)
             return false;
         text = utf8(buffer, 128);
@@ -870,11 +889,13 @@ public:
             componentPoint_->disconnect(controllerPoint_);
             controllerPoint_->disconnect(componentPoint_);
         }
-        for (FUnknown *u : {static_cast<FUnknown *>(componentPoint_), static_cast<FUnknown *>(controllerPoint_), static_cast<FUnknown *>(midiMapping_)})
+        for (FUnknown *u : {static_cast<FUnknown *>(componentPoint_), static_cast<FUnknown *>(controllerPoint_), static_cast<FUnknown *>(midiMapping_),
+                            static_cast<FUnknown *>(unitInfo_)})
             if (u)
                 u->release();
         componentPoint_ = controllerPoint_ = nullptr;
         midiMapping_ = nullptr;
+        unitInfo_ = nullptr;
         if (controller_) {
             if (separate_)
                 controller_->terminate();
@@ -995,10 +1016,16 @@ public:
         Bus &out = outputs_[static_cast<size_t>(mainOutput_)];
         for (uint32_t c = 0; c < out.channels.size() && c < kMaxChannels; ++c)
             out.channels[c] = shared->output[c];
+        if (doubles_) {
+            for (Bus &bus : inputs_)
+                for (size_t c = 0; c < bus.channels.size(); ++c)
+                    for (uint32_t i = 0; i < frames; ++i)
+                        bus.wide[c][i] = bus.channels[c][i];
+        }
 
         ProcessData data{};
         data.processMode = kRealtime;
-        data.symbolicSampleSize = kSample32;
+        data.symbolicSampleSize = doubles_ ? kSample64 : kSample32;
         data.numSamples = static_cast<int32>(frames);
         data.numInputs = static_cast<int32>(inBuffers_.size());
         data.numOutputs = static_cast<int32>(outBuffers_.size());
@@ -1017,6 +1044,12 @@ public:
             return;
         }
         shared->status = kProcessContinue;
+        if (doubles_) {
+            for (Bus &bus : outputs_)
+                for (size_t c = 0; c < bus.channels.size(); ++c)
+                    for (uint32_t i = 0; i < frames; ++i)
+                        bus.channels[c][i] = static_cast<float>(bus.wide[c][i]);
+        }
         // What the processor changed goes to the app and its controller
         for (int32 i = 0; i < outChanges_.count; ++i) {
             ParamQueue &q = outChanges_.queues[static_cast<size_t>(i)];
@@ -1103,13 +1136,13 @@ private:
             d.name = utf8(wide.name, sizeof wide.name / sizeof(char16));
             d.vendor = utf8(wide.vendor, sizeof wide.vendor / sizeof(char16));
             d.version = utf8(wide.version, sizeof wide.version / sizeof(char16));
-            d.features = featuresOf(ascii(wide.subCategories, sizeof wide.subCategories));
+            d.features = vst3Features(ascii(wide.subCategories, sizeof wide.subCategories));
         } else if (factory2_ && factory2_->getClassInfo2(index, &more) == kResultOk) {
             d.vendor = ascii(more.vendor, sizeof more.vendor);
             d.version = ascii(more.version, sizeof more.version);
-            d.features = featuresOf(ascii(more.subCategories, sizeof more.subCategories));
+            d.features = vst3Features(ascii(more.subCategories, sizeof more.subCategories));
         } else {
-            d.features = featuresOf("");
+            d.features = vst3Features("");
         }
         return !d.name.empty();
     }
@@ -1145,12 +1178,13 @@ private:
     void buildTables()
     {
         steps_.clear();
+        readUnits();
         if (controller_) {
             const int32 n = controller_->getParameterCount();
             for (int32 i = 0; i < n && i < 10000; ++i) {
                 ParameterInfo info{};
                 if (controller_->getParameterInfo(i, info) == kResultOk)
-                    steps_.emplace_back(info.id, info.stepCount);
+                    steps_.emplace_back(info.id, stepsFor(info));
             }
         }
         std::sort(steps_.begin(), steps_.end());
@@ -1210,6 +1244,11 @@ private:
                 bus.scratch.assign(channels, std::vector<float>(kMaxFrames, 0.0f));
                 for (uint32_t c = 0; c < channels; ++c)
                     bus.channels.push_back(bus.scratch[c].data());
+                if (doubles_) {
+                    bus.wide.assign(channels, std::vector<double>(kMaxFrames, 0.0));
+                    for (uint32_t c = 0; c < channels; ++c)
+                        bus.wideChannels.push_back(bus.wide[c].data());
+                }
                 if (main < 0 && known && info.busType == kMain)
                     main = static_cast<int>(buses.size());
                 buses.push_back(std::move(bus));
@@ -1219,7 +1258,10 @@ private:
             for (Bus &bus : buses) {
                 AudioBusBuffers b{};
                 b.numChannels = static_cast<int32>(bus.channels.size());
-                b.channelBuffers32 = bus.channels.empty() ? nullptr : bus.channels.data();
+                if (doubles_)
+                    b.channelBuffers64 = bus.wideChannels.empty() ? nullptr : bus.wideChannels.data();
+                else
+                    b.channelBuffers32 = bus.channels.empty() ? nullptr : bus.channels.data();
                 buffers.push_back(b);
             }
             if (dir == kInput) {
@@ -1232,6 +1274,67 @@ private:
                 }
             }
         }
+    }
+
+    // The units (names and parents), the program lists' lengths, and which parameters choose a
+    // program (main thread)
+    void readUnits()
+    {
+        units_.clear();
+        programCounts_.clear();
+        programParams_.clear();
+        if (!unitInfo_)
+            return;
+        for (int32 i = 0, n = std::min<int32>(unitInfo_->getUnitCount(), 10000); i < n; ++i) {
+            UnitInfo unit{};
+            if (unitInfo_->getUnitInfo(i, unit) == kResultOk)
+                units_[unit.id] = unit;
+        }
+        for (int32 i = 0, n = std::min<int32>(unitInfo_->getProgramListCount(), 1000); i < n; ++i) {
+            ProgramListInfo list{};
+            if (unitInfo_->getProgramListInfo(i, list) == kResultOk && list.programCount > 0)
+                programCounts_[list.id] = list.programCount;
+        }
+        for (int32 i = 0, n = controller_ ? controller_->getParameterCount() : 0; i < n && i < 10000; ++i) {
+            ParameterInfo info{};
+            if (controller_->getParameterInfo(i, info) == kResultOk && programListOf(info) != kNoProgramListId)
+                programParams_[info.id] = programListOf(info);
+        }
+    }
+
+    // "Voice/Pitch": the units from the root's child down to a parameter's; the root names nothing
+    std::string modulePath(UnitID id) const
+    {
+        std::string path;
+        for (int depth = 0; id != kRootUnitId && id != kNoParentUnitId && depth < 32; ++depth) {
+            const auto found = units_.find(id);
+            if (found == units_.end())
+                break;
+            const std::string name = utf8(found->second.name, 128);
+            path = path.empty() ? name : name + "/" + path;
+            id = found->second.parentUnitId;
+        }
+        return path;
+    }
+
+    // The program list a parameter chooses from: a program change in a unit that has one
+    ProgramListID programListOf(const ParameterInfo &info) const
+    {
+        if (!(info.flags & ParameterInfo::kIsProgramChange))
+            return kNoProgramListId;
+        const auto unit = units_.find(info.unitId);
+        if (unit == units_.end() || programCounts_.count(unit->second.programListId) == 0)
+            return kNoProgramListId;
+        return unit->second.programListId;
+    }
+
+    // A parameter's steps: its own, or one fewer than its programs
+    int32 stepsFor(const ParameterInfo &info) const
+    {
+        if (info.stepCount > 0)
+            return info.stepCount;
+        const ProgramListID list = programListOf(info);
+        return list == kNoProgramListId ? 0 : std::max<int32>(0, programCounts_.at(list) - 1);
     }
 
     int32 stepsOf(ParamID id) const
@@ -1258,8 +1361,10 @@ private:
         toController_.push({id, value});
     }
 
+    // A note's id is its channel and key, the same on its note-off, so a plugin can tell its voices apart
     void note(int32 time, int channel, int key, bool on, double velocity)
     {
+        const int32 noteId = channel * 128 + key;
         Steinberg::Vst::Event e{};
         e.busIndex = 0;
         e.sampleOffset = time;
@@ -1269,13 +1374,13 @@ private:
             e.noteOn.channel = static_cast<int16>(channel);
             e.noteOn.pitch = static_cast<int16>(key);
             e.noteOn.velocity = static_cast<float>(velocity < 0.0 ? 0.0 : (velocity > 1.0 ? 1.0 : velocity));
-            e.noteOn.noteId = -1;
+            e.noteOn.noteId = noteId;
         } else {
             e.type = Steinberg::Vst::Event::kNoteOffEvent;
             e.noteOff.channel = static_cast<int16>(channel);
             e.noteOff.pitch = static_cast<int16>(key);
             e.noteOff.velocity = 0.0f;
-            e.noteOff.noteId = -1;
+            e.noteOff.noteId = noteId;
         }
         held_[channel][key] = on;
         events_.addEvent(e);
@@ -1345,6 +1450,11 @@ private:
     IConnectionPoint *componentPoint_ = nullptr;
     IConnectionPoint *controllerPoint_ = nullptr;
     IMidiMapping *midiMapping_ = nullptr;
+    IUnitInfo *unitInfo_ = nullptr;
+    std::map<UnitID, UnitInfo> units_;
+    std::map<ProgramListID, int32> programCounts_;
+    std::map<ParamID, ProgramListID> programParams_;
+    bool doubles_ = false; // it processes 64-bit audio only
     IPlugView *view_ = nullptr;
     HWND window_ = nullptr; // the host's window around the editor, when it floats
     DWORD windowStyle_ = 0;
@@ -1397,6 +1507,14 @@ tresult PLUGIN_API ComponentHandler::restartComponent(int32 flags)
 {
     if (current)
         current->restart(flags);
+    return kResultOk;
+}
+
+// New program names, or a new program chosen: the parameters' texts and values to read again
+tresult PLUGIN_API ComponentHandler::notifyProgramListChange(ProgramListID, int32)
+{
+    paramsRescan.fetch_or(CLAP_PARAM_RESCAN_TEXT | CLAP_PARAM_RESCAN_VALUES | 0x80000000u);
+    wake();
     return kResultOk;
 }
 

@@ -35,7 +35,9 @@
 #include "plugin/Slot.h"
 #include "daw/app/Appearance.h"
 #include "daw/views/Arrangement.h"
+#include "daw/views/Browser.h"
 #include "daw/library/DeviceCatalogue.h"
+#include "daw/library/Online.h"
 #include "daw/views/DeviceControls.h"
 #include "daw/views/DeviceView.h"
 #include "daw/views/DevicesPanel.h"
@@ -1809,6 +1811,109 @@ daw::Project sidechainProject()
     p.tracks[2].kind = daw::TrackKind::Group;
     p.tracks[0].effects = {audio::effectSetting(audio::EffectType::Compressor), audio::effectSetting(audio::EffectType::Equalizer)};
     return p;
+}
+
+// Dragging an instrument out of the browser, by input handed to it as above: a press on an instrument's
+// row and a move past a few pixels starts the drag once, with the row's key (a smaller move, or a
+// click, starts none); and the arrangement above it finds the rows a drop lands on (a track, the space
+// under the tracks for a new one). What joins the two (the ghost, the drop) is DawApp's.
+void browserDragChecks(Checker &c)
+{
+    const std::filesystem::path temp = std::filesystem::temp_directory_path() / "vybn-browser-drag";
+    std::error_code ec;
+    std::filesystem::create_directories(temp, ec);
+    env::Environment environment;
+    environment.add<env::Scheduler>(env::SchedulerConfig{});
+    daw::Settings settings;
+    settings.libraryPath = (temp / "Library").u8string();
+    daw::InstrumentLibrary library(environment, settings);
+    daw::DeviceCatalogue catalogue(library, nullptr);
+    daw::OnlineCatalogue online(environment, settings);
+    daw::Downloads downloads(environment, library);
+
+    engine::Window window(1200, 1000, "VYBN browser drag test", false);
+    window.setPosition(-32000, -32000);
+    engine::Renderer renderer(window, false, true);
+    const ui::Theme theme = daw::studioTheme(true);
+    daw::ProjectStore store(sidechainProject());
+    ui::Context context(window, renderer, theme);
+    auto &view = context.root().add<daw::ArrangementView>(store, quietTransport());
+    view.showTiming(false);
+    stretch(view);
+
+    std::vector<std::string> dragged;
+    int used = 0;
+    daw::BrowserHooks hooks;
+    hooks.catalogue = &catalogue;
+    hooks.dragInstrument = [&](const std::string &key) { dragged.push_back(key); };
+    hooks.useInstrument = [&](const std::string &) { ++used; };
+    daw::AssetBrowser &browser = daw::AssetBrowser::open(context, library, online, downloads, hooks);
+    browser.show();
+    for (int i = 0; i < 3; ++i) {
+        context.update();
+        context.buildFrame();
+    }
+
+    int fb = 0, fbH = 0;
+    window.framebufferSize(fb, fbH);
+    const ui::Rect whole{0.0f, 0.0f, static_cast<float>(fb), static_cast<float>(fbH)};
+    double now = 1.0;
+    auto send = [&](ui::Vec2 at, bool down, bool pressed, bool released) {
+        ui::Input in;
+        in.mouse = at;
+        in.down = down;
+        in.pressed = pressed;
+        in.released = released;
+        in.dt = 0.1f;
+        in.time = now += 0.5; // never two clicks close enough to be a double-click
+        browser.handleInput(in);
+        browser.arrange(whole, theme);
+    };
+    for (int i = 0; i < 12; ++i) // slid fully up, its rows laid out
+        send({0.0f, 0.0f}, false, false, false);
+
+    // A built-in instrument's row
+    std::string key;
+    ui::Rect row;
+    for (const daw::CatalogueEntry &e : catalogue.entries()) {
+        if (!e.instrument || e.plugin())
+            continue;
+        browser.chooseInstrument(e.key());
+        send({0.0f, 0.0f}, false, false, false);
+        row = browser.rowRect(e.key());
+        if (row.w > 0.0f && browser.rect().contains(row.center())) {
+            key = e.key();
+            break;
+        }
+    }
+    c.check(!key.empty() && browser.openness() == 1.0f, "Browser drag: the browser is open and a built-in instrument's row is shown", key);
+    if (key.empty())
+        return;
+
+    const ui::Vec2 at = row.center();
+    send(at, true, true, false);
+    send({at.x + 3.0f, at.y - 3.0f}, true, false, false);
+    const bool small = dragged.empty();
+    send({at.x + 10.0f, at.y - 40.0f}, true, false, false);
+    send({at.x + 20.0f, at.y - 200.0f}, true, false, false);
+    send({at.x + 20.0f, at.y - 200.0f}, false, false, true);
+    c.check(small && dragged.size() == 1 && dragged[0] == key, "Browser drag: moving a pressed instrument's row past a few pixels drags it, once, by its key",
+            std::to_string(dragged.size()) + " drags");
+    dragged.clear();
+    send(at, true, true, false);
+    send(at, false, false, true);
+    c.check(dragged.empty() && used == 0, "Browser drag: a click on the row drags nothing (and uses nothing)");
+
+    // Where it is dropped: on a track, or under the tracks (a new one); the browser covers the rest
+    const daw::TrackHeader *first = view.header(0);
+    const daw::TrackHeader *last = view.header(2);
+    const float laneX = view.rect().x + view.rect().w * 0.6f;
+    const int onTrack = first ? view.trackAt({laneX, first->rect().center().y}) : -2;
+    const int under = last ? view.trackAt({laneX, last->rect().y + last->rect().h + 20.0f}) : -2;
+    c.check(onTrack == 0 && under == 3 && last && last->rect().y + last->rect().h + 20.0f < browser.rect().y,
+            "Browser drag: the arrangement finds a drop's track, and the space under the tracks for a new one",
+            std::to_string(onTrack) + ", " + std::to_string(under));
+    std::filesystem::remove_all(temp, ec);
 }
 
 // The Sidechain control on a compressor's card in the Devices panel (and in a device's own view): the
@@ -3756,6 +3861,7 @@ int runRenderSelfTest(int argc, char **argv)
         timed("flexibleMixerChecks", [&] { flexibleMixerChecks(editing); });
         timed("tallStripChecks", [&] { tallStripChecks(editing); });
         timed("faderDragChecks", [&] { faderDragChecks(editing); });
+        timed("browserDragChecks", [&] { browserDragChecks(editing); });
         timed("sidechainUiChecks", [&] { sidechainUiChecks(editing); });
         timed("sidechainDeviceViewChecks", [&] { sidechainDeviceViewChecks(editing); });
         if (bench())

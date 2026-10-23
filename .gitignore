@@ -2,3 +2,4 @@ build/
 build-*/
 output/
 *.exe
+output-*/

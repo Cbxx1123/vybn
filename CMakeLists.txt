@@ -17,9 +17,12 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(VYBN_OPTIMISE_AUDIO "Compile the real-time audio code with -O3 in every build type" ON)
+# The modules instrumented for gcov, to see which lines the self-tests run (tools/coverage.sh, which
+# builds them in a tree and an output folder of their own)
+option(VYBN_COVERAGE "Build the program's modules with gcov's instrumentation" OFF)
 
 # Everything built goes here: the program, its helpers, the shaders and the test plugins
-set(VYBN_OUTPUT_DIR "${PROJECT_SOURCE_DIR}/output")
+set(VYBN_OUTPUT_DIR "${PROJECT_SOURCE_DIR}/output" CACHE PATH "Where everything built goes")
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(Dependencies)

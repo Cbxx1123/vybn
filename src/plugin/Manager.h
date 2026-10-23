@@ -35,7 +35,7 @@ struct PluginConfig {
 // What the last scan did
 struct ScanStats {
     size_t files = 0;   // plugin files found
-    size_t scanned = 0; // loaded in a host to be scanned
+    size_t scanned = 0; // scanned again (in a host, or a VST3 bundle from its moduleinfo.json)
     size_t cached = 0;  // taken from the cache
     size_t probed = 0;  // effect plugins whose sidechain port was asked after the scan (each in a host of its own)
 };
