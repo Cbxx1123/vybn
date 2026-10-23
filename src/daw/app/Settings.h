@@ -62,7 +62,7 @@ struct Settings {
 
     static std::string sampleCachePath(); // %LOCALAPPDATA%\VYBN\Sample cache
     static std::string pluginsPath();     // %LOCALAPPDATA%\VYBN\Plugins: imported plugins
-    // The plugin folders to scan (the standard CLAP folders, the imported plugins' and the
+    // The plugin folders to scan (the standard CLAP and VST3 folders, the imported plugins' and the
     // user's) and how plugins run
     plugin::PluginConfig pluginConfig() const;
 

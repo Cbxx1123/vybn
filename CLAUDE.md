@@ -7,7 +7,7 @@ changing it.
 ## What this is
 
 VYBN, a DAW in C++17 for Windows: a neumorphic UI drawn with Vulkan (GLFW windows), an audio engine
-on miniaudio (WASAPI), CLAP plugins hosted in sandboxed processes, and its own project format
+on miniaudio (WASAPI), CLAP and VST3 plugins hosted in sandboxed processes, and its own project format
 (`.vbp`, TOML). Instrument and audio tracks, return and group tracks, a tempo map with time
 signature changes, loop recording into take lanes with comping, markers, MIDI import and file drops,
 automation, sidechains, a piano roll, a step sequencer, a built-in synth and sampler, a library
@@ -23,7 +23,7 @@ src/
   env/                daemons, the scheduler and its thread pools, events, resources
   engine/             windows, input, Vulkan rendering, file dialogs, HTTP, the shell
   ui/                 layout, components, drawing, draw caches, the UI system
-  plugin/             CLAP hosting: instances, slots, the manager, the sandbox; host/ is the host program
+  plugin/             plugin hosting: instances, slots, the manager, the sandbox; host/ is the host program (CLAP, VST3)
   audio/              the audio system, devices, instruments, effects, automation, routing, encoders
   daw/
     model/            the project and its rules: Project, ProjectStore, History, Routing, ...
@@ -34,7 +34,7 @@ src/
     widgets/          shared controls and text formats
     app/              DawApp (the window and its menus), actions, settings, splash, the look
   win/                the icon patcher and the executable's resource
-tests/                the self-test suites, plugins/ (the test CLAP plugins), render/ (golden images)
+tests/                the self-test suites, plugins/ (the test CLAP and VST3 plugins), render/ (golden images)
 tools/                test.sh (runs the suites), check.sh (syntax check), link-dev.ps1
 shaders/              GLSL, compiled to output/shaders
 assets/               the font and the icon
@@ -44,7 +44,7 @@ docs/                 architecture/, reference/, design/, testing.md
 Each module is a static library (`vybn_env`, `vybn_engine`, `vybn_ui`, `vybn_plugin`, `vybn_audio`,
 `vybn_daw`, and `vybn_selftests` in tests/) built from the `CMakeLists.txt` in its folder; the program
 `vybn` links the DAW and the self-tests. Everything built goes to `output/`: `vybn.exe`,
-`vybn-plugin-host.exe`, `vybn-icon-patch.exe`, `shaders/`, `plugins/vybn-test-plugins.clap`.
+`vybn-plugin-host.exe`, `vybn-icon-patch.exe`, `shaders/`, `plugins/vybn-test-plugins.clap`, `plugins/vybn-test-plugins.vst3/`.
 
 ## Build and run
 
@@ -58,7 +58,7 @@ Each module is a static library (`vybn_env`, `vybn_engine`, `vybn_ui`, `vybn_plu
 - While the app is open it holds `output/vybn.exe`, so a build can't link it: link
   `output/vybn-dev.exe` instead with `tools/link-dev.ps1`, and test that with `VYBN_TEST_EXE`.
 - Syntax-check one file without building: `bash tools/check.sh src/daw/model/Project.cpp`.
-- Third-party code (GLFW, stb, miniaudio, CLAP) is fetched at pinned versions on the first configure
+- Third-party code (GLFW, stb, miniaudio, CLAP, the VST3 interface headers) is fetched at pinned versions on the first configure
   (`cmake/Dependencies.cmake`); the Vulkan SDK comes from `VULKAN_SDK`.
 
 ## Test

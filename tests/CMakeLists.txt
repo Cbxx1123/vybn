@@ -18,6 +18,7 @@ add_library(vybn_selftests STATIC
     SynthSelfTest.cpp
     TakesSelfTest.cpp
     TempoSelfTest.cpp
+    Vst3SelfTest.cpp
 )
 target_include_directories(vybn_selftests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(vybn_selftests PUBLIC vybn_daw PRIVATE vybn_stb vybn_miniaudio)
@@ -25,6 +26,7 @@ target_link_libraries(vybn_selftests PUBLIC vybn_daw PRIVATE vybn_stb vybn_minia
 target_compile_definitions(vybn_selftests PRIVATE
     VYBN_TEST_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     ENGINE_TEST_PLUGIN="${VYBN_OUTPUT_DIR}/plugins/vybn-test-plugins.clap"
+    VST3_TEST_PLUGIN="${VYBN_OUTPUT_DIR}/plugins/vybn-test-plugins.vst3"
 )
 vybn_warnings(vybn_selftests)
 
@@ -36,3 +38,12 @@ set_target_properties(vybn-test-plugins PROPERTIES PREFIX "" SUFFIX ".clap")
 vybn_warnings(vybn-test-plugins)
 vybn_standalone(vybn-test-plugins)
 vybn_output(vybn-test-plugins FOLDER plugins)
+
+# The plugin self-test's VST3 plugins, as a bundle in output/plugins/: a gain with an editor, a sine
+# instrument, a ducker with a sidechain bus and its own edit controller, and a twin of the CLAP gain
+add_library(vybn-test-plugins-vst3 MODULE plugins/TestVst3.cpp)
+target_link_libraries(vybn-test-plugins-vst3 PRIVATE vybn_vst3 gdi32 user32)
+set_target_properties(vybn-test-plugins-vst3 PROPERTIES PREFIX "" OUTPUT_NAME "vybn-test-plugins" SUFFIX ".vst3")
+vybn_warnings(vybn-test-plugins-vst3)
+vybn_standalone(vybn-test-plugins-vst3)
+vybn_output(vybn-test-plugins-vst3 FOLDER plugins/vybn-test-plugins.vst3/Contents/x86_64-win)

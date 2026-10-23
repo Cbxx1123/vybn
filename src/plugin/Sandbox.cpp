@@ -75,7 +75,7 @@ bool ensureProfile()
 {
     std::lock_guard<std::mutex> lock(containerMutex);
     PSID sid = nullptr;
-    const HRESULT hr = CreateAppContainerProfile(kContainerName, L"VYBN plugins", L"CLAP plugins hosted by the VYBN DAW", nullptr, 0, &sid);
+    const HRESULT hr = CreateAppContainerProfile(kContainerName, L"VYBN plugins", L"Plugins hosted by the VYBN DAW", nullptr, 0, &sid);
     if (sid)
         FreeSid(sid);
     return SUCCEEDED(hr) || hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS);

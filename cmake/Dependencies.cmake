@@ -45,3 +45,15 @@ if(NOT clap_POPULATED)
 endif()
 add_library(vybn_clap INTERFACE)
 target_include_directories(vybn_clap SYSTEM INTERFACE ${clap_SOURCE_DIR}/include)
+
+# VST3 3.8.0 (MIT): Steinberg's interface headers only, for the plugin host and the VST3 test plugins.
+# They include each other as "pluginterfaces/...", so they are fetched into a folder of that name.
+FetchContent_Declare(vst3_pluginterfaces GIT_REPOSITORY https://github.com/steinbergmedia/vst3_pluginterfaces.git
+    GIT_TAG 31d6eeba6daaa3e2a8bfbe3e7a90ca0b7fbfbc1c # v3.8.0_build_66
+    SOURCE_DIR ${FETCHCONTENT_BASE_DIR}/vst3/pluginterfaces)
+FetchContent_GetProperties(vst3_pluginterfaces)
+if(NOT vst3_pluginterfaces_POPULATED)
+    FetchContent_Populate(vst3_pluginterfaces)
+endif()
+add_library(vybn_vst3 INTERFACE)
+target_include_directories(vybn_vst3 SYSTEM INTERFACE ${FETCHCONTENT_BASE_DIR}/vst3)

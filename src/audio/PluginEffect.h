@@ -8,7 +8,7 @@
 
 namespace audio {
 
-// A CLAP plugin as an effect in a chain (DeviceKind::Plugin). The plugin runs in its own
+// A plugin (CLAP or VST3) as an effect in a chain (DeviceKind::Plugin). The plugin runs in its own
 // sandboxed host through a plugin::Slot, which loads it in the background: until it is ready the
 // sound passes through untouched (as it does when the plugin can't be loaded at all, or without a
 // PluginManager); once it has crashed or hung, or while it is late with a block, the effect is

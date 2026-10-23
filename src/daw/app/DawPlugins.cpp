@@ -1,5 +1,5 @@
 // The DawApp's plugin settings: Settings > Plugins (the folders scanned, the sandbox, importing a
-// .clap, and each plugin: turned on or off, reloaded, the folders it may read), and keeping the
+// plugin, CLAP or VST3, and each plugin: turned on or off, reloaded, the folders it may read), and keeping the
 // PluginManager in step with them without a restart.
 
 #include "daw/app/DawApp.h"
@@ -208,7 +208,7 @@ void DawApp::importPlugin()
     ui::FileDialogOptions options;
     options.title = "Import plugins";
     options.multiple = true;
-    options.filters = {{"CLAP plugins", "*.clap"}, {"All files", "*.*"}};
+    options.filters = {{"Plugins", "*.clap;*.vst3"}, {"All files", "*.*"}};
     options.remember = "plugins";
     options.action = "Import";
     chooseFiles(options, [this](std::vector<std::string> paths) {
@@ -217,10 +217,19 @@ void DawApp::importPlugin()
         fs::create_directories(folder, ec);
         std::vector<std::string> copied, failed;
         for (const std::string &path : paths) {
-            const fs::path from = fs::u8path(path);
+            fs::path from = fs::u8path(path);
+            // A VST3 bundle's module, picked inside it: the whole bundle is copied
+            const fs::path bundle = from.parent_path().parent_path().parent_path();
+            if (plugin::isVst3Path(from.u8string()) && plugin::isVst3Path(bundle.u8string()) &&
+                fs::is_directory(bundle, ec) && from.parent_path().parent_path().filename() == "Contents")
+                from = bundle;
             const fs::path to = folder / from.filename();
             // A plugin in use keeps its file open in its host: copying over it fails, so say so
-            if (!fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec))
+            if (fs::is_directory(from, ec))
+                fs::copy(from, to, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+            else
+                fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+            if (ec)
                 failed.push_back(from.filename().u8string() + " (" + ec.message() + ")");
             else
                 copied.push_back(from.filename().u8string());
@@ -315,14 +324,14 @@ void DawApp::buildPluginSettings(Container &body)
             }
         };
         for (const std::string &f : plugin::PluginManager::standardFolders())
-            line(f, "standard CLAP folder", false);
+            line(f, "standard folder", false);
         line(Settings::pluginsPath(), "imported plugins", false);
         for (const std::string &f : settings_.pluginFolders)
             line(f, "added", true);
         for (const std::string &f : extraPluginFolders_)
             line(f, "this run only", false);
         auto &add = row(*foldersPtr);
-        auto &field = add.add<TextField>("A folder to scan, such as D:\\Plugins\\CLAP");
+        auto &field = add.add<TextField>("A folder to scan, such as D:\\Plugins");
         field.setGrow(1.0f);
         TextField *fieldPtr = &field;
         auto addFolder = [this, fieldPtr, buildFolders](const std::string &typed) {
@@ -359,7 +368,7 @@ void DawApp::buildPluginSettings(Container &body)
             return;
         const std::vector<plugin::Descriptor> found = plugins_->plugins();
         if (found.empty() && !plugins_->scanning())
-            listPtr->add<Label>("No CLAP plugins in these folders yet. Import one, or add the folder you keep them in.",
+            listPtr->add<Label>("No plugins in these folders yet. Import one, or add the folder you keep them in.",
                                 TextStyle::Body, TextTone::Muted)
                 .setWrapWidth(560.0f);
         for (const plugin::Descriptor &d : found) {
@@ -374,6 +383,7 @@ void DawApp::buildPluginSettings(Container &body)
                 about += "  /  " + d.vendor;
             if (!d.version.empty())
                 about += "  /  " + d.version;
+            about += d.format() == "vst3" ? "  /  VST3" : "  /  CLAP"; // the one place the format shows
             names.add<Label>(about, TextStyle::Caption, TextTone::Secondary);
             head.add<Spacer>();
             const std::string id = d.id;

@@ -66,10 +66,13 @@ std::vector<std::string> fields(const std::string &line)
     return out;
 }
 
+// A file's size and time; a bundle's are its module's (Contents/x86_64-win/<its name>)
 bool fileStamp(const std::string &path, uint64_t &size, int64_t &modified)
 {
     std::error_code ec;
-    const fs::path p = fs::u8path(path);
+    fs::path p = fs::u8path(path);
+    if (fs::is_directory(p, ec))
+        p = p / "Contents" / "x86_64-win" / p.filename();
     size = fs::file_size(p, ec);
     if (ec)
         return false;
@@ -126,7 +129,7 @@ bool writeScanCache(const std::string &file, const std::vector<ScanRecord> &reco
         std::ofstream out(temp, std::ios::binary | std::ios::trunc);
         if (!out)
             return false;
-        out << "# VYBN plugin scans 3: what each .clap held when it was last scanned\n";
+        out << "# VYBN plugin scans 3: what each plugin file held when it was last scanned\n";
         for (const ScanRecord &r : records) {
             out << "file\t" << escape(r.path) << "\t" << r.size << "\t" << r.modified << "\t" << escape(r.error) << "\n";
             for (const Descriptor &d : r.plugins)
@@ -148,11 +151,13 @@ std::vector<std::string> PluginManager::standardFolders()
 {
     std::vector<std::string> out;
     const std::string common = variable("COMMONPROGRAMFILES");
-    if (!common.empty())
-        out.push_back(common + "\\CLAP");
     const std::string local = variable("LOCALAPPDATA");
-    if (!local.empty())
-        out.push_back(local + "\\Programs\\Common\\CLAP");
+    for (const char *format : {"CLAP", "VST3"}) {
+        if (!common.empty())
+            out.push_back(common + "\\" + format);
+        if (!local.empty())
+            out.push_back(local + "\\Programs\\Common\\" + format);
+    }
     return out;
 }
 
@@ -162,7 +167,7 @@ void PluginManager::setConfig(PluginConfig config)
     config_ = std::move(config);
 }
 
-std::vector<std::string> PluginManager::findClapFiles(const std::string &folder)
+std::vector<std::string> PluginManager::findPluginFiles(const std::string &folder)
 {
     std::vector<std::string> out;
     std::error_code ec;
@@ -175,8 +180,13 @@ std::vector<std::string> PluginManager::findClapFiles(const std::string &folder)
             continue;
         }
         const fs::path &p = it->path();
-        if (lower(p.extension().u8string()) == ".clap" && it->is_regular_file(ec))
+        const std::string extension = lower(p.extension().u8string());
+        if (extension == ".vst3" && it->is_directory(ec)) {
+            it.disable_recursion_pending(); // a bundle: its module is inside
             out.push_back(fs::absolute(p, ec).lexically_normal().u8string());
+        } else if ((extension == ".clap" || extension == ".vst3") && it->is_regular_file(ec)) {
+            out.push_back(fs::absolute(p, ec).lexically_normal().u8string());
+        }
     }
     std::sort(out.begin(), out.end());
     return out;
@@ -227,7 +237,7 @@ void PluginManager::rescan(bool force)
                     std::vector<ScanProblem> problems;
                     std::set<std::string> seenFiles, seenIds;
                     for (const std::string &folder : folders) {
-                        for (const std::string &file : findClapFiles(folder)) {
+                        for (const std::string &file : findPluginFiles(folder)) {
                             if (!seenFiles.insert(lower(file)).second)
                                 continue;
                             ++stats.files;
@@ -272,10 +282,19 @@ void PluginManager::rescan(bool force)
                     }
                     if (!cacheFile.empty() && (stats.scanned > 0 || stats.probed > 0 || records.size() != cache.size()))
                         writeScanCache(cacheFile, records);
-                    std::sort(found.begin(), found.end(), [](const Descriptor &a, const Descriptor &b) { return lower(a.name) < lower(b.name); });
+                    // A plugin in both formats is listed once, as CLAP
+                    std::set<std::string> clap;
+                    for (const Descriptor &d : found)
+                        if (d.format() == "clap")
+                            clap.insert(lower(d.name) + "\t" + lower(d.vendor));
+                    std::vector<Descriptor> listed, others;
+                    for (Descriptor &d : found)
+                        (d.format() != "clap" && clap.count(lower(d.name) + "\t" + lower(d.vendor)) ? others : listed).push_back(std::move(d));
+                    std::sort(listed.begin(), listed.end(), [](const Descriptor &a, const Descriptor &b) { return lower(a.name) < lower(b.name); });
                     {
                         std::lock_guard<std::mutex> lock(mutex_);
-                        plugins_ = std::move(found);
+                        plugins_ = std::move(listed);
+                        others_ = std::move(others);
                         problems_ = std::move(problems);
                         stats_ = stats;
                     }
@@ -313,20 +332,22 @@ std::vector<ScanProblem> PluginManager::problems() const
 bool PluginManager::find(const std::string &id, Descriptor &out) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (const Descriptor &d : plugins_)
-        if (d.id == id) {
-            out = d;
-            return true;
-        }
+    for (const std::vector<Descriptor> *list : {&plugins_, &others_})
+        for (const Descriptor &d : *list)
+            if (d.id == id) {
+                out = d;
+                return true;
+            }
     return false;
 }
 
 uint32_t PluginManager::sidechainChannels(const std::string &id) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (const Descriptor &d : plugins_)
-        if (d.id == id)
-            return d.sidechain;
+    for (const std::vector<Descriptor> *list : {&plugins_, &others_})
+        for (const Descriptor &d : *list)
+            if (d.id == id)
+                return d.sidechain;
     return 0;
 }
 

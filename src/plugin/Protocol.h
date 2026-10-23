@@ -252,7 +252,21 @@ private:
     bool ok_ = true;
 };
 
-// What a .clap file holds, from a scan
+// Whether a plugin's file is VST3 (a .vst3 bundle, a folder, or a single .vst3 file) rather than CLAP
+inline bool isVst3Path(const std::string &path)
+{
+    size_t end = path.size();
+    while (end > 0 && (path[end - 1] == '\\' || path[end - 1] == '/'))
+        --end;
+    if (end < 5)
+        return false;
+    std::string tail = path.substr(end - 5, 5);
+    for (char &c : tail)
+        c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+    return tail == ".vst3";
+}
+
+// What a plugin file holds, from a scan
 struct Descriptor {
     std::string id;
     std::string name;
@@ -260,8 +274,9 @@ struct Descriptor {
     std::string version;
     std::string description;
     std::string url;
-    std::string features; // CLAP feature strings, space-separated ("instrument synthesizer stereo")
-    std::string path;     // the .clap file (filled by the app)
+    std::string features; // CLAP feature strings, space-separated ("instrument synthesizer stereo"); a VST3
+                          // plugin's subcategories are turned into them
+    std::string path;     // the .clap file, or the .vst3 bundle or file (filled by the app)
     // Channels (1 or 2) of its sidechain input, the first audio input port that isn't the main one; 0
     // for none. Learnt by a Probe after the scan (never on the wire in a scan's reply), and kept in
     // the scan cache with `probed`, whether a probe was made (a failed one leaves 0, not tried again)
@@ -269,6 +284,8 @@ struct Descriptor {
     bool probed = false;
 
     bool instrument() const { return hasFeature("instrument"); }
+    // Its standard, by its file: "clap" or "vst3". Nothing on screen names it but the plugin's details
+    std::string format() const { return isVst3Path(path) ? "vst3" : "clap"; }
     bool effect() const { return hasFeature("audio-effect") || !instrument(); }
     bool hasFeature(const std::string &f) const { return (" " + features + " ").find(" " + f + " ") != std::string::npos; }
 };

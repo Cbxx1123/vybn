@@ -332,7 +332,7 @@ private:
     void applyPluginSettings();
     // Every place plugin `id` plays (all of them for an empty id) starts a new host
     void reloadPlugin(const std::string &id);
-    // Copies .clap files (picked in the file dialog) into the imported plugins' folder and scans
+    // Copies plugin files (.clap, .vst3; picked in the file dialog) into the imported plugins' folder and scans
     void importPlugin();
     env::Environment &env_;
     ui::UISystem &ui_;
