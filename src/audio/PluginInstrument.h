@@ -14,7 +14,7 @@ namespace audio {
 
 // The instrument devices: what plays an instrument track's notes, first in its chain.
 
-// A CLAP plugin as an instrument (DeviceKind::Plugin): notes go to it with their frames (it takes
+// A plugin (CLAP or VST3) as an instrument (DeviceKind::Plugin): notes go to it with their frames (it takes
 // timed events, so a NotePlayer hands it each block whole) and its output is added into the
 // block. The plugin runs in its own sandboxed host through a plugin::Slot. Silent while it loads,
 // once it has crashed or hung until it is reloaded, and without a PluginManager (tests).

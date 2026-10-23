@@ -5,12 +5,12 @@
 **A digital audio workstation for Windows, written from scratch in C++17.**
 
 Instrument and audio tracks, a tempo map, take comping, a piano roll, a step sequencer, a built-in
-synth, and CLAP plugins in sandboxed processes, drawn in a neumorphic interface with Vulkan.
+synth, and CLAP and VST3 plugins in sandboxed processes, drawn in a neumorphic interface with Vulkan.
 
 ![Windows](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
 ![Vulkan](https://img.shields.io/badge/graphics-Vulkan-AC162C?logo=vulkan&logoColor=white)
-![CLAP](https://img.shields.io/badge/plugins-CLAP-orange)
+![Plugins](https://img.shields.io/badge/plugins-CLAP%20%7C%20VST3-orange)
 
 <img src="docs/screenshots/daw.png" alt="VYBN in the light theme: the transport, arrangement, mixer and master" width="100%">
 
@@ -20,7 +20,7 @@ synth, and CLAP plugins in sandboxed processes, drawn in a neumorphic interface 
 
 ## Highlights
 
-- **Tracks.** Instrument tracks (the built-in synth, the sample library, or CLAP plugins), audio
+- **Tracks.** Instrument tracks (the built-in synth, the sample library, or plugins), audio
   tracks, return tracks fed by sends, and group tracks that fold.
 - **Arrangement.** Automation lanes, a tempo map with tempo changes, ramps and time-signature changes,
   markers to name the sections and jump between them (Ctrl+Alt+Left/Right, Alt+1-9), and undo for every edit.
@@ -30,7 +30,7 @@ synth, and CLAP plugins in sandboxed processes, drawn in a neumorphic interface 
 - **Editing.** A piano roll with note tools and an arpeggiator, a step sequencer with swing, and an
   audio clip editor.
 - **Mixing.** A mixer with sends, groups and a master volume. Built-in EQ, filter, gate, compressor
-  (with sidechains), limiter, saturation, delay and reverb. CLAP effects run in a sandbox. Delay
+  (with sidechains), limiter, saturation, delay and reverb. Plugin effects (CLAP or VST3) run in a sandbox. Delay
   compensation covers the whole routing.
 - **Export.** WAV, AIFF, FLAC, MP3 and MIDI, normalised to a peak or to EBU R128 loudness, rendered in
   the background.
@@ -62,7 +62,7 @@ synth, and CLAP plugins in sandboxed processes, drawn in a neumorphic interface 
 | **Language** | C++17, Windows only |
 | **Interface** | Vulkan, drawn by the app's own UI layer (GLFW windows) |
 | **Audio** | miniaudio on WASAPI |
-| **Plugins** | CLAP, each hosted in a sandboxed process |
+| **Plugins** | CLAP and VST3, each hosted in a sandboxed process |
 | **Project files** | `.vbp`, TOML |
 | **Build** | CMake 3.16+, MinGW Makefiles (64-bit TDM-GCC) |
 
@@ -72,7 +72,7 @@ synth, and CLAP plugins in sandboxed processes, drawn in a neumorphic interface 
 
 - Windows, with the Vulkan SDK (`VULKAN_SDK` set).
 - CMake 3.16 or newer, the 64-bit TDM-GCC toolchain, and git. The first configure fetches GLFW, stb,
-  miniaudio and the CLAP headers.
+  miniaudio, the CLAP headers and the VST3 interface headers.
 - MP3 export uses Windows' Media Foundation. On Windows N editions, install the Media Feature Pack.
 
 ### Build
@@ -108,7 +108,7 @@ See [`docs/testing.md`](docs/testing.md).
 | `src/env/` | Daemons, the scheduler and its thread pools |
 | `src/engine/` | Windows, input, Vulkan rendering, file dialogs, HTTP |
 | `src/ui/` | The UI layer: layout, components, draw caches |
-| `src/plugin/` | CLAP hosting and the sandboxed host program |
+| `src/plugin/` | Plugin hosting (CLAP, VST3) and the sandboxed host program |
 | `src/audio/` | The audio engine: instruments, effects, automation, routing, encoders |
 | `src/daw/` | The DAW: the model, files, library, audio bridge, views and app |
 | `tests/` | Self-test suites, test plugins and golden images |

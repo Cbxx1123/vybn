@@ -57,11 +57,11 @@ public:
 
     // Starts a sandboxed host and makes `plugin` in it. Null with `error` on failure.
     static std::unique_ptr<Instance> create(const Descriptor &plugin, const SandboxOptions &options, std::string &error);
-    // Lists the plugins in a .clap file, loading it in a sandboxed host of its own
     // The channels of a plugin's sidechain input port (0 for none), asked in a host of its own so a plugin
     // that crashes when made costs only this call (false, with why)
     static bool probeSidechain(const std::string &path, const std::string &id, const SandboxOptions &options, uint32_t &channels,
                                std::string &error);
+    // Lists the plugins in a plugin file (.clap, .vst3), loading it in a sandboxed host of its own
     static bool scan(const std::string &path, const SandboxOptions &options, std::vector<Descriptor> &found, std::string &error);
 
     const Descriptor &descriptor() const { return descriptor_; }

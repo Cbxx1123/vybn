@@ -1,5 +1,6 @@
 #include "PluginSelfTest.h"
 #include "Harness.h"
+#include "Vst3SelfTest.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -497,7 +498,10 @@ int runPluginSelfTest()
         c.check(recovered, "once it is quick again it is heard again");
     }
 
-    // --- The manager
+    // --- VST3 plugins, through the same sandbox
+    runVst3Checks(c);
+
+    // --- The manager (the test plugins' folder holds both formats)
     {
         env::Environment environment;
         plugin::PluginConfig config;
@@ -511,8 +515,45 @@ int runPluginSelfTest()
         std::printf("INFO plugin scan: the manager scans the file in %.0f ms, with %zu effect plugins probed for a sidechain port, each in a host of its own\n",
                     since(scanStart) * 1000, manager.lastScan().probed);
         const auto list = manager.plugins();
-        c.check(!manager.scanning() && list.size() == 5 && manager.version() == 1, "the manager scans a folder",
+        c.check(!manager.scanning() && list.size() == 8 && manager.version() == 1, "the manager scans a folder, CLAP and VST3",
                 text("%.0f plugins", static_cast<double>(list.size())));
+        {
+            // The VST3 twin of Test Gain (its name and vendor) isn't listed beside it, but is still found by its id
+            size_t gains = 0;
+            std::string twinId;
+            for (const auto &d : list)
+                gains += d.name == "Test Gain" ? 1 : 0;
+            std::vector<plugin::Descriptor> vst3;
+            std::string why;
+            plugin::Instance::scan(VST3_TEST_PLUGIN, sandbox, vst3, why);
+            for (const auto &d : vst3)
+                if (d.name == "Test Gain")
+                    twinId = d.id;
+            plugin::Descriptor twin;
+            c.check(gains == 1 && !twinId.empty() && manager.find(twinId, twin) && twin.format() == "vst3",
+                    "a plugin in both formats is listed once, as CLAP; the other is still found by its id");
+            // On a track it is a plugin like any other: its slot loads it and the project's values reach it
+            if (!twinId.empty()) {
+                audio::DeviceChain chain;
+                chain.setPlugins(&manager);
+                chain.prepare(kRate, kFrames);
+                std::vector<audio::DeviceSetting> settings = {pluginDevice(twinId, "Test Gain")};
+                settings[0].setValue(0, (60.0 - 6.0206) / 72.0);
+                chain.apply(settings);
+                auto *effect = dynamic_cast<audio::PluginEffect *>(chain.effect(0));
+                const auto until = Clock::now() + std::chrono::seconds(10);
+                while (effect && effect->slot()->state() == plugin::Slot::State::Loading && Clock::now() < until) {
+                    chain.collect();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+                Buffers e;
+                for (uint32_t i = 0; i < kFrames; ++i)
+                    e.out[0][i] = e.out[1][i] = 0.5f;
+                chain.process(e.outPtr[0], e.outPtr[1], kFrames);
+                c.check(effect && effect->slot()->state() == plugin::Slot::State::Ready && std::fabs(e.out[0][10] - 0.25f) < 0.005f,
+                        "a VST3 effect plays in a device chain, with the project's values", text("%.3f", e.out[0][10]));
+            }
+        }
         error.clear();
         auto made = manager.create("vybn.test.gain", error);
         c.check(made && made->status() == plugin::Status::Ready, "and makes an instance by id", error);
@@ -729,7 +770,7 @@ int runPluginSelfTest()
             const bool foundDuck = manager.find("vybn.test.duck", duck), foundGain = manager.find("vybn.test.gain", gainInfo);
             plugin::Descriptor crashy;
             const bool foundCrashy = manager.find("vybn.test.crashinit", crashy);
-            c.check(foundCrashy && crashy.sidechain == 0 && crashy.probed && manager.lastScan().probed == 4,
+            c.check(foundCrashy && crashy.sidechain == 0 && crashy.probed && manager.lastScan().probed == 7,
                     "a plugin that crashes when made is still listed by the scan; its failed probe leaves no sidechain and is remembered",
                     text("%.0f probed", static_cast<double>(manager.lastScan().probed)));
             c.check(foundDuck && foundGain && duck.sidechain == 2 && gainInfo.sidechain == 0 && !duck.instrument(),
@@ -1100,7 +1141,8 @@ int runPluginSelfTest()
             fs::remove_all(temp, ec);
         }
         const auto standard = plugin::PluginManager::standardFolders();
-        c.check(standard.size() == 2 && standard[0].find("CLAP") != std::string::npos, "the standard CLAP folders are known",
+        c.check(standard.size() == 4 && standard[0].find("CLAP") != std::string::npos && standard[2].find("VST3") != std::string::npos,
+                "the standard CLAP and VST3 folders are known",
                 standard.empty() ? "" : standard[0]);
     }
 

@@ -14,12 +14,12 @@ namespace plugin {
 //   desktop's settings, global atoms or exit Windows.
 // - An AppContainer with no capabilities ("VYBN.PluginSandbox"): no network, and no access to the
 //   user's files, registry or other processes except what is granted. The host's executable and
-//   each plugin's .clap file (and folders the user grants it) are granted read and execute, by
+//   each plugin's file or bundle (and folders the user grants it) are granted read and execute, by
 //   adding the container to their access lists. The system's own files stay readable.
 // When Windows refuses the AppContainer the host runs in the job object alone, and says so.
 struct SandboxOptions {
     bool appContainer = true;
-    // Files and folders the plugin may read: its .clap and any folders granted to it (folders
+    // Files and folders the plugin may read: its file (or bundle) and any folders granted to it (folders
     // with everything in them)
     std::vector<std::string> readable;
     // Folders it may also write in (its presets, its database): read, write and delete

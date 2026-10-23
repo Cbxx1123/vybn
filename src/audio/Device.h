@@ -16,7 +16,7 @@ namespace audio {
 //
 //   Effect   a built-in effect (EQ, compressor, reverb...), id the effect's key ("compressor")
 //   Sampler  a library instrument played by the Sampler, id the instrument's name
-//   Plugin   a CLAP plugin, as an instrument or an effect, id its CLAP id
+//   Plugin   a plugin (CLAP or VST3), as an instrument or an effect, id its plugin id
 //   Synth    the built-in synthesizer (an instrument), id "vibin.synth"
 //
 // The project keeps a DeviceSetting for each; the audio side makes a Device from it (DeviceChain)

@@ -60,7 +60,7 @@ and INFO lines and the summary).
 | `notes` | note tools and the step sequencer | 0.1 s |
 | `engine` | the scheduler, real-time pool, streaming, the resource manager | 5.3 s |
 | `browser` | listings, zip, SFZ, the library | 0.2 s |
-| `plugin` | CLAP plugins through the sandbox | 2.5 s |
+| `plugin` | CLAP and VST3 plugins through the sandbox | 2.5 s |
 | `synth` | the built-in synthesizer | 4.2 s |
 | `export` | mastering, encoders, MIDI, the offline engine, the render queue | 12.1 s |
 | `render` | the UI's scenes against golden pictures, the primitive and draw-cache checks | 3.1 s |

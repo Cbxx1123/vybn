@@ -1542,7 +1542,7 @@ void DawApp::openSettings(const std::string &section)
     }
 
     {
-        // CLAP plugins: the sandbox, the folders scanned, importing, and each plugin
+        // Plugins: the sandbox, the folders scanned, importing, and each plugin
         Container &body = page("Plugins");
         body.add<Label>("Plugins", TextStyle::Subtitle);
         buildPluginSettings(body);

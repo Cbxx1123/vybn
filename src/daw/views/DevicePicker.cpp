@@ -242,7 +242,7 @@ void DevicePicker::rebuild()
         if (!search_->text().empty())
             empty_->setText("Nothing matches \"" + search_->text() + "\"");
         else if (options_.instruments)
-            empty_->setText("No instruments yet: import one, download one in the browser, or install a CLAP plugin");
+            empty_->setText("No instruments yet: import one, download one in the browser, or install a plugin");
         else
             empty_->setText("No effects here");
     } else {

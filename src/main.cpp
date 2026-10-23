@@ -12,7 +12,7 @@
 //                           quantize, velocity...) offline and exits
 //   main --browser-selftest checks the browser's listings, zip files, the SFZ loader and the
 //                           library offline (no network) and exits
-//   main --plugin-selftest  checks CLAP plugins through the sandbox (the project's test plugins:
+//   main --plugin-selftest  checks plugins, CLAP and VST3, through the sandbox (the test plugins:
 //                           audio, parameters, state, notes, and surviving crashes and hangs)
 //   main --synth-selftest   checks the built-in synthesizer offline (the wave bank, pitch, envelopes,
 //                           filters, unison, voice modes, LFOs, the mod matrix and render time)
@@ -25,7 +25,7 @@
 //     --dark       start in dark mode
 //     --silent     start with the master gain at zero (the track meters still move)
 //     --size WxH   start with a window of this size (default 1440x900)
-//     --plugin-folder PATH  also scan this folder for CLAP plugins, this run only (repeatable)
+//     --plugin-folder PATH  also scan this folder for plugins, this run only (repeatable)
 //     --demo NAME  start with something open, for screenshots: menu (the Edit menu), project
 //                  (the Project menu), new (the new project dialog), projectsettings, audioclip (a
 //                  generated test tone imported onto an audio track, in the editor), recordmidi (records a

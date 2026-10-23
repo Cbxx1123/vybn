@@ -697,7 +697,7 @@ void AssetBrowser::rebuildDetail()
         detail_->add<LiveLabel>([this] {
             return hooks_.instrumentTarget ? "Use plays it " + hooks_.instrumentTarget() + "." : std::string();
         }, TextStyle::Caption, TextTone::Secondary).setWrapWidth(290.0f);
-        detail_->add<Label>("A CLAP plugin. It runs in a sandbox of its own: no network, and none of your files but its own. "
+        detail_->add<Label>("A plugin. It runs in a sandbox of its own: no network, and none of your files but its own. "
                             "Its controls and its interface are on the track's Devices tab. Drag it onto a track, or Use.",
                             TextStyle::Caption, TextTone::Muted)
             .setWrapWidth(290.0f);

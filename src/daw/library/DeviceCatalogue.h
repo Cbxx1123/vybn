@@ -18,7 +18,7 @@ struct CatalogueEntry {
     std::string category;        // "Guitars", "Synths", "Dynamics", "Delay & reverb"...
     std::string source;          // "Library", "Built-in", or a plugin's vendor
     std::string description;
-    std::string path;            // a library instrument's folder, a plugin's .clap
+    std::string path;            // a library instrument's folder, a plugin's file
     bool plugin() const { return device.kind == audio::DeviceKind::Plugin; }
     // The device's key, with the preset's name after a '#' when there is one ("synth:vibin.synth#Reese")
     std::string key() const { return preset.empty() ? device.key() : device.key() + "#" + preset; }
