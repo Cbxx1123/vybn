@@ -32,13 +32,39 @@ bool sameLanes(const std::vector<ControlLane> &a, const std::vector<ControlLane>
     return true;
 }
 
+namespace {
+
+// What changed in a clip's warp, for the undo step's name
+std::string describeWarp(const audio::Warp &a, const audio::Warp &b)
+{
+    if (a.on != b.on)
+        return b.on ? "Warp clip" : "Unwarp clip";
+    if (a.mode != b.mode)
+        return "Warp mode";
+    if (a.markers.size() + 1 < b.markers.size())
+        return "Quantise audio";
+    if (a.markers.size() < b.markers.size())
+        return "Add warp marker";
+    if (a.markers.size() > b.markers.size())
+        return "Remove warp marker";
+    if (a.bpm != b.bpm)
+        return "Clip tempo";
+    if (a.markers != b.markers)
+        return "Move warp marker";
+    if (a.pitch != b.pitch)
+        return "Transpose clip";
+    return "Warp settings";
+}
+
+}
+
 bool sameClip(const Clip &a, const Clip &b)
 {
     if (!sameLanes(a.controls, b.controls))
         return false;
     if (a.name != b.name || a.start != b.start || a.length != b.length || a.audioFile != b.audioFile ||
         a.offset != b.offset || a.gain != b.gain || a.fadeIn != b.fadeIn || a.fadeOut != b.fadeOut ||
-        a.take != b.take || a.notes.size() != b.notes.size())
+        a.warp != b.warp || a.take != b.take || a.notes.size() != b.notes.size())
         return false;
     for (size_t i = 0; i < a.notes.size(); ++i) {
         if (!sameNote(a.notes[i], b.notes[i]))
@@ -214,7 +240,7 @@ bool sameSavedClip(const Clip &a, const Clip &b, bool instrument)
         if (a.hasAudio() != b.hasAudio())
             return false;
         return !a.hasAudio() || (a.audioFile == b.audioFile && a.offset == b.offset && a.gain == b.gain &&
-                                 a.fadeIn == b.fadeIn && a.fadeOut == b.fadeOut);
+                                 a.fadeIn == b.fadeIn && a.fadeOut == b.fadeOut && a.warp == b.warp);
     }
     if (a.controls.size() != b.controls.size() || a.notes.size() != b.notes.size())
         return false;
@@ -435,6 +461,8 @@ std::string describeChange(const Project &a, const Project &b)
                 }
                 return true;
             }());
+            if (ca.warp != cb.warp)
+                return describeWarp(ca.warp, cb.warp);
             // Trimming a clip's front moves its notes against it, so the edges come first
             if (ca.length != cb.length || ca.offset != cb.offset)
                 return "Trim clip";
@@ -468,6 +496,10 @@ namespace {
 #if defined(__GLIBCXX__) && defined(__x86_64__)
 static_assert(sizeof(Track) == 344, "Track changed: add the new field to shellOf, sameTrackFields and "
                                      "ProjectStore::restore, then update this size");
+// Clip's fields are listed by hand too: sameClip and sameSavedClip here, sameClipContent
+// (ProjectSession.cpp), AudioBridge::hashClips and the project file
+static_assert(sizeof(Clip) == 240, "Clip changed: add the new field to sameClip, sameSavedClip, sameClipContent, "
+                                 "AudioBridge::hashClips and the project file, then update this size");
 #endif
 
 // A track without its clips. Keep in step with Track: a field left out here is lost from undo.

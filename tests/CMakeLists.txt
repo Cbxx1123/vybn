@@ -18,6 +18,7 @@ add_library(vybn_selftests STATIC
     StepSelfTest.cpp
     SynthSelfTest.cpp
     TakesSelfTest.cpp
+    WarpSelfTest.cpp
     TempoSelfTest.cpp
     Vst3SelfTest.cpp
 )

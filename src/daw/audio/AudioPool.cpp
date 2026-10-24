@@ -54,6 +54,7 @@ void AudioPool::add(const std::string &path, std::shared_ptr<const audio::AudioD
 {
     files_.put(path, std::move(data));
     errors_.erase(path);
+    analyses_.erase(path); // a new sound under the same name
     ++version_;
 }
 
@@ -79,6 +80,57 @@ void AudioPool::keepOnly(const std::set<std::string> &paths)
         else
             it = errors_.erase(it);
     }
+    for (auto it = analyses_.begin(); it != analyses_.end();) {
+        if (paths.count(it->first))
+            ++it;
+        else
+            it = analyses_.erase(it);
+    }
+}
+
+std::shared_ptr<const audio::AudioAnalysis> AudioPool::analysis(const std::string &path)
+{
+    const auto found = analyses_.find(path);
+    if (found != analyses_.end())
+        return found->second;
+    if (analysing_.count(path))
+        return nullptr;
+    std::shared_ptr<const audio::AudioData> data = get(path);
+    if (!data)
+        return nullptr;
+    analysing_.insert(path);
+    env::Environment &env = env_;
+    env::runJob(env_, env::Lane::Background, [this, &env, data, path] {
+        std::string error;
+        std::shared_ptr<const audio::AudioAnalysis> result = audio::analyseAudio(*data, error);
+        if (!result)
+            result = std::make_shared<audio::AudioAnalysis>(); // nothing found: not asked again
+        env.post([this, path, result] {
+            analysing_.erase(path);
+            analyses_[path] = result;
+            ++version_;
+        });
+    }, jobs_);
+    return nullptr;
+}
+
+std::shared_ptr<const audio::AudioAnalysis> AudioPool::analyseNow(const std::string &path)
+{
+    const auto found = analyses_.find(path);
+    if (found != analyses_.end())
+        return found->second;
+    std::shared_ptr<const audio::AudioData> data = files_.find(path);
+    std::string error;
+    if (!data)
+        data = loadNow(path, error);
+    if (!data)
+        return nullptr;
+    std::shared_ptr<const audio::AudioAnalysis> result = audio::analyseAudio(*data, error);
+    if (!result)
+        result = std::make_shared<audio::AudioAnalysis>();
+    analyses_[path] = result;
+    ++version_;
+    return result;
 }
 
 }

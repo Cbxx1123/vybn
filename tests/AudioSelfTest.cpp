@@ -1,5 +1,6 @@
 #include "AudioSelfTest.h"
 #include "Harness.h"
+#include "WarpSelfTest.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1344,6 +1345,7 @@ int runAudioSelfTest()
                 std::to_string(rests) + " rests");
     }
 
+    c.failures += runWarpAudioChecks();
     return c.finish("audio");
 }
 

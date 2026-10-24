@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "audio/AudioAnalysis.h"
 #include "audio/AudioFile.h"
 #include "audio/Memory.h"
 #include "env/Environment.h"
@@ -46,6 +47,13 @@ public:
     // Lets go of files no clip uses any more
     void keepOnly(const std::set<std::string> &paths);
 
+    // A loaded file's analysis (its transients and tempo, for warping): ready, or started on a
+    // background thread once the file has loaded and null until it is (its arrival moves version()).
+    // Kept while the file is.
+    std::shared_ptr<const audio::AudioAnalysis> analysis(const std::string &path);
+    // The same now, on the calling thread (a file just imported), loading the file first if need be
+    std::shared_ptr<const audio::AudioAnalysis> analyseNow(const std::string &path);
+
 private:
     env::Environment &env_;
     env::ResourceCache<const audio::AudioData> files_{"Sound files", [](const audio::AudioData &d) { return static_cast<uint64_t>(d.bytes()); }};
@@ -53,6 +61,8 @@ private:
     audio::MemoryManager *memory_ = nullptr;
     std::map<std::string, std::string> errors_;
     std::set<std::string> loading_;
+    std::map<std::string, std::shared_ptr<const audio::AudioAnalysis>> analyses_;
+    std::set<std::string> analysing_;
     env::JobGroup jobs_; // its background jobs, waited for when it goes
     uint64_t version_ = 0;
 };

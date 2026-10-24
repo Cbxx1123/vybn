@@ -133,6 +133,9 @@ public:
     void handleDrops();
     // A generated take imported onto the first audio track and opened in the editor (--demo)
     void importAudioDemo();
+    // --demo warp: a drum loop at 100 BPM imported (so it comes in warped), one marker moved, in the
+    // audio editor
+    void warpDemo();
     // Records a phrase sent through the MIDI hub onto the Lead track, as if played on a
     // keyboard, then opens the take in the piano roll (--demo recordmidi)
     void recordMidiDemo();
@@ -289,6 +292,20 @@ private:
     const audio::AudioData *clipAudio(int track, int clip);
     void openClipMenu(ui::Vec2 at, double beat);
     void openTrackMenu(int track, ui::Vec2 at);
+    // Warping (DawWarp.cpp, docs/design/warp-plan.md): the audio editor's warp row, the Warp menu (the
+    // toolbar's, and the clip menu's for an audio clip), the modes, a marker's menu, Quantise audio...
+    // and the song's tempo from a clip. Each acts on the selected audio clip.
+    void buildWarpTools(ui::Container &parent);
+    std::vector<ui::MenuItem> warpMenu();
+    std::vector<ui::MenuItem> warpModeMenu();
+    void openWarpMarkerMenu(int marker, ui::Vec2 at);
+    void openQuantiseAudio();
+    void setSongTempoFromClip();
+    // The selected audio clip, for an edit (null when there is none), and its file's length and
+    // analysis (0 and null while they load)
+    Clip *editWarpClip();
+    double warpFileSeconds(const Clip &clip);
+    const audio::AudioAnalysis *warpAnalysis(const Clip &clip);
     // A take lane's menu (from the arrangement; `take` the take under the mouse, or kNoId), and a
     // change to a track's takes and comp made on a copy, applied when `change` says it changed something
     void openTakeMenu(int track, ObjectId lane, ObjectId take, ui::Vec2 at);
@@ -390,6 +407,12 @@ private:
     double noticeUntil_ = 0.0;
     std::shared_ptr<std::function<void()>> demoTick_; // recordMidiDemo's, run every frame
     double dropFlashUntil_ = -1.0; // the arrangement shows where a drop landed until then
+    // Quantise audio's last settings: the grid in beats, how far toward it, the transients it takes
+    struct WarpQuantise {
+        double grid = 0.25;
+        float strength = 1.0f;
+        float threshold = 0.3f;
+    } warpQuantise_;
     AssetBrowser *browser_ = nullptr;
     bool mouseSinceStep_ = false; // the mouse was used since the last undo step (it isn't merged)
     bool mouseHeld_ = false;      // a button is held (undo waits for the drag to end)

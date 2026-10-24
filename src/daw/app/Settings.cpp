@@ -168,6 +168,8 @@ Settings Settings::load()
             settings.automationTouch = value != "0";
         else if (key == "timingLanes")
             settings.timingLanes = value != "0";
+        else if (key == "warpLoops")
+            settings.warpLoops = value != "0";
         else if (key == "pianoRoll")
             settings.pianoRollView = value;
         else if (key == "stepSequencer")
@@ -215,6 +217,7 @@ bool Settings::save(std::string &error) const
     file << "autosaveVersions=" << autosaveVersions << "\n";
     file << "automationTouch=" << (automationTouch ? 1 : 0) << "\n";
     file << "timingLanes=" << (timingLanes ? 1 : 0) << "\n";
+    file << "warpLoops=" << (warpLoops ? 1 : 0) << "\n";
     if (!pianoRollView.empty())
         file << "pianoRoll=" << pianoRollView << "\n";
     if (!stepSequencerView.empty())

@@ -53,6 +53,8 @@ struct Settings {
     bool automationTouch = false;
     // The arrangement's tempo and signature lanes shown
     bool timingLanes = true;
+    // Imported and dropped files that are loops come in warped at their tempo (docs/design/warp-plan.md)
+    bool warpLoops = true;
     std::vector<std::string> pluginGrants;
     // The piano roll's view (PianoRollView::writeView): its grid, scale, ghosts, lane and zoom
     std::string pianoRollView;
