@@ -47,6 +47,13 @@ public:
     static constexpr int kControllers = 129;
     virtual void controlChange(int /*controller*/, float /*value*/) {}
     virtual void controlChangeAt(int controller, float value, uint32_t /*frame*/) { controlChange(controller, value); }
+
+    // A sounding note's expression, on the audio thread like notes, numbered as daw::Expression
+    // (kTuning: its tuning, in semitones; every expression rests at 0). Plugins take it against
+    // the note's key; the other instruments ignore it.
+    static constexpr int kTuning = 0;
+    static constexpr int kExpressions = 1;
+    virtual void noteExpressionAt(int /*key*/, int /*expression*/, float /*value*/, uint32_t /*frame*/) {}
 };
 
 // An instrument in a track's chain (a library instrument on the Sampler, or a plugin): an

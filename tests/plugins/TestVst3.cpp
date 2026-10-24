@@ -7,11 +7,16 @@
 //   back as an output parameter change), Latency (eight steps of 512 frames: it delays its sound by
 //   that much and asks the host to restart it, VST3's way of saying its latency changed). Saves
 //   Gain, Mute and Latency. Its editor is a window of its own drawn grey: a click on its left half
-//   takes the gain down a step, on its right half up, through the host as an edit would.
-// - VST Sine (Instrument|Synth): sine voices on its event input; Level, and Bend, which the pitch
-//   bend drives through IMidiMapping (plus Mod, driven by controller 1, reported but unused).
+//   takes the gain down a step, on its right half up, through the host as an edit would, and says
+//   its state is dirty (IComponentHandler2).
+// - VST Sine (Instrument|Synth): a sine voice on its event input; Level, and Bend, which the pitch
+//   bend drives through IMidiMapping (plus Mod, driven by controller 1, reported but unused), and
+//   Program, a choice of three programs from the root unit's program list. Level is in the unit
+//   "Voice", Bend in "Pitch" under it (IUnitInfo). A note-off ends its note by the note's id. It
+//   lists the tuning note expression (INoteExpressionController) and bends its note by it, by id.
 // - VST Duck (Fx): a stereo effect with a stereo aux input (its sidechain): its output is its input
-//   times (1 - the key's peak in the block). Its edit controller is a separate class.
+//   times (1 - the key's peak in the block). Its edit controller is a separate class, and it
+//   processes 64-bit audio only.
 // - Test Gain (Fx): the same as VST Gain under the CLAP test plugin's name and vendor, so the
 //   catalogue's choice between two formats of one plugin can be seen.
 
@@ -32,8 +37,10 @@
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivstevents.h"
 #include "pluginterfaces/vst/ivstmidicontrollers.h"
+#include "pluginterfaces/vst/ivstnoteexpression.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
+#include "pluginterfaces/vst/ivstunits.h"
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -91,7 +98,12 @@ bool lastPoint(IParameterChanges *changes, ParamID id, ParamValue &value)
 class Editor;
 
 // One plugin: a component that is (for every kind but Duck) its own edit controller too
-class Plugin : public IComponent, public IAudioProcessor, public IEditController, public IMidiMapping {
+class Plugin : public IComponent,
+               public IAudioProcessor,
+               public IEditController,
+               public IMidiMapping,
+               public IUnitInfo,
+               public INoteExpressionController {
 public:
     explicit Plugin(Kind kind) : kind_(kind) {}
     virtual ~Plugin() = default;
@@ -111,6 +123,10 @@ public:
             *obj = static_cast<IEditController *>(this);
         } else if (kind_ == Sine && same(iid, IMidiMapping_iid)) {
             *obj = static_cast<IMidiMapping *>(this);
+        } else if (kind_ == Sine && same(iid, IUnitInfo_iid)) {
+            *obj = static_cast<IUnitInfo *>(this);
+        } else if (kind_ == Sine && same(iid, INoteExpressionController_iid)) {
+            *obj = static_cast<INoteExpressionController *>(this);
         } else {
             *obj = nullptr;
             return kNoInterface;
@@ -186,7 +202,7 @@ public:
         arr = SpeakerArr::kStereo;
         return kResultOk;
     }
-    tresult PLUGIN_API canProcessSampleSize(int32 size) override { return size == kSample32 ? kResultTrue : kResultFalse; }
+    tresult PLUGIN_API canProcessSampleSize(int32 size) override { return size == (kind_ == Duck ? kSample64 : kSample32) ? kResultTrue : kResultFalse; }
     uint32 PLUGIN_API getLatencySamples() override { return latencyFrames(); }
     tresult PLUGIN_API setupProcessing(ProcessSetup &setup) override
     {
@@ -205,8 +221,26 @@ public:
             (kind_ == Sine ? bend_ : mute_) = value;
         if (kind_ == Sine && lastPoint(data.inputParameterChanges, 2, value))
             mod_ = value;
+        if (kind_ == Sine && lastPoint(data.inputParameterChanges, 3, value))
+            program_ = value;
         if (data.numOutputs < 1 || data.outputs[0].numChannels < 1)
             return kResultOk;
+        if (kind_ == Duck) {
+            // Doubles only: its output is its input times (1 - the key's peak)
+            double **out = data.outputs[0].channelBuffers64;
+            double **in = data.numInputs > 0 ? data.inputs[0].channelBuffers64 : nullptr;
+            const int32 inChannels = data.numInputs > 0 ? data.inputs[0].numChannels : 0;
+            double peak = 0.0;
+            if (data.numInputs > 1) {
+                for (int32 c = 0; c < data.inputs[1].numChannels; ++c)
+                    for (int32 f = 0; f < data.numSamples; ++f)
+                        peak = std::max(peak, std::fabs(data.inputs[1].channelBuffers64[c][f]));
+            }
+            for (int32 c = 0; c < data.outputs[0].numChannels; ++c)
+                for (int32 f = 0; f < data.numSamples; ++f)
+                    out[c][f] = (inChannels > 0 ? in[std::min(c, inChannels - 1)][f] : 0.0) * (1.0 - std::min(1.0, peak));
+            return kResultOk;
+        }
         float **out = data.outputs[0].channelBuffers32;
         const int32 channels = data.outputs[0].numChannels;
         const int32 frames = data.numSamples;
@@ -219,8 +253,13 @@ public:
                 for (; next < count && data.inputEvents->getEvent(next, e) == kResultOk && e.sampleOffset <= f; ++next) {
                     if (e.type == Event::kNoteOnEvent && e.noteOn.velocity > 0.0f) {
                         key_ = e.noteOn.pitch;
+                        noteId_ = e.noteOn.noteId;
+                        tuning_ = 0.0;
                         on_ = true;
-                    } else if ((e.type == Event::kNoteOffEvent && e.noteOff.pitch == key_) ||
+                    } else if (e.type == Event::kNoteExpressionValueEvent && e.noteExpressionValue.typeId == kTuningTypeID &&
+                               e.noteExpressionValue.noteId == noteId_) {
+                        tuning_ = 240.0 * (e.noteExpressionValue.value - 0.5);
+                    } else if ((e.type == Event::kNoteOffEvent && (e.noteOff.noteId != -1 ? e.noteOff.noteId == noteId_ : e.noteOff.pitch == key_)) ||
                                (e.type == Event::kNoteOnEvent && e.noteOn.velocity == 0.0f && e.noteOn.pitch == key_)) {
                         on_ = false;
                     }
@@ -228,7 +267,7 @@ public:
                 float s = 0.0f;
                 if (on_) {
                     // Bend: 0.5 is centre, two semitones each way
-                    const double hz = 440.0 * std::pow(2.0, (key_ - 69 + (bend_ - 0.5) * 4.0) / 12.0);
+                    const double hz = 440.0 * std::pow(2.0, (key_ - 69 + (bend_ - 0.5) * 4.0 + tuning_) / 12.0);
                     phase_ += hz / rate_;
                     phase_ -= std::floor(phase_);
                     s = static_cast<float>(0.5 * level_ * std::sin(2.0 * kPi * phase_));
@@ -240,18 +279,6 @@ public:
         }
         float **in = data.numInputs > 0 ? data.inputs[0].channelBuffers32 : nullptr;
         const int32 inChannels = data.numInputs > 0 ? data.inputs[0].numChannels : 0;
-        if (kind_ == Duck) {
-            float peak = 0.0f;
-            if (data.numInputs > 1) {
-                for (int32 c = 0; c < data.inputs[1].numChannels; ++c)
-                    for (int32 f = 0; f < frames; ++f)
-                        peak = std::max(peak, std::fabs(data.inputs[1].channelBuffers32[c][f]));
-            }
-            for (int32 c = 0; c < channels; ++c)
-                for (int32 f = 0; f < frames; ++f)
-                    out[c][f] = (inChannels > 0 ? in[std::min(c, inChannels - 1)][f] : 0.0f) * (1.0f - std::min(1.0f, peak));
-            return kResultOk;
-        }
         // Gain (and its twin): delayed by its latency, then the gain
         const double db = -60.0 + gain_ * 72.0;
         const float g = mute_ >= 0.5 ? 0.0f : static_cast<float>(std::pow(10.0, db / 20.0));
@@ -286,7 +313,7 @@ public:
 
     // IEditController
     tresult PLUGIN_API setComponentState(IBStream *state) override { return setState(state); }
-    int32 PLUGIN_API getParameterCount() override { return kind_ == Gain || kind_ == Twin ? 4 : 3; }
+    int32 PLUGIN_API getParameterCount() override { return kind_ == Gain || kind_ == Twin || kind_ == Sine ? 4 : 3; }
     tresult PLUGIN_API getParameterInfo(int32 index, ParameterInfo &info) override
     {
         if (index < 0 || index >= getParameterCount())
@@ -296,9 +323,13 @@ public:
         info.flags = ParameterInfo::kCanAutomate;
         info.unitId = 0; // the root unit
         if (kind_ == Sine) {
-            const char *names[] = {"Level", "Bend", "Mod"};
+            const char *names[] = {"Level", "Bend", "Mod", "Program"};
+            const UnitID units[] = {1, 2, kRootUnitId, kRootUnitId};
             copy(info.title, names[index]);
+            info.unitId = units[index];
             info.defaultNormalizedValue = index == 0 ? 0.8 : index == 1 ? 0.5 : 0.0;
+            if (index == 3)
+                info.flags |= ParameterInfo::kIsProgramChange; // its steps are left to its program list
         } else if (kind_ == Duck || kind_ == DuckController) {
             const char *names[] = {"Amount", "Release", "Hidden"};
             copy(info.title, names[index]);
@@ -339,13 +370,13 @@ public:
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override
     {
         if (kind_ == Sine)
-            return id == 0 ? level_ : id == 1 ? bend_ : mod_;
+            return id == 0 ? level_ : id == 1 ? bend_ : id == 2 ? mod_ : program_;
         return id == 0 ? gain_ : id == 1 ? mute_ : id == 2 ? 0.0 : latencyParam_;
     }
     tresult PLUGIN_API setParamNormalized(ParamID id, ParamValue value) override
     {
         if (kind_ == Sine) {
-            (id == 0 ? level_ : id == 1 ? bend_ : mod_) = value;
+            (id == 0 ? level_ : id == 1 ? bend_ : id == 2 ? mod_ : program_) = value;
             return kResultOk;
         }
         if (id == 0)
@@ -383,6 +414,32 @@ public:
         return kResultFalse;
     }
 
+    // INoteExpressionController (the sine): tuning, on its one event bus
+    int32 PLUGIN_API getNoteExpressionCount(int32 bus, int16) override { return bus == 0 ? 1 : 0; }
+    tresult PLUGIN_API getNoteExpressionInfo(int32 bus, int16, int32 index, NoteExpressionTypeInfo &info) override
+    {
+        if (bus != 0 || index != 0)
+            return kInvalidArgument;
+        info = NoteExpressionTypeInfo{};
+        info.typeId = kTuningTypeID;
+        copy(info.title, "Tuning");
+        copy(info.shortTitle, "Tune");
+        copy(info.units, "st");
+        info.unitId = -1;
+        info.valueDesc = {0.5, 0.0, 1.0, 0};
+        info.associatedParameterId = kNoParamId;
+        info.flags = NoteExpressionTypeInfo::kIsBipolar;
+        return kResultOk;
+    }
+    tresult PLUGIN_API getNoteExpressionStringByValue(int32, int16, NoteExpressionTypeID, NoteExpressionValue, String128) override
+    {
+        return kNotImplemented;
+    }
+    tresult PLUGIN_API getNoteExpressionValueByString(int32, int16, NoteExpressionTypeID, const TChar *, NoteExpressionValue &) override
+    {
+        return kNotImplemented;
+    }
+
     // The editor's clicks: the gain a step down or up, through the host
     void step(int direction)
     {
@@ -392,10 +449,53 @@ public:
             handler_->beginEdit(0);
             handler_->performEdit(0, next);
             handler_->endEdit(0);
+            void *more = nullptr;
+            if (handler_->queryInterface(IComponentHandler2_iid, &more) == kResultOk && more)
+                static_cast<IComponentHandler2 *>(more)->setDirty(true);
         }
     }
 
+    // IUnitInfo (the sine): the root with its program list, "Voice" under it and "Pitch" under that
+    int32 PLUGIN_API getUnitCount() override { return 3; }
+    tresult PLUGIN_API getUnitInfo(int32 index, UnitInfo &info) override
+    {
+        if (index < 0 || index >= 3)
+            return kInvalidArgument;
+        const char *names[] = {"Root", "Voice", "Pitch"};
+        info.id = index;
+        info.parentUnitId = index == 0 ? kNoParentUnitId : index - 1;
+        copy(info.name, names[index]);
+        info.programListId = index == 0 ? kProgramList : kNoProgramListId;
+        return kResultOk;
+    }
+    int32 PLUGIN_API getProgramListCount() override { return 1; }
+    tresult PLUGIN_API getProgramListInfo(int32 index, ProgramListInfo &info) override
+    {
+        if (index != 0)
+            return kInvalidArgument;
+        info.id = kProgramList;
+        copy(info.name, "Programs");
+        info.programCount = 3;
+        return kResultOk;
+    }
+    tresult PLUGIN_API getProgramName(ProgramListID list, int32 index, String128 name) override
+    {
+        const char *names[] = {"Soft", "Bright", "Hollow"};
+        if (list != kProgramList || index < 0 || index >= 3)
+            return kInvalidArgument;
+        copy(name, names[index]);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getProgramInfo(ProgramListID, int32, Steinberg::Vst::CString, String128) override { return kNotImplemented; }
+    tresult PLUGIN_API hasProgramPitchNames(ProgramListID, int32) override { return kResultFalse; }
+    tresult PLUGIN_API getProgramPitchName(ProgramListID, int32, int16, String128) override { return kNotImplemented; }
+    UnitID PLUGIN_API getSelectedUnit() override { return kRootUnitId; }
+    tresult PLUGIN_API selectUnit(UnitID) override { return kResultOk; }
+    tresult PLUGIN_API getUnitByBus(MediaType, BusDirection, int32, int32, UnitID &) override { return kNotImplemented; }
+    tresult PLUGIN_API setUnitProgramData(int32, int32, IBStream *) override { return kNotImplemented; }
+
 private:
+    static constexpr ProgramListID kProgramList = 7;
     uint32 latencyFrames() const { return static_cast<uint32>(std::lround(latencyParam_ * 8.0)) * 512u; }
 
     Kind kind_;
@@ -403,9 +503,11 @@ private:
     IComponentHandler *handler_ = nullptr;
     double rate_ = 48000.0;
     double gain_ = 60.0 / 72.0, mute_ = 0.0, latencyParam_ = 0.0;
-    double level_ = 0.8, bend_ = 0.5, mod_ = 0.0;
+    double level_ = 0.8, bend_ = 0.5, mod_ = 0.0, program_ = 0.0;
     double phase_ = 0.0;
     int key_ = 69;
+    int32 noteId_ = -1;
+    double tuning_ = 0.0; // the note's tuning expression, in semitones
     bool on_ = false;
     std::vector<std::vector<float>> delay_ = std::vector<std::vector<float>>(2, std::vector<float>(8192, 0.0f));
     size_t write_ = 8192 * 4;

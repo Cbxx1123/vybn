@@ -374,6 +374,32 @@ int runPluginSelfTest()
         }
         const double hz = crossings / 2.0 / (10.0 * kFrames / kRate);
         c.check(std::fabs(hz - 440.0) < 10.0, "A4 sounds at 440 Hz", text("%.1f Hz", hz));
+        // A note's tuning, against its key: another key's leaves it, its own takes it up an octave
+        auto pitch = [&] {
+            int n = 0;
+            float before = s.out[0][kFrames - 1];
+            for (int blockIndex = 0; blockIndex < 10; ++blockIndex) {
+                sine->process(s.block(false));
+                for (uint32_t i = 0; i < kFrames; ++i) {
+                    if ((before < 0.0f) != (s.out[0][i] < 0.0f))
+                        ++n;
+                    before = s.out[0][i];
+                }
+            }
+            return n / 2.0 / (10.0 * kFrames / kRate);
+        };
+        std::vector<plugin::Event> tune(1);
+        tune[0].kind = plugin::EventKind::NoteExpression;
+        tune[0].id = 70;
+        tune[0].expression = static_cast<uint32_t>(plugin::NoteExpression::Tuning);
+        tune[0].value = 12.0;
+        sine->process(s.block(false, tune));
+        const double other = pitch();
+        tune[0].id = 69;
+        sine->process(s.block(false, tune));
+        const double octave = pitch();
+        c.check(std::fabs(other - 440.0) < 10.0 && std::fabs(octave - 880.0) < 15.0,
+                "a note's tuning reaches its voice alone, by its note id", text("%.1f Hz, then ", other) + text("%.1f Hz", octave));
         events[0].kind = plugin::EventKind::NoteOff;
         events[0].frame = 0;
         sine->process(s.block(false, events));
@@ -990,6 +1016,48 @@ int runPluginSelfTest()
             player.process(block);
             c.check(s.peak(0, 0, 300) == 0.0f && s.peak(0, 300, kFrames) > 0.3f, "its sequenced notes start on their frame",
                     text("peak after %.2f", s.peak(0, 300, kFrames)));
+            // A note's tuning curve through the note player: a fifth up from its start
+            {
+                auto tuned = std::make_unique<audio::NoteSequence>();
+                audio::SequencedNote bent = note;
+                bent.start = 0.0;
+                bent.end = 8.0;
+                bent.curveCount = 1;
+                tuned->notes.push_back(bent);
+                audio::ExpressionCurve curve;
+                curve.points = {{0.0, 7.0f}};
+                tuned->curves.push_back(curve);
+                audio::NotePlayer bender(std::make_unique<audio::PluginInstrument>(&manager, pluginDevice("vybn.test.sine", "Test Sine")));
+                bender.prepare(kRate, kFrames);
+                auto *own = dynamic_cast<audio::PluginInstrument *>(&bender.instrument());
+                const auto loaded = Clock::now() + std::chrono::seconds(10);
+                while (own && own->slot() && own->slot()->state() == plugin::Slot::State::Loading && Clock::now() < loaded) {
+                    own->update();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+                bender.setSequence(std::move(tuned));
+                audio::TransportState from = t;
+                int n = 0;
+                float before = 0.0f;
+                for (int blockIndex = 0; blockIndex < 12; ++blockIndex) {
+                    for (int ch = 0; ch < 2; ++ch)
+                        std::fill(s.out[ch].begin(), s.out[ch].end(), 0.0f);
+                    audio::AudioBlock part{s.outPtr, 2, kFrames, kRate, from};
+                    bender.process(part);
+                    from.position += kFrames;
+                    for (uint32_t i = 0; blockIndex >= 2 && i < kFrames; ++i) {
+                        if ((before < 0.0f) != (s.out[0][i] < 0.0f))
+                            ++n;
+                        before = s.out[0][i];
+                    }
+                    if (blockIndex < 2)
+                        before = s.out[0][kFrames - 1];
+                }
+                const double hz = n / 2.0 / (10.0 * kFrames / kRate);
+                const double fifth = 440.0 * std::pow(2.0, 7.0 / 12.0);
+                c.check(std::fabs(hz - fifth) < 12.0, "a note's tuning curve plays through the note player",
+                        text("%.1f Hz (a fifth up is ", hz) + text("%.1f)", fifth));
+            }
             // Stopping the transport lets the note go (by key: the sine ignores a wildcard note off)
             audio::TransportState stopped = t;
             stopped.playing = false;

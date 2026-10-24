@@ -64,6 +64,8 @@ public:
     enum class Tool { Draw, Select, Slice, Erase };
     enum class Ghosts { Off, Track, All };
     static constexpr int kVelocityLane = -1;
+    static constexpr int kTuningLane = -2; // the notes' own tuning (Expression::Tuning)
+    static constexpr float kTuningRange = 12.0f; // the lane shows -12 to +12 semitones
 
     // How the editor looks, kept between runs (Settings)
     struct ViewSettings {
@@ -131,11 +133,11 @@ public:
     const Scale *scale() const;
     void setVelocityLane(bool shown) { velocityLane_ = shown; }
     bool velocityLane() const { return velocityLane_; }
-    // What the lane shows: kVelocityLane, or a controller (0-127, kPitchBend)
+    // What the lane shows: kVelocityLane, kTuningLane, or a controller (0-127, kPitchBend)
     void setLane(int controller) { laneController_ = controller; }
     int lane() const { return laneController_; }
     std::string laneName() const;
-    // Removes the clip's curve for the lane shown
+    // Removes the clip's curve for the lane shown (the tuning lane: the selected notes', or all)
     void clearLane();
     void setGhosts(Ghosts ghosts) { ghosts_ = ghosts; }
     Ghosts ghosts() const { return ghosts_; }
@@ -202,7 +204,8 @@ private:
 
     enum class Drag {
         None, Draw, Move, Resize, ResizeStart, Stretch, Keys, Ruler, Loop, LoopStart, LoopEnd, ClipStart, ClipEnd,
-        Mini, Box, Lasso, Pan, Velocity, Paint, Ramp, Erase, Divider, Point, CcPaint, CcLine, CcErase
+        Mini, Box, Lasso, Pan, Velocity, Paint, Ramp, Erase, Divider, Point, CcPaint, CcLine, CcErase,
+        TunePaint, TuneLine, TuneShift, TuneErase
     };
     struct Ghost {
         double start, length; // clip-relative beats
@@ -228,6 +231,14 @@ private:
     std::string valueText(float value) const;
     void pressLane(const ui::Input &input);
     void drawControls(ui::DrawList &list, const ui::Theme &theme, const Clip &c) const;
+    // The tuning lane: semitones to a height and back (snapped to whole ones unless `free`), the
+    // handle at a note's start, pressing, the notes a stroke draws on, drawing
+    float tuneY(float semitones) const;
+    float yTune(float y, bool free) const;
+    int tuneHandleAt(ui::Vec2 p) const;
+    void pressTuning(const ui::Input &input);
+    bool tuneTarget(const Note &note, bool onlySelected) const;
+    void drawTuning(ui::DrawList &list, const ui::Theme &theme, const Clip &c) const;
     int ghostAt(ui::Vec2 p) const;
     // Snapping, unless `free` (Ctrl held, or snapping off)
     double snapDown(double beat, bool free = false) const;

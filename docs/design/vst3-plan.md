@@ -1,6 +1,7 @@
 # VST3 plugins: plan
 
-Status: built. The plugin suite runs the VST3 checks (125 checks in all, about 7.4 s).
+Status: built, and the items once listed as not done (see the end of "As built"), all but note
+expression. The plugin suite runs the VST3 checks (132 checks in all, about 4 s).
 
 ## Goal
 
@@ -90,6 +91,21 @@ input. A **format** is the rest, behind one interface in the host:
   attaches the editor to it; closing it is the same news as a CLAP window closing.
 - An edit made in a VST3 editor while the plugin is inactive reaches the app at once and its
   processor in its first block after activation.
-- Not done: `IUnitInfo` (parameter groups, so `ParamInfo::module` is empty for VST3), note
-  expression, `IComponentHandler2` (grouped edits), 64-bit processing, program lists, and the
-  `moduleinfo.json` a bundle may carry (every bundle is loaded in a sandboxed host to be scanned).
+- Units: a parameter's unit and those above it are its `module` ("Voice/Pitch"); the root unit names
+  nothing. A program-change parameter whose unit has a program list is a list (stepped, an enum) of the
+  programs, its steps from the list when it gives none, its texts the programs' names.
+- `IComponentHandler2`: `setDirty` is the state-dirty news CLAP's `state` sends; group edits are
+  accepted and their edits arrive one by one; `requestOpenEditor` is refused (the app opens editors).
+  `IUnitHandler`'s program list changes rescan the parameters' texts and values.
+- A plugin that processes only doubles gets them: double buffers for every bus, converted around
+  `process`.
+- Each note's id is its channel and key, on its note-on and note-off.
+- A bundle's `Contents/Resources/moduleinfo.json` is read by the app (`plugin/ModuleInfo.cpp`, JSON5)
+  and lists its plugins without a host; without one, or with one that can't be read, the bundle is
+  scanned in a host as before. The class ids are taken as the file writes them, the TUID's bytes in
+  order. The test bundle carries one (`tests/plugins/moduleinfo.json`), checked against its factory.
+- Note expression: built with per-note expression in the app (docs/design/note-expression-plan.md).
+  The host reads the plugin's `INoteExpressionController` (its first event bus, channel 0) and, if it
+  lists `kTuningTypeID`, sends a sounding note's tuning as `kNoteExpressionValueEvent`s against the
+  note's id (240 semitones across 0-1, within the range the plugin gives); a plugin that lists none
+  gets none. The app's other expressions (pressure, timbre, volume, pan) are for later.

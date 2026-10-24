@@ -18,6 +18,37 @@ namespace daw {
 // beats (quarter notes), turned into time and bars by `timing`; times inside sound files are in
 // seconds (audio isn't stretched by the tempo).
 
+// A point of a curve: a controller's in an instrument clip (beats from the clip's start, values
+// 0-1), or a note's expression (beats from the note's start, in the expression's units)
+constexpr int kPitchBend = 128; // the lane for the pitch bend, beside MIDI's controllers 0-127
+struct ControlPoint {
+    double beat = 0.0;
+    float value = 0.0f;
+};
+
+// What a single note can change while it sounds. Tuning is in semitones (-48 to 48). Saved as
+// words ("tuning"), so the order here can change.
+enum class Expression : uint8_t { Tuning };
+constexpr int kExpressions = 1;
+const char *expressionKey(Expression type);       // "tuning"
+bool expressionFromKey(const std::string &key, Expression &type);
+std::string expressionName(Expression type);      // "Note tuning"
+float expressionNeutral(Expression type);         // the value of a note without the curve
+float expressionMin(Expression type);
+float expressionMax(Expression type);
+
+// A note's expression over its length: points in beats from its start (sorted), joined by straight
+// lines; before the first point its value, after the last the last's. Points past the note's end
+// are kept (so shortening and lengthening a note gives them back) but never play.
+struct NoteCurve {
+    Expression type = Expression::Tuning;
+    std::vector<ControlPoint> points;
+
+    float valueAt(double beat) const;
+};
+bool operator==(const NoteCurve &a, const NoteCurve &b);
+inline bool operator!=(const NoteCurve &a, const NoteCurve &b) { return !(a == b); }
+
 // A MIDI note in a clip, positioned from the clip's start
 struct Note {
     double start = 0.0;
@@ -26,15 +57,29 @@ struct Note {
     float velocity = 0.8f; // 0-1
     bool muted = false;    // kept in the clip but not played
     bool selected = false; // in the piano roll's selection; not saved
+    std::vector<NoteCurve> expression = {}; // at most one curve per type; empty for most notes
+
+    const NoteCurve *curve(Expression type) const;
+    // The curve's value, or the type's neutral value without one
+    float expressionAt(Expression type, double beat) const;
+    // Sets the curve's points (empty removes it)
+    void setCurve(Expression type, std::vector<ControlPoint> points);
 };
+
+// A note's curves over [from, to) of it (beats from its start), moved to start at `from`: the
+// points inside, and a point at each cut holding the value there so nothing jumps. A curve whose
+// part is all at the neutral value is left out. For cutting a note in two (`to` infinite: the rest).
+std::vector<NoteCurve> cutCurves(const std::vector<NoteCurve> &curves, double from, double to);
+// `b`'s curves joined onto `a`'s at `offset` beats into `a` (a's points from there on go): for
+// joining a note that starts there onto `a`
+std::vector<NoteCurve> joinCurves(const std::vector<NoteCurve> &a, const std::vector<NoteCurve> &b, double offset);
+// Times scaled by `factor`
+void stretchCurves(std::vector<NoteCurve> &curves, double factor);
+// Played backwards over a note `length` long (points past its end go first)
+void reverseCurves(std::vector<NoteCurve> &curves, double length);
 
 // A controller's curve in an instrument clip: points in beats from the clip's start (sorted),
 // values 0-1, joined by straight lines (held, for switches such as the sustain pedal)
-constexpr int kPitchBend = 128; // the lane for the pitch bend, beside MIDI's controllers 0-127
-struct ControlPoint {
-    double beat = 0.0;
-    float value = 0.0f;
-};
 struct ControlLane {
     int controller = 1;
     std::vector<ControlPoint> points;

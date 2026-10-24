@@ -182,6 +182,19 @@ int thinControlPoints(ControlLane &lane, float tolerance);
 // Lanes with no points go
 void dropEmptyLanes(std::vector<ControlLane> &lanes);
 
+// A note's expression curves (see NoteCurve), in beats from the note's start and the type's units.
+// A point at `beat`, replacing any within `merge` beats of it, the value clamped to the type's
+// range; a note without the curve gets one, starting at the neutral value from its start so the
+// part before `beat` doesn't jump
+void setCurvePoint(Note &note, Expression type, double beat, float value, double merge);
+// A straight line from `from` to `to`: the points between replaced by its two ends
+void curveLine(Note &note, Expression type, double from, float fromValue, double to, float toValue);
+// The whole curve moved by `by` (a note without one gets a single point), clamped
+void shiftCurve(Note &note, Expression type, float by);
+// After editing: points a straight line through their neighbours passes within `tolerance` of go,
+// and a curve left all at the neutral value goes
+void tidyCurve(Note &note, Expression type, float tolerance);
+
 // Selection helpers
 int selectedCount(const std::vector<Note> &notes);
 void selectAll(std::vector<Note> &notes, bool selected = true);

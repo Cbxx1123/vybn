@@ -3,6 +3,7 @@
 #include "daw/model/Routing.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <set>
 
@@ -205,6 +206,179 @@ void Project::moveTrack(int from, int to)
         --selectedTrack;
     else if (to <= selectedTrack && selectedTrack < from)
         ++selectedTrack;
+}
+
+const char *expressionKey(Expression type)
+{
+    switch (type) {
+    case Expression::Tuning: return "tuning";
+    }
+    return "tuning";
+}
+
+bool expressionFromKey(const std::string &key, Expression &type)
+{
+    for (int i = 0; i < kExpressions; ++i) {
+        if (key == expressionKey(static_cast<Expression>(i))) {
+            type = static_cast<Expression>(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string expressionName(Expression type)
+{
+    switch (type) {
+    case Expression::Tuning: return "Note tuning";
+    }
+    return "Note tuning";
+}
+
+float expressionNeutral(Expression /*type*/) { return 0.0f; }
+float expressionMin(Expression /*type*/) { return -48.0f; }
+float expressionMax(Expression /*type*/) { return 48.0f; }
+
+float NoteCurve::valueAt(double beat) const
+{
+    if (points.empty())
+        return expressionNeutral(type);
+    if (beat <= points.front().beat)
+        return points.front().value;
+    if (beat >= points.back().beat)
+        return points.back().value;
+    const auto next = std::upper_bound(points.begin(), points.end(), beat,
+                                       [](double b, const ControlPoint &p) { return b < p.beat; });
+    const ControlPoint &b = *next;
+    const ControlPoint &a = *(next - 1);
+    if (b.beat <= a.beat)
+        return a.value;
+    return a.value + (b.value - a.value) * static_cast<float>((beat - a.beat) / (b.beat - a.beat));
+}
+
+bool operator==(const NoteCurve &a, const NoteCurve &b)
+{
+    if (a.type != b.type || a.points.size() != b.points.size())
+        return false;
+    for (size_t i = 0; i < a.points.size(); ++i) {
+        if (a.points[i].beat != b.points[i].beat || a.points[i].value != b.points[i].value)
+            return false;
+    }
+    return true;
+}
+
+const NoteCurve *Note::curve(Expression type) const
+{
+    for (const NoteCurve &c : expression) {
+        if (c.type == type)
+            return &c;
+    }
+    return nullptr;
+}
+
+float Note::expressionAt(Expression type, double beat) const
+{
+    const NoteCurve *c = curve(type);
+    return c ? c->valueAt(beat) : expressionNeutral(type);
+}
+
+void Note::setCurve(Expression type, std::vector<ControlPoint> points)
+{
+    auto it = std::find_if(expression.begin(), expression.end(), [&](const NoteCurve &c) { return c.type == type; });
+    if (points.empty()) {
+        if (it != expression.end())
+            expression.erase(it);
+        return;
+    }
+    if (it == expression.end()) {
+        expression.push_back({type, {}});
+        it = expression.end() - 1;
+    }
+    it->points = std::move(points);
+}
+
+namespace {
+
+bool allNeutral(const NoteCurve &c)
+{
+    return std::all_of(c.points.begin(), c.points.end(),
+                       [&](const ControlPoint &p) { return p.value == expressionNeutral(c.type); });
+}
+
+}
+
+std::vector<NoteCurve> cutCurves(const std::vector<NoteCurve> &curves, double from, double to)
+{
+    std::vector<NoteCurve> out;
+    for (const NoteCurve &c : curves) {
+        NoteCurve part{c.type, {}};
+        part.points.push_back({0.0, c.valueAt(from)});
+        for (const ControlPoint &p : c.points) {
+            if (p.beat > from + 1e-9 && p.beat < to - 1e-9)
+                part.points.push_back({p.beat - from, p.value});
+        }
+        // The value at the cut, unless the curve ends before it (then the last point holds)
+        if (!c.points.empty() && std::isfinite(to) && c.points.back().beat > to - 1e-9)
+            part.points.push_back({to - from, c.valueAt(to)});
+        if (!allNeutral(part))
+            out.push_back(std::move(part));
+    }
+    return out;
+}
+
+std::vector<NoteCurve> joinCurves(const std::vector<NoteCurve> &a, const std::vector<NoteCurve> &b, double offset)
+{
+    std::vector<NoteCurve> out;
+    for (int i = 0; i < kExpressions; ++i) {
+        const Expression type = static_cast<Expression>(i);
+        const NoteCurve *x = nullptr, *y = nullptr;
+        for (const NoteCurve &c : a)
+            x = c.type == type ? &c : x;
+        for (const NoteCurve &c : b)
+            y = c.type == type ? &c : y;
+        if (!x && !y)
+            continue;
+        const NoteCurve none{type, {}};
+        const NoteCurve &first = x ? *x : none;
+        const NoteCurve &second = y ? *y : none;
+        NoteCurve joined{type, {}};
+        for (const ControlPoint &p : first.points) {
+            if (p.beat < offset - 1e-9)
+                joined.points.push_back(p);
+        }
+        // Two points at the join: the first note's value there, then the second's (a step)
+        joined.points.push_back({offset, first.valueAt(offset)});
+        joined.points.push_back({offset, second.valueAt(0.0)});
+        for (const ControlPoint &p : second.points) {
+            if (p.beat > 1e-9)
+                joined.points.push_back({p.beat + offset, p.value});
+        }
+        if (!allNeutral(joined))
+            out.push_back(std::move(joined));
+    }
+    return out;
+}
+
+void stretchCurves(std::vector<NoteCurve> &curves, double factor)
+{
+    for (NoteCurve &c : curves) {
+        for (ControlPoint &p : c.points)
+            p.beat *= factor;
+    }
+}
+
+void reverseCurves(std::vector<NoteCurve> &curves, double length)
+{
+    for (NoteCurve &c : curves) {
+        std::vector<ControlPoint> reversed;
+        if (!c.points.empty() && c.points.back().beat > length)
+            reversed.push_back({0.0, c.valueAt(length)});
+        for (auto p = c.points.rbegin(); p != c.points.rend(); ++p) {
+            if (p->beat <= length)
+                reversed.push_back({length - p->beat, p->value});
+        }
+        c.points = std::move(reversed);
+    }
 }
 
 float ControlLane::valueAt(double beat) const

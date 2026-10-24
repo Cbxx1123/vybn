@@ -14,6 +14,8 @@
 #include <new>
 #include <thread>
 
+#include "plugin/ModuleInfo.h"
+
 namespace plugin {
 
 #ifdef _WIN32
@@ -207,6 +209,10 @@ bool Instance::probeSidechain(const std::string &path, const std::string &id, co
 
 bool Instance::scan(const std::string &path, const SandboxOptions &options, std::vector<Descriptor> &found, std::string &error)
 {
+    // A VST3 bundle that lists its classes in its moduleinfo.json needn't be loaded
+    if (isVst3Path(path) && readModuleInfo(path, found, error))
+        return true;
+    error.clear();
     Instance instance;
     SandboxOptions sandbox = options;
     sandbox.readable.push_back(path);

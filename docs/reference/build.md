@@ -77,4 +77,8 @@ Windows libraries its own code needs: engine `dwmapi`, `comdlg32`, `winhttp`, `s
   `output/vybn.exe`, for testing while the app holds `output/vybn.exe` (run it after the build; the
   autosave recovery check treats `vybn-dev.exe` as the app). `tools/test.sh` tests it with
   `VYBN_TEST_EXE=output/vybn-dev.exe`.
-- `build/` and `output/` are generated (and ignored by git). Don't edit files in them.
+- `tools/coverage.sh` builds the coverage tree (`build-coverage/`, `-DVYBN_COVERAGE=ON
+  -DVYBN_OPTIMISE_AUDIO=OFF -DVYBN_OUTPUT_DIR=output-coverage`, with the compiler from
+  `build/CMakeCache.txt`), runs the suites against it and prints gcov's line coverage (docs/testing.md).
+  `VYBN_OUTPUT_DIR` is a cache variable, so another tree can put its output elsewhere.
+- `build/`, `build-*/`, `output/` and `output-*/` are generated (and ignored by git). Don't edit files in them.

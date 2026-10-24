@@ -14,6 +14,8 @@
 #include <thread>
 #include <vector>
 
+#include <clap/clap.h>
+
 #include "plugin/Instance.h"
 
 namespace tests {
@@ -164,10 +166,56 @@ void runVst3Checks(Checker &c)
     c.check(sineD.instrument() && sineD.hasFeature("synthesizer") && !duckD.instrument() && twinD.name == "Test Gain",
             "its subcategories become the same feature words", sineD.features);
     {
+        // The bundle is read from its moduleinfo.json; its module on its own is loaded in a host, and
+        // the two agree
         std::vector<plugin::Descriptor> single;
         std::string why;
         const std::string module = (fs::u8path(bundle) / "Contents" / "x86_64-win" / "vybn-test-plugins.vst3").u8string();
         c.check(plugin::Instance::scan(module, sandbox, single, why) && single.size() == 4, "a single-file .vst3 scans too", why);
+        bool same = single.size() == found.size();
+        std::string differs;
+        for (size_t i = 0; same && i < single.size(); ++i) {
+            const plugin::Descriptor &a = single[i], &b = found[i];
+            same = a.id == b.id && a.name == b.name && a.vendor == b.vendor && a.version == b.version && a.features == b.features && a.url == b.url;
+            if (!same)
+                differs = a.name + ": " + a.id + " / " + b.id + ", " + a.features + " / " + b.features;
+        }
+        c.check(same, "the bundle's moduleinfo.json lists what its module's factory does", differs);
+
+        // A bundle whose module isn't a DLL at all: only its moduleinfo.json can list it
+        const fs::path fake = fs::temp_directory_path() / "vybn-vst3-selftest" / "Fake.vst3";
+        std::error_code ec;
+        fs::remove_all(fake.parent_path(), ec);
+        fs::create_directories(fake / "Contents" / "x86_64-win", ec);
+        fs::create_directories(fake / "Contents" / "Resources", ec);
+        std::FILE *f = _wfopen((fake / "Contents" / "x86_64-win" / "Fake.vst3").c_str(), L"wb");
+        if (f) {
+            std::fputs("not a module", f);
+            std::fclose(f);
+        }
+        auto writeInfo = [&](const char *json) {
+            std::FILE *info = _wfopen((fake / "Contents" / "Resources" / "moduleinfo.json").c_str(), L"wb");
+            if (info) {
+                std::fputs(json, info);
+                std::fclose(info);
+            }
+        };
+        writeInfo("{ /* no host could load this */ Classes: [ { CID: '00112233445566778899AABBCCDDEEFF', Category: 'Audio Module Class',"
+                  " Name: 'Fake \\u00e9', 'Sub Categories': 'Instrument|Sampler', }, ], 'Factory Info': { Vendor: 'Nobody', URL: 'https://x' } }");
+        std::vector<plugin::Descriptor> listed;
+        why.clear();
+        const bool read = plugin::Instance::scan(fake.u8string(), sandbox, listed, why);
+        c.check(read && listed.size() == 1 && listed[0].id == "vst3:00112233445566778899aabbccddeeff" && listed[0].name == "Fake \xc3\xa9" &&
+                    listed[0].vendor == "Nobody" && listed[0].url == "https://x" && listed[0].instrument() && listed[0].hasFeature("sampler") &&
+                    listed[0].path == fake.u8string(),
+                "a bundle is listed from its moduleinfo.json without loading its module (JSON5, the factory's vendor)",
+                read && !listed.empty() ? listed[0].id + " " + listed[0].name + " " + listed[0].features : why);
+        writeInfo("{ Classes: [ { CID: 'short', Category: 'Audio Module Class', Name: 'Broken' ");
+        listed.clear();
+        why.clear();
+        c.check(!plugin::Instance::scan(fake.u8string(), sandbox, listed, why) && listed.empty(),
+                "a moduleinfo.json that can't be read leaves the bundle to a host (which can't load this one)", why);
+        fs::remove_all(fake.parent_path(), ec);
     }
     if (gainD.id.empty() || sineD.id.empty() || duckD.id.empty()) {
         c.check(false, "the VST3 test plugins can be scanned");
@@ -241,17 +289,20 @@ void runVst3Checks(Checker &c)
         if (editor) {
             gain->poll();
             gain->takeChanges();
+            const bool dirtyBefore = gain->takeStateDirty();
             PostMessageW(editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(250, 20));
-            bool began = false, value = false, ended = false;
+            bool began = false, value = false, ended = false, dirty = false;
             until(*gain, b, true, [&] {
                 for (const auto &ch : gain->takeChanges()) {
                     began = began || (ch.kind == plugin::ChangeKind::GestureBegin && ch.id == 0);
                     value = value || (ch.kind == plugin::ChangeKind::Value && ch.id == 0 && std::fabs(ch.value - gainAt(-5.0206)) < 1e-4);
                     ended = ended || (ch.kind == plugin::ChangeKind::GestureEnd && ch.id == 0);
                 }
-                return began && value && ended;
+                dirty = dirty || gain->takeStateDirty();
+                return began && value && ended && dirty;
             });
             c.check(began && value && ended, "an edit in its editor comes back as a gesture");
+            c.check(!dirtyBefore && dirty, "its controller saying its state is dirty (IComponentHandler2) comes across");
             gain->process(b.block(true));
             c.check(std::fabs(b.peak(0) / 0.5f - static_cast<float>(std::pow(10.0, -5.0206 / 20.0))) < 0.01f,
                     "and reaches its processor", text("level x%.3f", b.peak(0) / 0.5f));
@@ -347,11 +398,54 @@ void runVst3Checks(Checker &c)
             return p && p->value == 1.0;
         });
         c.check(shownBend, "and its controller shows it");
+        // Note expression: tuning against the note's id. Another key's (not sounding) never reaches
+        // it; its own takes it an octave up from where the bend left it
+        std::vector<plugin::Event> tune(1);
+        tune[0].kind = plugin::EventKind::NoteExpression;
+        tune[0].id = 70;
+        tune[0].expression = static_cast<uint32_t>(plugin::NoteExpression::Tuning);
+        tune[0].value = 12.0;
+        sine->process(s.block(false, tune));
+        const int untouched = crossings(*sine, s, 8);
+        tune[0].id = 69;
+        sine->process(s.block(false, tune));
+        const int octave = crossings(*sine, s, 8);
+        c.check(std::fabs(static_cast<double>(untouched) / bent - 1.0) < 0.03 && std::fabs(static_cast<double>(octave) / bent - 2.0) < 0.05,
+                "a note's tuning reaches it as note expression, by the note's id",
+                text("x%.3f, then ", static_cast<double>(untouched) / bent) + text("x%.3f", static_cast<double>(octave) / bent));
         std::vector<plugin::Event> off(1);
         off[0].kind = plugin::EventKind::AllNotesOff;
         sine->process(s.block(false, off));
         sine->process(s.block(false));
         c.check(s.peak(0) == 0.0f, "all notes off silences it");
+
+        // Note ids: it ends a note by its id, so the same key let go on another channel leaves it sounding
+        sine->process(s.block(false, on));
+        std::vector<plugin::Event> otherChannel(1);
+        otherChannel[0].kind = plugin::EventKind::NoteOff;
+        otherChannel[0].id = 69;
+        otherChannel[0].channel = 1;
+        sine->process(s.block(false, otherChannel));
+        const float still = s.peak(0);
+        std::vector<plugin::Event> sameNote = otherChannel;
+        sameNote[0].channel = 0;
+        sine->process(s.block(false, sameNote));
+        sine->process(s.block(false));
+        c.check(still > 0.3f && s.peak(0) == 0.0f, "each note has an id, the same on its note-off", text("peak %.2f before", still));
+
+        // Units and the program list
+        std::vector<plugin::ParamInfo> list;
+        sine->params(list, error);
+        const plugin::ParamInfo *levelP = paramNamed(list, "Level"), *bendP = paramNamed(list, "Bend"), *modP = paramNamed(list, "Mod");
+        const plugin::ParamInfo *program = paramNamed(list, "Program");
+        c.check(levelP && bendP && modP && levelP->module == "Voice" && bendP->module == "Voice/Pitch" && modP->module.empty(),
+                "its units become the parameters' modules (the root none)", bendP ? bendP->module : "");
+        std::string names[3];
+        const bool named = program && sine->paramText(program->id, 0.0, names[0]) && sine->paramText(program->id, 1.0, names[1]) &&
+                           sine->paramText(program->id, 2.0, names[2]);
+        c.check(program && program->stepped() && (program->flags & CLAP_PARAM_IS_ENUM) && program->max == 2.0 && named && names[0] == "Soft" &&
+                    names[1] == "Bright" && names[2] == "Hollow",
+                "a program change is a list of its unit's programs, by name", names[0] + ", " + names[1] + ", " + names[2]);
     }
     sine.reset();
 
@@ -377,7 +471,8 @@ void runVst3Checks(Checker &c)
                 d.key[0][i] = d.key[1][i] = 0.75f;
             duck->process(d.block(true, {}, true));
             const float keyed = d.out[0][10];
-            c.check(std::fabs(unkeyed - 0.5f) < 1e-6f && std::fabs(keyed - 0.125f) < 1e-5f, "the block's key reaches its sidechain bus",
+            c.check(std::fabs(unkeyed - 0.5f) < 1e-6f && std::fabs(keyed - 0.125f) < 1e-5f,
+                    "the block's key reaches its sidechain bus, and doubles serve a plugin that processes only them",
                     text("%.3f unkeyed, ", unkeyed) + text("%.3f keyed", keyed));
         }
     }
