@@ -2,6 +2,7 @@
 
 #include "daw/model/NoteTools.h"
 #include "daw/model/Takes.h"
+#include "daw/model/Warp.h"
 
 #include <algorithm>
 #include <chrono>
@@ -459,12 +460,23 @@ std::string RecordingSession::finish()
         Clip &edited = *editClipOf(t);
         edited.audioFile = path;
         edited.length = std::max(1.0 / 64.0, project().beatsFor(edited.start, frames / rate - edited.offset));
+        // Warped at the tempo it was recorded at, so it plays as recorded and follows the tempo if it
+        // changes later (docs/design/warp-plan.md)
+        const double seconds = static_cast<double>(frames) / rate;
+        auto warp = [&](Clip &c) {
+            c.warp = followTiming(c, project().timing, seconds);
+            c.warp.mode = audio::WarpMode::Complex;
+            c.warp.on = true;
+        };
+        warp(edited);
         // Every pass is the one file, at its own offset
         for (TakeLane &lane : store_.editTrack(t.track).takeLanes) {
             if (std::find(t.passNames.begin(), t.passNames.end(), lane.name) == t.passNames.end())
                 continue;
-            for (Clip &c : lane.clips)
+            for (Clip &c : lane.clips) {
                 c.audioFile = path;
+                warp(c);
+            }
         }
         fold(t);
     }

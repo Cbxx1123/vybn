@@ -1,6 +1,7 @@
 #include "daw/model/Project.h"
 
 #include "daw/model/Routing.h"
+#include "daw/model/Warp.h"
 
 #include <algorithm>
 #include <cmath>
@@ -503,7 +504,7 @@ bool Project::splitClip(double beat)
     Clip right = *c;
     right.start = beat;
     right.length = c->length - at;
-    right.offset = c->offset + timing.secondsAt(beat) - timing.secondsAt(c->start);
+    right.offset = clipSourceSeconds(*c, timing, beat);
     right.fadeIn = 0.0;
     right.notes.clear();
     right.controls = cutLanes(c->controls, at);
@@ -533,9 +534,9 @@ void Project::trimStart(Clip &c, double beat, double minimum) const
     start = std::max(0.0, start);
     // An audio clip can't start before its file does
     if (c.hasAudio())
-        start = std::max(start, timing.beatAt(timing.secondsAt(c.start) - c.offset));
+        start = std::max(start, fileStartBeat(c, timing));
     const double moved = start - c.start;
-    c.offset = std::max(0.0, c.offset + timing.secondsAt(start) - timing.secondsAt(c.start));
+    c.offset = std::max(0.0, clipSourceSeconds(c, timing, start));
     // Controller curves keep their place: what is before the new start goes, its value stays
     for (ControlLane &lane : c.controls) {
         const float value = lane.valueAt(moved);

@@ -9,6 +9,7 @@
 #include "daw/model/ExportModel.h"
 #include "audio/Device.h"
 #include "audio/TempoMap.h"
+#include "audio/Warp.h"
 
 namespace daw {
 
@@ -124,6 +125,9 @@ struct Clip {
     float gain = 1.0f;     // linear, 0-4
     double fadeIn = 0.0;   // seconds
     double fadeOut = 0.0;
+    // Warping (daw/model/Warp.h): with warp.on the sound follows the bars through its map, `offset`
+    // still the file's seconds at the clip's start
+    audio::Warp warp;
 
     // In the track's own lane, a comp section: the take (a clip in one of the track's take lanes)
     // it was cut from (docs/design/takes-plan.md). kNoId for an ordinary clip, and in a take lane.

@@ -20,6 +20,7 @@
 #include "daw/views/PianoRoll.h"
 #include "daw/model/Routing.h"
 #include "daw/model/Takes.h"
+#include "daw/model/Warp.h"
 #include "daw/io/MidiExport.h"
 #include "daw/io/MidiImport.h"
 #include "audio/Synth.h"
@@ -244,6 +245,11 @@ void DawApp::importAudioFiles(const std::vector<std::string> &files, int track, 
         }
         Clip c(fs::path(file).stem().string(), beat, project().beatsFor(beat, data->seconds()));
         c.audioFile = file;
+        // A loop comes in warped at its tempo (a loop is at most 32 bars, so a long file isn't looked at)
+        if (settings_.warpLoops && data->seconds() <= kLongestLoopSeconds) {
+            if (auto analysis = pool_->analyseNow(file); analysis && analysis->loop)
+                applyGuess(c, *analysis);
+        }
         auto &clips = session_.store().editTrack(index).clips;
         clips.push_back(c);
         added = static_cast<int>(clips.size()) - 1;
@@ -670,6 +676,7 @@ void DawApp::openClipMenu(Vec2 at, double beat)
                 c.fadeIn = c.fadeOut = 0.0;
             }
         }));
+        items.push_back(MenuItem::sub("Warp", warpMenu()));
     }
     items.push_back(MenuItem::divider());
     items.push_back(MenuItem::item("Delete clip", [this] { session_.store().edit().deleteClip(); }));

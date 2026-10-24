@@ -9,6 +9,7 @@
 #include "daw/model/AutomationLanes.h"
 #include "daw/widgets/Format.h"
 #include "daw/model/Routing.h"
+#include "daw/model/Warp.h"
 #include "audio/DeviceChain.h"
 #include "audio/PluginInstrument.h"
 #include "plugin/Slot.h"
@@ -734,6 +735,17 @@ uint64_t AudioBridge::hashClips(const Project &project, const std::vector<Clip> 
         mix(h, &c.fadeOut, sizeof(c.fadeOut));
         mix(h, c.audioFile.data(), c.audioFile.size());
         mix(h, &c.take, sizeof(c.take));
+        mix(h, &c.id, sizeof(c.id));
+        const audio::Warp &w = c.warp;
+        const uint8_t settings[4] = {static_cast<uint8_t>(w.on), static_cast<uint8_t>(w.mode),
+                                     static_cast<uint8_t>(w.preserve), static_cast<uint8_t>(w.loop)};
+        mix(h, settings, sizeof(settings));
+        mix(h, &w.bpm, sizeof(w.bpm));
+        mix(h, &w.pitch, sizeof(w.pitch));
+        mix(h, &w.envelope, sizeof(w.envelope));
+        mix(h, &w.grain, sizeof(w.grain));
+        if (!w.markers.empty())
+            mix(h, w.markers.data(), w.markers.size() * sizeof(audio::WarpMarker));
     }
     // A tempo change moves clips in time; a file finishing loading adds it
     const uint64_t tempo = tempoHash(project.timing);
@@ -762,6 +774,26 @@ std::unique_ptr<audio::ClipSequence> AudioBridge::clipSequenceFor(const Project 
         r.gain = c.gain;
         r.fadeIn = c.fadeIn;
         r.fadeOut = c.fadeOut;
+        r.key = c.id;
+        if (c.warp.on) {
+            r.warp = c.warp;
+            r.contentStart = clipContentStart(c);
+            // Beats slices at the transients (or the grid); Complex starts its phases again at them
+            if (c.warp.mode == audio::WarpMode::Beats || c.warp.mode == audio::WarpMode::Complex) {
+                std::shared_ptr<const audio::AudioAnalysis> analysis = pool_.analysis(c.audioFile);
+                if (c.warp.mode == audio::WarpMode::Beats)
+                    r.slices = std::make_shared<const std::vector<audio::WarpSlice>>(
+                        warpSlices(c, analysis.get(), data->sampleRate, data->frames));
+                if (c.warp.mode == audio::WarpMode::Complex && analysis) {
+                    std::vector<double> resets;
+                    for (const audio::Transient &t : analysis->transients) {
+                        if (t.strength >= 0.3f)
+                            resets.push_back(static_cast<double>(t.frame));
+                    }
+                    r.resets = std::make_shared<const std::vector<double>>(std::move(resets));
+                }
+            }
+        }
         sequence->regions.push_back(std::move(r));
         sections.push_back({c.start, c.take != kNoId});
     }
@@ -775,13 +807,17 @@ std::unique_ptr<audio::ClipSequence> AudioBridge::clipSequenceFor(const Project 
         if (!sections[i].second || !sections[i + 1].second || std::fabs(a.end - b.start) > 1e-6)
             continue;
         const double edge = timing.secondsAt(a.end);
-        const double aLeft = a.data->seconds() - (a.offset + edge - timing.secondsAt(a.start)); // a's sound after the edge
-        const double half = std::min({kCompFade / 2.0, std::max(0.0, aLeft), b.offset});
+        // a's sound after the edge, and b's before it
+        const double aAt = a.warp.on ? audio::warpSeconds(a.warp, a.contentStart + a.end - a.start)
+                                     : a.offset + edge - timing.secondsAt(a.start);
+        const double bAt = b.warp.on ? audio::warpSeconds(b.warp, b.contentStart) : b.offset;
+        const double half = std::min({kCompFade / 2.0, std::max(0.0, a.data->seconds() - aAt), bAt});
         if (half <= 0.0)
             continue;
         a.end = timing.beatAt(edge + half);
         const double bStart = timing.beatAt(edge - half);
         b.offset -= half;
+        b.contentStart -= b.start - bStart;
         b.start = bStart;
     }
     sequence->crossfade(timing);

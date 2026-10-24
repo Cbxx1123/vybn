@@ -13,6 +13,7 @@
 #include <system_error>
 
 #include "daw/model/Routing.h"
+#include "daw/model/Warp.h"
 #include "daw/io/Toml.h"
 #include "audio/Effects.h"
 #include "audio/Encoders.h"
@@ -171,6 +172,30 @@ void writeDevice(std::ostringstream &out, const char *header, const audio::Devic
 }
 
 namespace {
+
+// A clip's warp as one inline table (readWarp reads it back)
+void writeWarp(std::ostringstream &out, const audio::Warp &w)
+{
+    using toml::number;
+    using toml::quote;
+    out << "warp = { on = " << (w.on ? "true" : "false") << ", mode = " << quote(warpModeKey(w.mode))
+        << ", bpm = " << number(w.bpm);
+    if (w.pitch != 0.0)
+        out << ", pitch = " << number(w.pitch);
+    if (w.preserve != audio::WarpPreserve::Transients)
+        out << ", preserve = " << quote(warpPreserveKey(w.preserve));
+    if (w.loop != audio::WarpLoop::Off)
+        out << ", loop = " << quote(warpLoopKey(w.loop));
+    if (w.envelope != 100.0f)
+        out << ", envelope = " << number(w.envelope);
+    if (w.grain != 50.0f)
+        out << ", grain = " << number(w.grain);
+    out << ", markers = [";
+    for (size_t i = 0; i < w.markers.size(); ++i)
+        out << (i ? ", " : " ") << "{ seconds = " << number(w.markers[i].seconds) << ", beat = " << number(w.markers[i].beat)
+            << " }";
+    out << (w.markers.empty() ? "] }\n" : " ] }\n");
+}
 
 // One export target as a table under "[[export_presets.targets]]": every field, enums by name
 void writeExportTarget(std::ostringstream &out, const ExportTarget &t)
@@ -336,6 +361,8 @@ std::string writeProject(const Project &project, const std::string &folder)
                     out << "gain = " << number(c.gain) << "\n";
                     out << "fade_in = " << number(c.fadeIn) << "\n";
                     out << "fade_out = " << number(c.fadeOut) << "\n";
+                    if (c.warp.bpm > 0.0)
+                        writeWarp(out, c.warp);
                 }
                 return;
             }
@@ -513,6 +540,48 @@ private:
 std::string at(const char *what, size_t index)
 {
     return std::string(what) + " " + std::to_string(index + 1) + ": ";
+}
+
+// A clip's warp, the inline table readWarp reads: `warp = { on, mode, bpm, ..., markers = [...] }`, the
+// Beats and Tones settings only when not their defaults
+bool readWarp(FieldReader &r, const toml::Value &clip, const std::string &where, audio::Warp &w)
+{
+    const toml::Value *v = clip.at("warp");
+    if (!v)
+        return true;
+    if (!v->isTable())
+        return r.fail(where + "warp should be a table, not " + toml::typeName(v->type()));
+    const std::string warpWhere = where + "warp: ";
+    r.flag(*v, "on", warpWhere, w.on);
+    r.real(*v, "bpm", warpWhere, w.bpm);
+    r.real(*v, "pitch", warpWhere, w.pitch);
+    r.real(*v, "envelope", warpWhere, w.envelope);
+    r.real(*v, "grain", warpWhere, w.grain);
+    std::string mode = warpModeKey(w.mode), preserve = warpPreserveKey(w.preserve), loop = warpLoopKey(w.loop);
+    r.text(*v, "mode", warpWhere, mode);
+    r.text(*v, "preserve", warpWhere, preserve);
+    r.text(*v, "loop", warpWhere, loop);
+    if (!r.ok())
+        return false;
+    if (!warpModeFromKey(mode, w.mode))
+        return r.fail(warpWhere + "unknown mode \"" + mode + "\"");
+    if (!warpPreserveFromKey(preserve, w.preserve))
+        return r.fail(warpWhere + "unknown preserve \"" + preserve + "\"");
+    if (!warpLoopFromKey(loop, w.loop))
+        return r.fail(warpWhere + "unknown loop \"" + loop + "\"");
+    const toml::Array *markers = r.tables(*v, "markers", warpWhere);
+    if (!r.ok())
+        return false;
+    for (size_t i = 0; markers && i < markers->size(); ++i) {
+        audio::WarpMarker m;
+        r.real((*markers)[i], "seconds", warpWhere + at("marker", i), m.seconds);
+        r.real((*markers)[i], "beat", warpWhere + at("marker", i), m.beat);
+        if (!r.ok())
+            return false;
+        w.markers.push_back(m);
+    }
+    audio::tidyWarp(w); // clamped, sorted, and on only with a tempo
+    return true;
 }
 
 // A track's or clip's id: optional (missing keeps kNoId); anything but a whole number from 0 to
@@ -971,6 +1040,8 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
                 r.real(cv, "gain", clipWhere, c.gain);
                 r.real(cv, "fade_in", clipWhere, c.fadeIn);
                 r.real(cv, "fade_out", clipWhere, c.fadeOut);
+                if (!readWarp(r, cv, clipWhere, c.warp))
+                    return false;
             }
             if (!r.ok())
                 return false;

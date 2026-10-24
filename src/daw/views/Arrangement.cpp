@@ -9,6 +9,7 @@
 
 #include "daw/widgets/Format.h"
 #include "daw/model/Routing.h"
+#include "daw/model/Warp.h"
 #include "daw/widgets/Widgets.h"
 
 namespace daw {
@@ -936,9 +937,15 @@ void ArrangementView::handleInput(const Input &input)
                 const audio::AudioData *data = transport_.audioFor
                                                    ? transport_.audioFor(project().selectedTrack, project().selectedClip)
                                                    : nullptr;
-                if (clip->hasAudio() && data)
-                    end = std::min(end, clip->start + project().beatsFor(clip->start, data->seconds() - clip->offset));
-                store_.editClip(project().selectedTrack, project().selectedClip).length = std::max(0.25, end - clip->start);
+                Clip &edited = store_.editClip(project().selectedTrack, project().selectedClip);
+                if (edited.warp.on && (input.mods & engine::ModAlt) != 0) {
+                    // Alt on a warped clip: its sound stretched to fill the new length
+                    fitToLength(edited, std::max(0.25, end - edited.start));
+                } else {
+                    if (edited.hasAudio() && data)
+                        end = std::min(end, fileEndBeat(edited, project().timing, data->seconds()));
+                    edited.length = std::max(0.25, end - edited.start);
+                }
             }
         } else {
             trimming_ = 0;
@@ -1014,6 +1021,23 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
     list.add(theme.text(clip.name, {textX, r.y + 6.0f, r.w, px}, TextStyle::Caption, tone, TextAlign::Start));
     if (clip.take != kNoId)
         drawTakeBadge(list, theme, track, clip, r);
+    // A warped clip that is stretched or transposed says how, after its name
+    if (t.kind == TrackKind::Audio && clip.warp.on) {
+        const audio::TempoMap &timing = project().timing;
+        Clip plain = clip;
+        plain.warp.on = false;
+        const bool stretched = std::fabs(clipSourceSeconds(clip, timing, clip.end()) - clipSourceSeconds(plain, timing, clip.end())) > 1e-4;
+        if (stretched || (clip.warp.pitch != 0.0 && clip.warp.mode != audio::WarpMode::Repitch)) {
+            const std::string text = warpBadge(clip);
+            const float nameW = theme.measureText(clip.name, TextStyle::Caption).x;
+            const float w = theme.measureText(text, TextStyle::Caption).x + 12.0f;
+            const Rect badge{textX + nameW + 8.0f, r.y + 5.0f, w, 16.0f};
+            if (badge.x + badge.w < r.x + r.w - (clip.take != kNoId ? 60.0f : 6.0f)) {
+                list.add(theme.surface(badge, Shape::Pill, Elevation::Inset, 0.4f));
+                list.add(theme.text(text, badge, TextStyle::Caption, TextTone::Secondary, TextAlign::Center));
+            }
+        }
+    }
 
     // Audio clips show their waveform (the take so far, while recording); instrument clips their
     // notes
@@ -1029,10 +1053,9 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
         const float cy = body.y + body.h * 0.5f;
         const float half = body.h * 0.5f + 2.0f;
         if (data) {
-            // Seconds into the clip at a beat into it (the tempo doesn't stretch the sound)
+            // The file's seconds at a beat into the clip (through its warp map when warped)
             const audio::TempoMap &timing = project().timing;
-            const double clipSeconds = timing.secondsAt(clip.start);
-            auto secondsIn = [&](double beats) { return timing.secondsAt(clip.start + beats) - clipSeconds; };
+            auto secondsIn = [&](double beats) { return clipSourceSeconds(clip, timing, clip.start + beats); };
             // The waveform's columns, each a low and a high value (after gain, clamped), one plot
             const float firstX = std::max(r.x, visibleStart);
             std::vector<float> pairs;
@@ -1044,7 +1067,7 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
                 if (b0 >= clip.length)
                     break;
                 float low = 0.0f, high = 0.0f;
-                data->range(clip.offset + secondsIn(b0), clip.offset + secondsIn(b1), low, high);
+                data->range(secondsIn(b0), secondsIn(b1), low, high);
                 pairs.push_back(std::max(-1.0f, low * clip.gain));
                 pairs.push_back(std::min(1.0f, high * clip.gain));
                 ++columns;
