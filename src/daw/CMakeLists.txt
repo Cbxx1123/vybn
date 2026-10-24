@@ -2,6 +2,7 @@ vybn_module(vybn_daw SOURCES
     # The project and its rules
     model/AutomationLanes.cpp
     model/ExportModel.cpp
+    model/Freeze.cpp
     model/History.cpp
     model/NoteTools.cpp
     model/Project.cpp
@@ -10,6 +11,7 @@ vybn_module(vybn_daw SOURCES
     model/Routing.cpp
     model/StepSequence.cpp
     model/Takes.cpp
+    model/Warping.cpp
     # Files and formats
     io/Autosave.cpp
     io/Json.cpp
@@ -29,10 +31,12 @@ vybn_module(vybn_daw SOURCES
     audio/AudioPool.cpp
     audio/AutomationWriter.cpp
     audio/Exporter.cpp
+    audio/Freezer.cpp
     audio/Recording.cpp
     audio/RecordingController.cpp
     audio/RenderJob.cpp
     # Panels, editors and dialogs
+    views/Analyzer.cpp
     views/Arpeggiator.cpp
     views/Arrangement.cpp
     views/ArrangementTakes.cpp
@@ -65,6 +69,7 @@ vybn_module(vybn_daw SOURCES
     app/DawBrowser.cpp
     app/DawPlugins.cpp
     app/DawSaving.cpp
+    app/DawWarp.cpp
     app/Settings.cpp
     app/Splash.cpp
 )

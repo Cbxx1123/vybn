@@ -20,6 +20,7 @@
 #include "daw/library/Online.h"
 #include "daw/library/PreviewPlayer.h"
 #include "daw/audio/Exporter.h"
+#include "daw/audio/Freezer.h"
 #include "daw/audio/RecordingController.h"
 #include "daw/model/Project.h"
 #include "daw/model/ProjectSession.h"
@@ -47,6 +48,7 @@ namespace daw {
 
 class AutomationWriter;
 class AutosaveController;
+class AnalyzerView;
 class ArrangementView;
 class AssetBrowser;
 class AudioEditorView;
@@ -133,6 +135,11 @@ public:
     void handleDrops();
     // A generated take imported onto the first audio track and opened in the editor (--demo)
     void importAudioDemo();
+    // --demo warp: a generated 96 BPM beat (its tempo in its name) imported onto the first audio track,
+    // warped into the song with its transients pinned to the eighths, in the audio editor
+    void warpDemo();
+    // --demo freeze: the first track frozen and the second bounced to a new audio track
+    void freezeDemo();
     // Records a phrase sent through the MIDI hub onto the Lead track, as if played on a
     // keyboard, then opens the take in the piano roll (--demo recordmidi)
     void recordMidiDemo();
@@ -165,6 +172,8 @@ public:
     void showMixer();
     void showEffects();
     void showExports();
+    // The Analyzer panel (View > Analyzer, Ctrl+6)
+    void showAnalyzer();
     // The selected clip's name, start (bar and beat) and length
     void openClipDialog();
     // The shortcuts editor; changes are saved to keybinds.toml as they're made
@@ -326,6 +335,35 @@ private:
     // Settings > Metrics: the audio device and its load, threads, sample memory and frame times
     void buildMetrics(ui::Container &body);
 
+    // Warping audio clips (DawWarp.cpp, docs/design/warping-plan.md). The selected clip when it is an
+    // audio clip with a sound (null otherwise), a change to it, its mode (Off unwarps; turned on from
+    // Off it starts at the song's tempo there, so nothing moves), finding its tempo from its beats
+    // (once the pool has found them: updateWarp, each frame), the menus and the audio editor's tools.
+    using MenuButton = std::function<void(ui::Container &, std::function<std::string()>,
+                                          std::function<std::vector<ui::MenuItem>()>, float)>;
+    const Clip *warpClip() const;
+    void editWarp(const std::function<void(Clip &)> &change);
+    void setWarp(audio::WarpMode mode);
+    void detectWarpTempo();
+    void updateWarp();
+    std::vector<ui::MenuItem> warpModeMenu();
+    std::vector<ui::MenuItem> warpMenu();
+    void buildWarpTools(ui::Container &tools, const MenuButton &menuButton);
+    // An imported sound that is a loop (short, with a tempo in its name or a beat that fits whole
+    // bars) comes in warped at its tempo, when Settings asks for it
+    void autoWarp(Clip &clip, const audio::AudioData &data);
+    ObjectId tempoPending_ = kNoId; // the clip whose tempo is being found
+
+    // Freezing and bouncing tracks (DawAudio.cpp, docs/design/freeze-plan.md): a render of the track
+    // queued on the Freezer (into the project's audio folder), Flatten of a current freeze at once,
+    // Unfreeze, each frame's finished renders applied to the project (one undo step each), and what a
+    // track's header says about it
+    void freezeTrack(int track, FreezeKind kind);
+    void unfreezeTrack(int track);
+    void updateFreezes();
+    std::string freezeText(int track) const;
+    std::unique_ptr<Freezer> freezer_;
+
     // Settings > Plugins: the sandbox, folders, importing, and each plugin (DawPlugins.cpp)
     void buildPluginSettings(ui::Container &body);
     // The settings' plugin folders, sandbox and per-plugin choices into the PluginManager, and saved
@@ -420,6 +458,8 @@ private:
     ui::DockPanel *editorPanel_ = nullptr;
     ui::DockPanel *effectsPanel_ = nullptr;
     ui::DockPanel *exportsPanel_ = nullptr;
+    ui::DockPanel *analyzerPanel_ = nullptr;
+    AnalyzerView *analyzer_ = nullptr;
     DevicesView *effects_ = nullptr;
     ui::Pages *editors_ = nullptr; // the piano roll, the audio editor and the step sequencer
 };

@@ -3,9 +3,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "daw/model/Warping.h"
 
 namespace daw {
 
@@ -14,9 +17,12 @@ using namespace ui;
 namespace {
 
 constexpr float kRulerHeight = 26.0f;
+constexpr float kStripHeight = 20.0f;
 constexpr float kEdge = 6.0f;    // how close to an edge counts as grabbing it
 constexpr float kHandle = 9.0f;  // the fade handles' size
+constexpr float kPin = 7.0f;     // how close to a warp marker counts as grabbing it
 constexpr double kHalfPi = 1.5707963267948966;
+constexpr double kMarkerGrid = 0.25; // warp markers snap to sixteenths
 
 }
 
@@ -48,9 +54,17 @@ void AudioEditorView::arrange(const Rect &rect, const Theme &)
 {
     rect_ = rect;
     ruler_ = {rect.x, rect.y, rect.w, kRulerHeight};
-    area_ = {rect.x, rect.y + kRulerHeight + 6.0f, rect.w, std::max(0.0f, rect.h - kRulerHeight - 6.0f)};
+    const Clip *c = clip();
+    const bool warped = c && c->warped();
+    float top = rect.y + kRulerHeight + 6.0f;
+    strip_ = {};
+    if (warped) {
+        strip_ = {rect.x, top, rect.w, kStripHeight};
+        top += kStripHeight + 4.0f;
+    }
+    area_ = {rect.x, top, rect.w, std::max(0.0f, rect.y + rect.h - top)};
     if (fitPending_ && area_.w > 0.0f) {
-        if (const Clip *c = clip())
+        if (c)
             fitClip(*c);
         fitPending_ = false;
     }
@@ -99,6 +113,123 @@ AudioEditorView::Drag AudioEditorView::hitTestHandles(const Clip &c, Vec2 p) con
     return Drag::None;
 }
 
+int AudioEditorView::markerAt(const Clip &c, Vec2 p) const
+{
+    if (!c.warped() || !strip_.contains(p))
+        return -1;
+    const double anchor = warpAnchor(c);
+    int best = -1;
+    float bestDistance = kPin;
+    for (size_t i = 0; i < c.warp.markers.size(); ++i) {
+        const float d = std::fabs(beatX(anchor + c.warp.markers[i].beat) - p.x);
+        if (d <= bestDistance) {
+            bestDistance = d;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
+int AudioEditorView::transientNear(const Clip &c, double beat, float pixels) const
+{
+    const FileOnsets *onsets = hooks_.onsets ? hooks_.onsets(c) : nullptr;
+    if (!onsets)
+        return -1;
+    const audio::TempoMap &timing = project().timing;
+    int best = -1;
+    float bestDistance = pixels;
+    for (size_t i = 0; i < onsets->transients.size(); ++i) {
+        const float d = std::fabs(beatX(clipBeatOfFile(timing, c, onsets->transients[i])) - beatX(beat));
+        if (d <= bestDistance) {
+            bestDistance = d;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
+void AudioEditorView::pressStrip(const Clip &c, Vec2 p, bool doubleClick)
+{
+    const int marker = markerAt(c, p);
+    const int trackIndex = project().selectedTrack;
+    const int clipIndex = project().selectedClip;
+    if (marker >= 0 && doubleClick) {
+        // Delete it: the audio either side joins up again
+        std::vector<audio::WarpMarker> markers = c.warp.markers;
+        markers.erase(markers.begin() + marker);
+        setWarpMarkers(store_.editClip(trackIndex, clipIndex), std::move(markers));
+        return;
+    }
+    if (marker >= 0) {
+        drag_ = Drag::Marker;
+        dragMarker_ = marker;
+        markerAnchor_ = warpAnchor(c);
+        return;
+    }
+    if (!doubleClick)
+        return;
+    // A new marker where the file is under the mouse (on a transient close by), its beat where it
+    // plays now, so nothing moves until it is dragged
+    const audio::TempoMap &timing = project().timing;
+    double beat = xBeat(p.x);
+    const int transient = transientNear(c, beat, 6.0f);
+    double seconds = clipFileSeconds(timing, c, beat);
+    if (transient >= 0) {
+        seconds = hooks_.onsets(c)->transients[static_cast<size_t>(transient)];
+        beat = clipBeatOfFile(timing, c, seconds);
+    }
+    std::vector<audio::WarpMarker> markers = c.warp.markers;
+    markers.push_back({seconds, beat - warpAnchor(c)});
+    setWarpMarkers(store_.editClip(trackIndex, clipIndex), std::move(markers));
+}
+
+void AudioEditorView::dragMarker(const Input &input)
+{
+    const Clip *c = clip();
+    if (!c || !c->warped() || dragMarker_ < 0 || static_cast<size_t>(dragMarker_) >= c->warp.markers.size())
+        return;
+    // The marker's beat under the mouse, on the timeline as it was at the press (the clip's start
+    // keeps its file beat, so the anchor holds still while the marker moves)
+    double beat = xBeat(input.mouse.x);
+    if (!input.shift)
+        beat = std::round(beat / kMarkerGrid) * kMarkerGrid;
+    double fileBeat = beat - markerAnchor_;
+    const std::vector<audio::WarpMarker> &markers = c->warp.markers;
+    const auto i = static_cast<size_t>(dragMarker_);
+    // Between its neighbours
+    constexpr double kGap = 1.0 / 64.0;
+    if (i > 0)
+        fileBeat = std::max(fileBeat, markers[i - 1].beat + kGap);
+    if (i + 1 < markers.size())
+        fileBeat = std::min(fileBeat, markers[i + 1].beat - kGap);
+    if (fileBeat == markers[i].beat)
+        return;
+    std::vector<audio::WarpMarker> moved = markers;
+    moved[i].beat = fileBeat;
+    setWarpMarkers(store_.editClip(project().selectedTrack, project().selectedClip), std::move(moved));
+}
+
+std::string AudioEditorView::hint() const
+{
+    const Clip *c = clip();
+    if (!c || !c->warped())
+        return {};
+    if (drag_ == Drag::Marker && dragMarker_ >= 0 && static_cast<size_t>(dragMarker_) < c->warp.markers.size()) {
+        // The tempo either side of the marker being dragged
+        const audio::WarpMarker &m = c->warp.markers[static_cast<size_t>(dragMarker_)];
+        const double before = audio::warpBpmAt(c->warp, m.seconds - 1e-6);
+        const double after = audio::warpBpmAt(c->warp, m.seconds + 1e-6);
+        char text[96];
+        std::snprintf(text, sizeof(text), "%.1f BPM before, %.1f after (Shift: off the grid)", before, after);
+        return text;
+    }
+    if (hoverMarker_ >= 0)
+        return "Drag to stretch either side; double-click to delete";
+    if (strip_.w > 0.0f)
+        return "Double-click the strip to pin a transient";
+    return {};
+}
+
 void AudioEditorView::handleInput(const Input &input)
 {
     const Clip *c = clip();
@@ -107,6 +238,7 @@ void AudioEditorView::handleInput(const Input &input)
         shownTrack_ = project().selectedTrack;
         shownClip_ = project().selectedClip;
         drag_ = Drag::None;
+        dragMarker_ = -1;
         if (c && area_.w > 0.0f)
             fitClip(*c);
         else
@@ -123,11 +255,18 @@ void AudioEditorView::handleInput(const Input &input)
     viewStart_ = std::max(-4.0, viewStart_);
 
     hover_ = c && area_.contains(input.mouse) ? hitTestHandles(*c, input.mouse) : Drag::None;
+    hoverMarker_ = c && drag_ == Drag::None ? markerAt(*c, input.mouse) : dragMarker_;
+    if (c && c->warped() && hooks_.onsets)
+        hooks_.onsets(*c); // the transients, found once
     if (input.pressed) {
+        const bool doubleClick = input.time - lastPress_ < 0.3;
         if (ruler_.contains(input.mouse)) {
             drag_ = Drag::Ruler;
+        } else if (c && strip_.contains(input.mouse)) {
+            lastPress_ = input.time;
+            pressStrip(*c, input.mouse, doubleClick);
+            c = clip();
         } else if (area_.contains(input.mouse)) {
-            const bool doubleClick = input.time - lastPress_ < 0.3;
             lastPress_ = input.time;
             if (hover_ != Drag::None) {
                 drag_ = hover_;
@@ -139,11 +278,19 @@ void AudioEditorView::handleInput(const Input &input)
             }
         }
     }
-    if (!input.down)
+    if (!input.down) {
         drag_ = Drag::None;
+        dragMarker_ = -1;
+    }
+    if (hoverMarker_ >= 0 || drag_ == Drag::Marker)
+        input.setCursor(engine::Cursor::ResizeX);
 
     if (drag_ == Drag::Ruler && hooks_.seek)
         hooks_.seek(std::max(0.0, xBeat(input.mouse.x)));
+    if (drag_ == Drag::Marker) {
+        dragMarker(input);
+        return;
+    }
     if (!c || drag_ == Drag::None || drag_ == Drag::Ruler)
         return;
 
@@ -164,7 +311,7 @@ void AudioEditorView::handleInput(const Input &input)
         // Not past the end of the sound file
         double end = std::max(beat, edited.start + 0.0625);
         if (data)
-            end = std::min(end, edited.start + project().beatsFor(edited.start, data->seconds() - edited.offset));
+            end = std::min(end, clipBeatOfFile(timing, edited, data->seconds()));
         edited.length = std::max(0.0625, end - edited.start);
         break;
     }
@@ -194,15 +341,19 @@ uint64_t AudioEditorView::contentKey(const Clip *c, const audio::AudioData *data
     // Layout and view
     fp.add(rect_);
     fp.add(ruler_);
+    fp.add(strip_);
     fp.add(area_);
     fp.add(pixelsPerBeat_);
     fp.add(viewStart_);
     // Hover and the drag in progress
     fp.add(hover_);
     fp.add(drag_);
-    // The clip's sound arrives later (loading) and can be let go: its address
+    fp.add(hoverMarker_);
+    fp.add(dragMarker_);
+    // The clip's sound arrives later (loading) and can be let go: its address; and its transients
     fp.add(c != nullptr);
     fp.add(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(data)));
+    fp.add(hooks_.version ? hooks_.version() : 0);
     return fp.value();
 }
 
@@ -259,6 +410,34 @@ void AudioEditorView::drawContent(DrawList &list, const Theme &theme) const
         return;
     }
     const audio::AudioData *data = hooks_.audioFor ? hooks_.audioFor(*c) : nullptr;
+
+    // The warp strip: the file's transients as ticks, the markers as raised pins with their beat
+    if (c->warped() && strip_.w > 0.0f) {
+        list.add(theme.surface(strip_, Shape::Soft, Elevation::Inset, 0.4f));
+        list.pushClip(strip_.inset(1.0f));
+        if (const FileOnsets *onsets = hooks_.onsets ? hooks_.onsets(*c) : nullptr) {
+            for (double t : onsets->transients) {
+                const float x = beatX(clipBeatOfFile(timing, *c, t));
+                if (x < strip_.x || x > strip_.x + strip_.w)
+                    continue;
+                list.add(theme.ink({x - 0.5f, strip_.y + strip_.h - 7.0f, 1.0f, 5.0f}, Shape::Rounded, TextTone::Secondary, true, 0.7f));
+            }
+        }
+        const double anchor = warpAnchor(*c);
+        for (size_t i = 0; i < c->warp.markers.size(); ++i) {
+            const float x = beatX(anchor + c->warp.markers[i].beat);
+            if (x < strip_.x - kPin || x > strip_.x + strip_.w + kPin)
+                continue;
+            const bool active = static_cast<int>(i) == hoverMarker_ || static_cast<int>(i) == dragMarker_;
+            const Rect pin{x - 5.0f, strip_.y + 3.0f, 10.0f, strip_.h - 6.0f};
+            if (active)
+                list.add(theme.accent(pin, Shape::Pill));
+            else
+                list.add(theme.surface(pin, Shape::Pill, Elevation::Raised, 0.7f, Finish::Convex));
+        }
+        list.popClip();
+    }
+
     list.pushClip(area_.inset(2.0f));
     const Rect r = clipRect(*c);
     list.add(theme.surface(r.inset(1.0f), Shape::Soft, Elevation::Raised, 0.6f, Finish::Convex));
@@ -269,10 +448,9 @@ void AudioEditorView::drawContent(DrawList &list, const Theme &theme) const
         list.add(theme.text(c->hasAudio() ? "Loading..." : "Empty clip: record or import audio into it", r,
                             TextStyle::Caption, TextTone::Muted));
     } else {
-        // The whole file, brighter inside the clip
-        const double fileSeconds = timing.secondsAt(c->start) - c->offset; // where the file starts in time
-        const double fileStart = timing.beatAt(fileSeconds);
-        const double fileEnd = timing.beatAt(fileSeconds + data->seconds());
+        // The whole file, brighter inside the clip, laid out through the clip's warp
+        const double fileStart = clipBeatOfFile(timing, *c, 0.0);
+        const double fileEnd = clipBeatOfFile(timing, *c, data->seconds());
         const float from = std::max(area_.x, beatX(fileStart));
         const float to = std::min(area_.x + area_.w, beatX(fileEnd));
         // Runs of columns that are all inside the clip or all outside it, one Range plot per run
@@ -298,7 +476,7 @@ void AudioEditorView::drawContent(DrawList &list, const Theme &theme) const
             const double b0 = xBeat(x);
             const double b1 = xBeat(x + 2.0f);
             float low = 0.0f, high = 0.0f;
-            data->range(timing.secondsAt(b0) - fileSeconds, timing.secondsAt(b1) - fileSeconds, low, high);
+            data->range(clipFileSeconds(timing, *c, b0), clipFileSeconds(timing, *c, b1), low, high);
             const bool inside = b0 >= c->start && b0 < c->start + c->length;
             const float g = inside ? c->gain : 1.0f;
             const float lo = std::max(-1.0f, std::min(1.0f, low * g));
@@ -312,6 +490,18 @@ void AudioEditorView::drawContent(DrawList &list, const Theme &theme) const
             values.push_back(hi);
         }
         flush();
+        // A warped clip's markers run down through the waveform, faintly
+        if (c->warped()) {
+            const double anchor = warpAnchor(*c);
+            for (size_t i = 0; i < c->warp.markers.size(); ++i) {
+                const float x = beatX(anchor + c->warp.markers[i].beat);
+                const bool active = static_cast<int>(i) == hoverMarker_ || static_cast<int>(i) == dragMarker_;
+                if (active)
+                    list.add(theme.accent({x - 0.5f, area_.y, 1.0f, area_.h}, Shape::Rounded, 0.7f));
+                else
+                    list.add(theme.ink({x - 0.5f, area_.y, 1.0f, area_.h}, Shape::Rounded, TextTone::Secondary, true, 0.35f));
+            }
+        }
     }
     list.add(theme.ink({area_.x, mid, area_.w, 1.0f}, Shape::Rounded, TextTone::Muted, true, 0.3f));
 

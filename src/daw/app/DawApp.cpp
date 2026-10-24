@@ -14,6 +14,7 @@
 #include "daw/audio/AutomationWriter.h"
 #include "daw/io/Autosave.h"
 #include "daw/views/Arrangement.h"
+#include "daw/views/Analyzer.h"
 #include "daw/views/AudioEditor.h"
 #include "daw/views/Browser.h"
 #include "daw/app/AppIcon.h"
@@ -87,6 +88,8 @@ DawApp::DawApp(env::Environment &env, UISystem &ui, audio::AudioSystem &audio)
         ExporterHooks{[this] { return session_.path().empty() ? std::string() : std::filesystem::path(session_.path()).parent_path().string(); },
                       [this] { showExports(); },
                       [this](std::string message) { notify(std::move(message)); }});
+    // Freezing and bouncing render tracks on engines of their own, like exports
+    freezer_ = std::make_unique<Freezer>(env_, plugins_, *library_, *pool_);
     applyAudioSettings(); // the devices from the settings, before the device starts
     syncInputs();
     audio.transport().setTiming(project().timing);
@@ -205,6 +208,14 @@ void DawApp::buildBody()
         // again only when they differ)
         refreshWindowIcon();
         recordingController_->updateCountIn(); // starts the take when the count-in ends
+        updateWarp(); // a clip's tempo being found
+        updateFreezes(); // renders for freezing and bouncing, and what finished
+        // The analyzer's tap is on only while it shows; the selected track writes the track tap
+        const bool analyzing = analyzer_ && dock_->isShowing(*analyzerPanel_);
+        if (analyzer_)
+            analyzer_->setShowing(analyzing);
+        const Track *analysed = analyzing && analyzer_->source() == AnalyzerView::Source::Track ? project().track(project().selectedTrack) : nullptr;
+        bridge_->setAnalysed(analysed ? analysed->id : kNoId);
         // Undo: last frame's edits become a step once nothing is being dragged or typed
         mouseHeld_ = input.down || input.middleDown;
         mouseSinceStep_ = mouseSinceStep_ || mouseHeld_ || input.pressed || input.released;
@@ -239,9 +250,9 @@ void DawApp::buildBody()
         const bool inputLive = std::any_of(project().tracks.begin(), project().tracks.end(),
                                            [](const Track &t) { return t.armed && t.kind == TrackKind::Audio; });
         ui_.setBusy(audio_.transport().playing() || recording_->recording() || recording_->finishing() ||
-                    recordingController_->countingIn() || exporter_->queue().active() != nullptr ||
+                    recordingController_->countingIn() || exporter_->queue().active() != nullptr || freezer_->active() ||
                     downloads_->activeCount() > 0 || preview_->previewing() || library_->anyLoading() || pluginBusy ||
-                    pluginPictures || inputLive);
+                    pluginPictures || inputLive || (analyzing && analyzer_->moving()));
         // Automation being written follows the playhead, and is finished once playback stops; the
         // whole pass is one undo step, since nothing settles while it is under way
         automationWriter_->update(mouseHeld_);
@@ -351,6 +362,7 @@ void DawApp::buildBody()
     editorPanel_ = &dock_->addPanel("Editor");
     effectsPanel_ = &dock_->addPanel("Devices");
     exportsPanel_ = &dock_->addPanel("Exports");
+    analyzerPanel_ = &dock_->addPanel("Analyzer");
 
     // The arrangement: its tools in the panel's header, over the timeline
     audio::AudioSystem &audio = audio_;
@@ -617,16 +629,23 @@ void DawApp::buildBody()
         const Clip *c = audioEditor_ ? audioEditor_->clip() : nullptr;
         if (!c)
             return std::string();
-        return decibels(c->gain) + format(",  fade in %.2f s", c->fadeIn) + format(", out %.2f s", c->fadeOut);
+        return decibels(c->gain) + format(",  fades %.2f", c->fadeIn) + format(" / %.2f s", c->fadeOut);
     }, TextStyle::Caption, TextTone::Secondary);
+    // Warping: on or off, the mode, the file's tempo, a transpose and the warp tools
+    waveTools.add<Divider>();
+    buildWarpTools(waveTools, menuButton);
     waveTools.add<Spacer>();
-    waveTools.add<Label>("Drag the edges to trim, the top corners to fade; double-click to split", TextStyle::Caption,
-                         TextTone::Muted);
+    waveTools.add<LiveLabel>([this] {
+        const std::string hint = audioEditor_ ? audioEditor_->hint() : std::string();
+        return hint.empty() ? std::string("Drag edges to trim, corners to fade") : hint;
+    }, TextStyle::Caption, TextTone::Muted);
     waveTools.add<Button>([this] { splitSelectedClip(); }).setLabel("Split at playhead").setSize(Size::Small);
     AudioEditorHooks waveHooks;
     waveHooks.audioFor = [this](const Clip &c) { return c.hasAudio() ? pool_->get(c.audioFile).get() : nullptr; };
     waveHooks.position = hooks.position;
     waveHooks.seek = hooks.seek;
+    waveHooks.onsets = [this](const Clip &c) { return pool_->onsets(c.audioFile); };
+    waveHooks.version = [this] { return pool_->version(); };
     audioEditor_ = &wave.add<AudioEditorView>(session_.store(), waveHooks);
     audioEditor_->setGrow(1.0f);
     AudioEditorView &audioEditor = *audioEditor_;
@@ -713,7 +732,11 @@ void DawApp::buildBody()
         devicesHooks.device = [this](const DevicePlace &place) { return bridge_->deviceAt(project(), place); };
         devicesHooks.openDevice = [this](const DevicePlace &place) { openDevice(place); };
         devicesHooks.pick = [this](bool instrument, bool master, int track, Rect anchor) { pickDevice(instrument, master, track, anchor); };
-        devicesHooks.latencyText = [this](int track) { return bridge_->latencyText(track); };
+        devicesHooks.latencyText = [this](int track) {
+            if (bridge_->playsFreeze(track))
+                return std::string("Frozen: these devices are in its sound and stopped (unfreeze to change them)");
+            return bridge_->latencyText(track);
+        };
         devicesHooks.instrumentStatus = [this](int track) { return bridge_->instrumentStatus(project(), track); };
         devicesHooks.playhead = [this] { return transportBeats(audio_); };
         devicesHooks.write = [this](const DevicePlace &place, const audio::DeviceParam &param, double value) {
@@ -731,12 +754,44 @@ void DawApp::buildBody()
         exports.setGrow(1.0f);
     }
 
+    // The analyzer: the spectrum, stereo picture and loudness of the master or the selected track
+    {
+        Container &head = analyzerPanel_->header();
+        auto &source = head.add<SegmentedControl>(std::vector<std::string>{"Master", "Track"}, 0, [this](int i) {
+            analyzer_->setSource(i == 1 ? AnalyzerView::Source::Track : AnalyzerView::Source::Master);
+        });
+        source.setSize(Size::Small);
+        head.add<LiveLabel>([this] {
+            if (!analyzer_ || analyzer_->source() == AnalyzerView::Source::Master)
+                return std::string();
+            const Track *t = project().track(project().selectedTrack);
+            return t ? t->name : std::string("No track selected");
+        }, TextStyle::Caption, TextTone::Secondary);
+        head.add<Spacer>();
+        head.add<Label>("FFT", TextStyle::Caption, TextTone::Secondary);
+        auto &size = head.add<SegmentedControl>(std::vector<std::string>{"2k", "4k", "8k", "16k"}, 2, [this](int i) {
+            analyzer_->setSize(size_t{2048} << i);
+        });
+        size.setSize(Size::Small);
+        head.add<Label>("Tilt", TextStyle::Caption, TextTone::Secondary);
+        auto &tilt = head.add<SegmentedControl>(std::vector<std::string>{"0", "3", "4.5"}, 0, [this](int i) {
+            const float tilts[] = {0.0f, 3.0f, 4.5f};
+            analyzer_->setTilt(tilts[std::clamp(i, 0, 2)]);
+        });
+        tilt.setSize(Size::Small);
+        head.add<SmallToggle>("Hold", [this] { return analyzer_ && analyzer_->holding(); }, [this](bool on) { analyzer_->setHold(on); });
+        head.add<Button>([this] { analyzer_->reset(); }).setLabel("Reset").setSize(Size::Small);
+        analyzer_ = &analyzerPanel_->add<AnalyzerView>(audio_);
+        analyzer_->setGrow(1.0f);
+    }
+
     // The arrangement over the mixer, with the editor, the devices and the exports as the mixer's other tabs
     dock_->dock(*arrangementPanel_, nullptr, DockSide::Center);
     dock_->dock(*mixerPanel_, arrangementPanel_, DockSide::Bottom, 0.55f);
     dock_->dock(*editorPanel_, mixerPanel_, DockSide::Center);
     dock_->dock(*effectsPanel_, mixerPanel_, DockSide::Center);
     dock_->dock(*exportsPanel_, mixerPanel_, DockSide::Center);
+    dock_->dock(*analyzerPanel_, mixerPanel_, DockSide::Center);
     dock_->show(*mixerPanel_);
 
 }
@@ -911,6 +966,11 @@ void DawApp::showExports()
     if (!dock_->isShowing(*exportsPanel_))
         dock_->setShare(*exportsPanel_, 0.72f);
     dock_->show(*exportsPanel_);
+}
+
+void DawApp::showAnalyzer()
+{
+    dock_->show(*analyzerPanel_);
 }
 
 void DawApp::showMixer()
@@ -1377,6 +1437,7 @@ void DawApp::buildMenus()
         }, "view.steps"),
         MenuItem::toggle("Devices", [this] { return dock_->isShowing(*effectsPanel_); }, [this] { showEffects(); }, "view.effects"),
         MenuItem::toggle("Exports", [this] { return dock_->isShowing(*exportsPanel_); }, [this] { showExports(); }, "view.exports"),
+        MenuItem::toggle("Analyzer", [this] { return dock_->isShowing(*analyzerPanel_); }, [this] { showAnalyzer(); }, "view.analyzer"),
         MenuItem::divider(),
         MenuItem::item("Zoom in", [&arrangement] { arrangement.zoom(1.25f); }, "view.zoomIn"),
         MenuItem::item("Zoom out", [&arrangement] { arrangement.zoom(1.0f / 1.25f); }, "view.zoomOut"),

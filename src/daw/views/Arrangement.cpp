@@ -937,7 +937,7 @@ void ArrangementView::handleInput(const Input &input)
                                                    ? transport_.audioFor(project().selectedTrack, project().selectedClip)
                                                    : nullptr;
                 if (clip->hasAudio() && data)
-                    end = std::min(end, clip->start + project().beatsFor(clip->start, data->seconds() - clip->offset));
+                    end = std::min(end, clipBeatOfFile(project().timing, *clip, data->seconds()));
                 store_.editClip(project().selectedTrack, project().selectedClip).length = std::max(0.25, end - clip->start);
             }
         } else {
@@ -1014,6 +1014,16 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
     list.add(theme.text(clip.name, {textX, r.y + 6.0f, r.w, px}, TextStyle::Caption, tone, TextAlign::Start));
     if (clip.take != kNoId)
         drawTakeBadge(list, theme, track, clip, r);
+    // A warped clip says the file's tempo, and a frozen track's clips that they are frozen, at the right
+    std::string tag;
+    if (clip.warped() && clip.hasAudio())
+        tag = std::to_string(static_cast<int>(std::lround(clip.warp.bpm))) + " BPM";
+    if (t.frozen())
+        tag = tag.empty() ? std::string("Frozen") : tag + "  /  Frozen";
+    if (!tag.empty() && r.w > 120.0f)
+        list.add(theme.text(tag, {r.x, r.y + 6.0f, r.w - 10.0f, px}, TextStyle::Caption, TextTone::Muted, TextAlign::End));
+    if (t.frozen())
+        list.add(theme.ink(r, Shape::Soft, TextTone::Muted, true, 0.08f)); // a frost over it
 
     // Audio clips show their waveform (the take so far, while recording); instrument clips their
     // notes
@@ -1029,10 +1039,9 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
         const float cy = body.y + body.h * 0.5f;
         const float half = body.h * 0.5f + 2.0f;
         if (data) {
-            // Seconds into the clip at a beat into it (the tempo doesn't stretch the sound)
+            // Seconds into the file at a beat into the clip (through its warp, when warped)
             const audio::TempoMap &timing = project().timing;
-            const double clipSeconds = timing.secondsAt(clip.start);
-            auto secondsIn = [&](double beats) { return timing.secondsAt(clip.start + beats) - clipSeconds; };
+            auto fileAt = [&](double beats) { return clipFileSeconds(timing, clip, clip.start + beats); };
             // The waveform's columns, each a low and a high value (after gain, clamped), one plot
             const float firstX = std::max(r.x, visibleStart);
             std::vector<float> pairs;
@@ -1044,7 +1053,7 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
                 if (b0 >= clip.length)
                     break;
                 float low = 0.0f, high = 0.0f;
-                data->range(clip.offset + secondsIn(b0), clip.offset + secondsIn(b1), low, high);
+                data->range(fileAt(b0), fileAt(b1), low, high);
                 pairs.push_back(std::max(-1.0f, low * clip.gain));
                 pairs.push_back(std::min(1.0f, high * clip.gain));
                 ++columns;

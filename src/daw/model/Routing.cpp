@@ -494,7 +494,8 @@ std::string routingError(const Project &project)
     return {};
 }
 
-RoutingPlan planRouting(const Project &project, const std::vector<uint32_t> &latencies, uint32_t maxDelay)
+RoutingPlan planRouting(const Project &project, const std::vector<uint32_t> &latencies, uint32_t maxDelay,
+                        const std::vector<bool> &frozen)
 {
     const size_t n = project.tracks.size();
     const auto ids = indexById(project);
@@ -522,8 +523,11 @@ RoutingPlan planRouting(const Project &project, const std::vector<uint32_t> &lat
             adj[i].push_back(to);
             sound[i].push_back(to);
         }
-        // A key is an edge from its source to this track: dropped if this track already reaches the source
+        // A key is an edge from its source to this track: dropped if this track already reaches the
+        // source (a frozen track's effects are in its freeze: they take none)
         for (const Allowed::Key &k : a.keys) {
+            if (i < frozen.size() && frozen[i])
+                break;
             if (reachesIn(adj, static_cast<int>(i), k.from))
                 continue;
             keyed[i].push_back(k);

@@ -53,6 +53,8 @@ struct Settings {
     bool automationTouch = false;
     // The arrangement's tempo and signature lanes shown
     bool timingLanes = true;
+    // Sound files that come in short with a tempo (in the name, or a beat fitting whole bars) are warped
+    bool warpLoops = true;
     std::vector<std::string> pluginGrants;
     // The piano roll's view (PianoRollView::writeView): its grid, scale, ghosts, lane and zoom
     std::string pianoRollView;

@@ -320,6 +320,20 @@ void Project::toggleLoop()
     looping = true;
 }
 
+double clipFileSeconds(const audio::TempoMap &timing, const Clip &clip, double beat)
+{
+    if (clip.warped())
+        return audio::warpSecondsAt(clip.warp, audio::warpBeatAt(clip.warp, clip.offset) + beat - clip.start);
+    return clip.offset + timing.secondsAt(beat) - timing.secondsAt(clip.start);
+}
+
+double clipBeatOfFile(const audio::TempoMap &timing, const Clip &clip, double seconds)
+{
+    if (clip.warped())
+        return clip.start + audio::warpBeatAt(clip.warp, seconds) - audio::warpBeatAt(clip.warp, clip.offset);
+    return timing.beatAt(timing.secondsAt(clip.start) - clip.offset + seconds);
+}
+
 bool Project::splitClip(double beat)
 {
     Clip *c = clip();
@@ -329,7 +343,7 @@ bool Project::splitClip(double beat)
     Clip right = *c;
     right.start = beat;
     right.length = c->length - at;
-    right.offset = c->offset + timing.secondsAt(beat) - timing.secondsAt(c->start);
+    right.offset = clipFileSeconds(timing, *c, beat);
     right.fadeIn = 0.0;
     right.notes.clear();
     right.controls = cutLanes(c->controls, at);
@@ -359,9 +373,9 @@ void Project::trimStart(Clip &c, double beat, double minimum) const
     start = std::max(0.0, start);
     // An audio clip can't start before its file does
     if (c.hasAudio())
-        start = std::max(start, timing.beatAt(timing.secondsAt(c.start) - c.offset));
+        start = std::max(start, clipBeatOfFile(timing, c, 0.0));
     const double moved = start - c.start;
-    c.offset = std::max(0.0, c.offset + timing.secondsAt(start) - timing.secondsAt(c.start));
+    c.offset = std::max(0.0, clipFileSeconds(timing, c, start));
     // Controller curves keep their place: what is before the new start goes, its value stays
     for (ControlLane &lane : c.controls) {
         const float value = lane.valueAt(moved);

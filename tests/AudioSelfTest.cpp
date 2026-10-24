@@ -1,5 +1,7 @@
 #include "AudioSelfTest.h"
 #include "Harness.h"
+#include "AnalysisSelfTest.h"
+#include "WarpSelfTest.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1247,6 +1249,8 @@ int runAudioSelfTest()
                 number("max difference %.2e", poolDifference) + ", " + std::to_string(markedWorkers.load()) + " marked workers");
     }
 
+    c.failures += runWarpAudioChecks();
+    c.failures += runAnalysisChecks();
     return c.finish("audio");
 }
 

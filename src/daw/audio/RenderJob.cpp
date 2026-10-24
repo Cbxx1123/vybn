@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "daw/library/Library.h"
+#include "daw/model/Freeze.h"
 #include "daw/io/MidiExport.h"
 #include "audio/AudioProcessor.h"
 #include "audio/Encoders.h"
@@ -81,6 +82,14 @@ bool renderReady(const Project &project, AudioBridge &bridge, InstrumentLibrary 
     for (size_t i = 0; i < project.tracks.size(); ++i) {
         const Track &t = project.tracks[i];
         const std::string &name = t.instrument.id;
+        // A track that plays its freeze needs only its file (docs/design/freeze-plan.md)
+        if (freezeCurrent(project, static_cast<int>(i))) {
+            if (!pool.get(t.freeze.file) && pool.error(t.freeze.file).empty()) {
+                waiting = std::filesystem::path(t.freeze.file).filename().string();
+                return false;
+            }
+            continue;
+        }
         if (t.kind == TrackKind::Instrument && t.instrument.kind == audio::DeviceKind::Sampler && !t.clips.empty()) {
             // Not installed: the track is silent, as it plays live
             if (std::find(installed.begin(), installed.end(), name) == installed.end())
@@ -95,6 +104,11 @@ bool renderReady(const Project &project, AudioBridge &bridge, InstrumentLibrary 
         for (const Clip &c : t.clips) {
             if (c.hasAudio() && !pool.get(c.audioFile) && pool.error(c.audioFile).empty()) {
                 waiting = std::filesystem::path(c.audioFile).filename().string();
+                return false;
+            }
+            // A warped clip plays its stretched sound, made from the file once it is in
+            if (c.warped() && pool.get(c.audioFile) && !pool.warpReady(c, project.timing)) {
+                waiting = "stretching " + std::filesystem::path(c.audioFile).filename().string();
                 return false;
             }
         }

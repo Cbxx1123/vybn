@@ -34,6 +34,7 @@
 #include "plugin/Manager.h"
 #include "plugin/Slot.h"
 #include "daw/app/Appearance.h"
+#include "daw/views/Analyzer.h"
 #include "daw/views/Arrangement.h"
 #include "daw/views/Browser.h"
 #include "daw/library/DeviceCatalogue.h"
@@ -2141,6 +2142,35 @@ Picture sceneSidechain()
     return renderSidechain(nullptr);
 }
 
+// The Analyzer (docs/design/analyzer-plan.md) after four seconds of a fixed chord: sines at 110, 440, 1 kHz
+// and 5 kHz, quieter as they rise, the 1 kHz one louder on the right, so the spectrum, the goniometer, the
+// bars and the loudness all show something
+Picture sceneAnalyzer()
+{
+    env::Environment environment;
+    audio::AudioSystem audio(environment, audio::Deviceless{});
+    const double rate = 48000.0;
+    const auto frames = static_cast<size_t>(rate * 4.0);
+    std::vector<float> chord(frames * 2);
+    const double tones[][3] = {{110.0, 0.30, 1.0}, {440.0, 0.15, 1.0}, {1000.0, 0.08, 1.6}, {5000.0, 0.03, 1.0}};
+    for (size_t i = 0; i < frames; ++i) {
+        double left = 0.0, right = 0.0;
+        for (const auto &tone : tones) {
+            const double v = tone[1] * std::sin(6.283185307179586 * tone[0] * static_cast<double>(i) / rate);
+            left += v;
+            right += v * tone[2];
+        }
+        chord[i * 2] = static_cast<float>(left);
+        chord[i * 2 + 1] = static_cast<float>(right);
+    }
+    return renderPicture(1100, 360, daw::studioTheme(true), [&](ui::Context &context) {
+        auto &view = context.root().add<daw::AnalyzerView>(audio);
+        view.setShowing(true);
+        view.feed(chord.data(), frames, rate);
+        stretch(view);
+    });
+}
+
 // The Devices panel on a pad with two of the project's test plugins loaded in their sandboxes: Test Duck
 // (a sidechain port, so a Sidechain row) keyed by the kick, and Test Gain (no port, no row). The plugins
 // are real: a manager scans output/plugins and a chain loads them, and the picture is taken only once both
@@ -3679,6 +3709,7 @@ const SceneEntry kScenes[] = {
     {"synth", sceneSynth},
     {"sidechain", sceneSidechain},
     {"pluginsidechain", scenePluginSidechain},
+    {"analyzer", sceneAnalyzer},
 };
 
 // Times a scene over kTimedFrames settled frames when it is the one asked for (or all are run) and

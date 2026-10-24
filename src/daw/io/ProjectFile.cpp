@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <iterator>
@@ -312,6 +314,14 @@ std::string writeProject(const Project &project, const std::string &folder)
                     << ", pre_fader = " << boolean(t.sends[i].preFader) << " }";
             out << " ]\n";
         }
+        // Its frozen sound (docs/design/freeze-plan.md): the file, its length and what it was made from
+        if (t.frozen() && !t.bus()) {
+            char hash[24];
+            std::snprintf(hash, sizeof(hash), "%016llx", static_cast<unsigned long long>(t.freeze.hash));
+            out << "freeze_file = " << quote(relativeTo(t.freeze.file, folder)) << "\n";
+            out << "freeze_seconds = " << number(t.freeze.seconds) << "\n";
+            out << "freeze_hash = " << quote(hash) << "\n";
+        }
         writeAutomation(out, t.automation, true);
         // Its devices: the instrument, then the effects
         if (instrument && t.hasInstrument())
@@ -336,6 +346,20 @@ std::string writeProject(const Project &project, const std::string &folder)
                     out << "gain = " << number(c.gain) << "\n";
                     out << "fade_in = " << number(c.fadeIn) << "\n";
                     out << "fade_out = " << number(c.fadeOut) << "\n";
+                    // Its warp, when on (docs/design/warping-plan.md)
+                    if (c.warped()) {
+                        out << "warp = " << quote(audio::warpModeName(c.warp.mode)) << "\n";
+                        out << "bpm = " << number(c.warp.bpm) << "\n";
+                        if (c.warp.transpose != 0.0f)
+                            out << "transpose = " << number(c.warp.transpose) << "\n";
+                        if (!c.warp.markers.empty()) {
+                            out << "warp_markers = [";
+                            for (size_t i = 0; i < c.warp.markers.size(); ++i)
+                                out << (i ? ", " : " ") << "{ seconds = " << number(c.warp.markers[i].seconds)
+                                    << ", beat = " << number(c.warp.markers[i].beat) << " }";
+                            out << " ]\n";
+                        }
+                    }
                 }
                 return;
             }
@@ -906,6 +930,21 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
         t.pan = std::clamp(t.pan, -1.0f, 1.0f);
         t.armed = t.armed && !t.bus(); // buses record nothing
         t.folded = t.folded && t.kind == TrackKind::Group; // only groups fold
+        // Its frozen sound: kept only on a track that makes sound, with a hash of 16 hex digits
+        std::string freezeHash;
+        r.text(tv, "freeze_file", where, t.freeze.file);
+        r.real(tv, "freeze_seconds", where, t.freeze.seconds);
+        r.text(tv, "freeze_hash", where, freezeHash);
+        if (!r.ok())
+            return false;
+        if (!t.freeze.file.empty()) {
+            char *end = nullptr;
+            t.freeze.hash = std::strtoull(freezeHash.c_str(), &end, 16);
+            if (freezeHash.empty() || (end && *end))
+                return r.fail(where + "freeze_hash must be 16 hex digits");
+            t.freeze.file = t.bus() ? std::string() : resolve(t.freeze.file, folder);
+            t.freeze.seconds = std::max(0.0, t.freeze.seconds);
+        }
         // Its output (a group's id) and sends (each to a return's or group's id), checked once every track is read
         if (const toml::Value *output = tv.at("output")) {
             if (output->type() != toml::Type::Integer || output->integer() < 0 || output->integer() > 4294967295LL)
@@ -957,6 +996,21 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
                 r.real(cv, "gain", clipWhere, c.gain);
                 r.real(cv, "fade_in", clipWhere, c.fadeIn);
                 r.real(cv, "fade_out", clipWhere, c.fadeOut);
+                // The warp: a mode by name, the file's tempo, a transpose and the markers (tidied)
+                std::string mode;
+                r.text(cv, "warp", clipWhere, mode);
+                if (!mode.empty() && !audio::warpModeFromName(mode, c.warp.mode))
+                    return r.fail(clipWhere + "unknown warp mode \"" + mode + "\"");
+                r.real(cv, "bpm", clipWhere, c.warp.bpm);
+                r.real(cv, "transpose", clipWhere, c.warp.transpose);
+                const toml::Array *markers = r.tables(cv, "warp_markers", clipWhere);
+                for (size_t mi = 0; r.ok() && markers && mi < markers->size(); ++mi) {
+                    audio::WarpMarker m;
+                    r.real((*markers)[mi], "seconds", clipWhere + at("warp marker", mi), m.seconds);
+                    r.real((*markers)[mi], "beat", clipWhere + at("warp marker", mi), m.beat);
+                    c.warp.markers.push_back(m);
+                }
+                audio::tidyWarp(c.warp);
             }
             if (!r.ok())
                 return false;

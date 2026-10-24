@@ -24,13 +24,17 @@
 #include "audio/AudioProcessor.h"
 #include "audio/Encoders.h"
 #include "audio/Mastering.h"
+#include "audio/Onsets.h"
 #include "daw/io/MidiExport.h"
 #include "daw/model/Project.h"
+#include "daw/model/Freeze.h"
+#include "daw/model/Warping.h"
 #include "audio/AudioSystem.h"
 #include "audio/Midi.h"
 #include "audio/Synth.h"
 #include "daw/audio/AudioBridge.h"
 #include "daw/audio/AudioPool.h"
+#include "daw/audio/Freezer.h"
 #include "daw/library/Library.h"
 #include "daw/model/ProjectStore.h"
 #include "daw/audio/RenderJob.h"
@@ -1733,6 +1737,230 @@ void queueChecks(Checker &c)
         c.check(!fs::exists(fs::u8path(destroy->temp)) && !partFiles && entries == 0,
                 "A job destroyed while rendering leaves no temp folder, part files or outputs",
                 number("(%.0f files left)", static_cast<double>(entries)));
+        return true;
+    });
+
+    // 10. A warped clip (docs/design/warping-plan.md): a click a second in a file said to be 60 BPM,
+    // in a 120 BPM song, renders with a click every half second (its stretched sound, which the
+    // export waits for)
+    struct Warped {
+        int phase = 0;
+        uint64_t id = 0;
+        Clock::time_point began;
+    };
+    auto warped = std::make_shared<Warped>();
+    steps.push_back([&, warped]() -> bool {
+        if (warped->phase == 0) {
+            const size_t frames = 48000 * 4;
+            std::vector<float> clicks(frames, 0.0f);
+            for (int k = 0; k < 4; ++k) {
+                const size_t start = static_cast<size_t>((0.05 + k) * 48000.0);
+                for (size_t n = 0; n < 960; ++n)
+                    clicks[start + n] = static_cast<float>(0.8 * std::exp(-static_cast<double>(n) / 144.0) *
+                                                           std::sin(2.0 * kPi * 2000.0 * static_cast<double>(n) / 48000.0));
+            }
+            const std::string path = dir + "/clicks-60.wav";
+            std::string error;
+            if (!audio::writeWavFile(path, clicks.data(), frames, 1, 48000.0, error, 32)) {
+                c.check(false, "A click file is written", error);
+                return true;
+            }
+            Project song;
+            song.tracks.clear();
+            song.timing = audio::TempoMap(120.0, 4, 4);
+            const int track = song.addTrack(TrackKind::Audio);
+            Clip clip("Clicks", 0.0, 8.0);
+            clip.audioFile = path;
+            setWarpMode(clip, song.timing, audio::WarpMode::Beats, 60.0);
+            song.tracks[static_cast<size_t>(track)].clips.push_back(clip);
+            ExportTarget target;
+            target.name = "Warped";
+            target.format = ExportFormat::Wav;
+            target.bits = 32;
+            target.normalize = NormalizeMode::Off;
+            target.limiter = false;
+            target.dither = DitherMode::None;
+            target.range = ExportRangeKind::Bars;
+            target.fromBar = 1;
+            target.toBar = 2;
+            target.tailSeconds = 0.0;
+            target.folder = dir + "/warped";
+            target.fileName = "warped";
+            ExportPreset preset;
+            preset.name = "Warped";
+            preset.targets = {target};
+            warped->id = queue.enqueue(song, preset, 1.0f, dir);
+            warped->began = Clock::now();
+            warped->phase = 1;
+            return false;
+        }
+        RenderJob *job = jobWithId(warped->id);
+        if (!job || (!job->finished() && secondsSince(warped->began) < 120.0))
+            return false;
+        const std::vector<TargetReport> reports = job->reports();
+        const bool done = job->state() == RenderJob::Done && reports.size() == 1 && reports[0].ok;
+        c.check(done, "A warped clip renders", job->status());
+        if (done) {
+            std::string error;
+            auto decoded = audio::loadAudioFile(reports[0].path, error);
+            std::vector<double> found;
+            if (decoded)
+                found = audio::analyseOnsets(decoded->samples.data(), decoded->frames, decoded->channels, decoded->sampleRate).transients;
+            double worst = found.size() == 4 ? 0.0 : 1.0;
+            for (size_t k = 0; k < found.size() && k < 4; ++k)
+                worst = std::max(worst, std::fabs(found[k] - (0.025 + 0.5 * static_cast<double>(k))));
+            c.check(found.size() == 4 && worst < 0.002, "A warped 60 BPM loop plays at the song's 120 BPM",
+                    number("(%.0f clicks", static_cast<double>(found.size())) + number(", worst %.2f ms)", worst * 1000.0));
+        }
+        return true;
+    });
+
+    // 11. Freezing (docs/design/freeze-plan.md): an audio track of noise through a saturation is frozen,
+    // bounced and flattened; the frozen song exports the same as the live one
+    struct Frozen {
+        int phase = 0;
+        std::unique_ptr<Freezer> freezer;
+        Project live;
+        Freezer::Result freeze, bounce;
+        uint64_t liveExport = 0, frozenExport = 0;
+        Clock::time_point began;
+    };
+    auto frozen = std::make_shared<Frozen>();
+    auto masterTarget = [&](const std::string &name) {
+        ExportTarget target;
+        target.name = name;
+        target.format = ExportFormat::Wav;
+        target.bits = 32;
+        target.normalize = NormalizeMode::Off;
+        target.limiter = false;
+        target.dither = DitherMode::None;
+        target.range = ExportRangeKind::Bars;
+        target.fromBar = 1;
+        target.toBar = 3;
+        target.tailSeconds = 0.0;
+        target.folder = dir + "/frozen";
+        target.fileName = name;
+        ExportPreset preset;
+        preset.name = name;
+        preset.targets = {target};
+        return preset;
+    };
+    steps.push_back([&, frozen]() -> bool {
+        Frozen &f = *frozen;
+        if (f.phase == 0) {
+            const size_t frames = 48000 * 3;
+            std::vector<float> noise(frames * 2);
+            uint32_t seed = 99;
+            for (float &v : noise) {
+                seed = seed * 1664525u + 1013904223u;
+                v = static_cast<float>(static_cast<double>(seed >> 8) / 16777216.0 - 0.5) * 0.6f;
+            }
+            const std::string path = dir + "/freeze-noise.wav";
+            std::string error;
+            if (!audio::writeWavFile(path, noise.data(), frames, 2, 48000.0, error, 32)) {
+                c.check(false, "A noise file for freezing is written", error);
+                return true;
+            }
+            f.live.tracks.clear();
+            f.live.timing = audio::TempoMap(120.0, 4, 4);
+            const int track = f.live.addTrack(TrackKind::Audio);
+            Track &t = f.live.tracks[static_cast<size_t>(track)];
+            t.name = "Noise";
+            t.gain = 0.7f;
+            Clip clip("Noise", 0.0, 6.0); // 3 s at 120
+            clip.audioFile = path;
+            t.clips.push_back(clip);
+            t.effects.push_back(audio::effectSetting(audio::EffectType::Saturation));
+            ObjectId next = 1;
+            f.live.normalizeIds(next);
+            f.freezer = std::make_unique<Freezer>(environment, nullptr, library, pool);
+            std::string why;
+            const bool started = f.freezer->start(f.live, 0, FreezeKind::Freeze, dir + "/frozen", 48000, why) &&
+                                 f.freezer->start(f.live, 0, FreezeKind::Bounce, dir + "/frozen", 48000, why) == false;
+            c.check(started && f.freezer->busy(f.live.tracks[0].id), "Freezing: a render is queued, one per track at a time", why);
+            f.began = Clock::now();
+            f.phase = 1;
+            return false;
+        }
+        if (f.phase == 1) {
+            f.freezer->update();
+            std::vector<Freezer::Result> done = f.freezer->takeFinished();
+            if (done.empty()) {
+                if (secondsSince(f.began) < 120.0)
+                    return false;
+                c.check(false, "Freezing: the render finishes", f.freezer->status(f.live.tracks[0].id));
+                return true;
+            }
+            f.freeze = done.front();
+            const bool ok = f.freeze.error.empty() && !f.freeze.file.empty() && fs::exists(fs::u8path(f.freeze.file)) &&
+                            f.freeze.hash == freezeHash(f.live, 0) && f.freeze.seconds >= 3.0 && f.freeze.seconds < 3.5;
+            c.check(ok, "Freezing: the track's sound is written, as long as it rings", f.freeze.error + number(" (%.2f s)", f.freeze.seconds));
+            if (!ok)
+                return true;
+            // The same song, frozen: exported beside the live one
+            Project frozenSong = f.live;
+            frozenSong.tracks[0].freeze = TrackFreeze{f.freeze.file, f.freeze.seconds, f.freeze.hash};
+            c.check(freezeCurrent(frozenSong, 0), "Freezing: the frozen track's freeze is current");
+            f.liveExport = queue.enqueue(f.live, masterTarget("live"), 1.0f, dir);
+            f.frozenExport = queue.enqueue(frozenSong, masterTarget("frozen"), 1.0f, dir);
+            std::string why;
+            f.freezer->start(f.live, 0, FreezeKind::Bounce, dir + "/frozen", 48000, why);
+            f.began = Clock::now();
+            f.phase = 2;
+            return false;
+        }
+        if (f.phase == 2) {
+            f.freezer->update();
+            for (const Freezer::Result &r : f.freezer->takeFinished())
+                f.bounce = r;
+            RenderJob *a = jobWithId(f.liveExport);
+            RenderJob *b = jobWithId(f.frozenExport);
+            const bool finished = a && b && a->finished() && b->finished() && (!f.bounce.file.empty() || !f.bounce.error.empty());
+            if (!finished && secondsSince(f.began) < 180.0)
+                return false;
+            const bool exported = a && b && a->state() == RenderJob::Done && b->state() == RenderJob::Done;
+            c.check(exported, "Freezing: the live and frozen songs export", a ? a->status() : std::string("no job"));
+            if (exported) {
+                std::string error;
+                auto liveSound = audio::loadAudioFile(a->reports()[0].path, error);
+                auto frozenSound = audio::loadAudioFile(b->reports()[0].path, error);
+                double worst = 1.0, level = 0.0;
+                if (liveSound && frozenSound && liveSound->samples.size() == frozenSound->samples.size()) {
+                    worst = 0.0;
+                    for (size_t i = 0; i < liveSound->samples.size(); ++i) {
+                        worst = std::max(worst, static_cast<double>(std::fabs(liveSound->samples[i] - frozenSound->samples[i])));
+                        level = std::max(level, static_cast<double>(std::fabs(liveSound->samples[i])));
+                    }
+                }
+                c.check(level > 0.05 && worst < 1e-4, "Freezing: the frozen song sounds as the live one did",
+                        number("(differs by %.1f dB at most)", 20.0 * std::log10(std::max(worst, 1e-12))));
+            }
+            // Bounce: a new audio track of the sound after the source, which is muted
+            Project bounced = f.live;
+            const int added = f.bounce.file.empty() ? -1 : addBounce(bounced, 0, f.bounce.file, f.bounce.seconds);
+            c.check(added == 1 && bounced.tracks.size() == 2 && bounced.tracks[0].mute && bounced.tracks[1].kind == TrackKind::Audio &&
+                        bounced.tracks[1].clips.size() == 1 && bounced.tracks[1].clips[0].audioFile == f.bounce.file &&
+                        bounced.tracks[1].name == "Noise (bounced)",
+                    "Bouncing: a new audio track plays the sound, the source muted", f.bounce.error);
+            // Flatten: the frozen track becomes an audio track of its freeze, its effects gone, its fader kept
+            Project flat = f.live;
+            flat.tracks[0].freeze = TrackFreeze{f.freeze.file, f.freeze.seconds, f.freeze.hash};
+            const bool flattened = flattenTrack(flat, 0);
+            c.check(flattened && flat.tracks[0].effects.empty() && !flat.tracks[0].frozen() && flat.tracks[0].gain == 0.7f &&
+                        flat.tracks[0].clips.size() == 1 && flat.tracks[0].clips[0].audioFile == f.freeze.file,
+                    "Flattening: the track plays its freeze as audio");
+            // Editing the track puts its freeze out of date
+            Project edited = f.live;
+            edited.tracks[0].freeze = TrackFreeze{f.freeze.file, f.freeze.seconds, f.freeze.hash};
+            edited.tracks[0].effects[0].setValue(0, edited.tracks[0].effects[0].value(0, 0.0) + 1.0);
+            Project faded = f.live;
+            faded.tracks[0].freeze = TrackFreeze{f.freeze.file, f.freeze.seconds, f.freeze.hash};
+            faded.tracks[0].gain = 0.2f;
+            c.check(!freezeCurrent(edited, 0) && freezeCurrent(faded, 0),
+                    "Freezing: an effect's change puts the freeze out of date, the fader doesn't");
+            f.freezer.reset();
+            return true;
+        }
         return true;
     });
 

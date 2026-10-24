@@ -85,6 +85,8 @@ public:
 
     const ProjectStore &store() const { return store_; }
     audio::AudioSystem &audio() { return audio_; }
+    // Frames the latest path's plugins delay the sound reaching the master (once prepared)
+    uint32_t latency() const { return bridge_ ? bridge_->masterLatency() : 0; }
     size_t trackCount() const { return store_.project().tracks.size(); }
 
 private:

@@ -225,6 +225,8 @@ void TrackProcessor::render(const AudioBlock &block, const Route *route)
         std::copy_n(bus_[0].data(), frames, tapLeft_);
         std::copy_n(bus_[1].data(), frames, tapRight_);
     }
+    if (AnalysisTap *tap = analysis.load(std::memory_order_relaxed))
+        tap->write(bus_[0].data(), bus_[1].data(), frames);
 }
 
 void TrackProcessor::readKey(uint32_t delay, uint32_t frames, float *left, float *right) const

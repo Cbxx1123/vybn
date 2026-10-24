@@ -55,7 +55,6 @@ void ArrangementView::drawTakeContent(DrawList &list, const Theme &theme, int tr
         if (!data)
             return;
         const audio::TempoMap &timing = project().timing;
-        const double takeSeconds = timing.secondsAt(take.start);
         std::vector<float> pairs;
         uint32_t columns = 0;
         const float firstX = visibleStart;
@@ -64,7 +63,7 @@ void ArrangementView::drawTakeContent(DrawList &list, const Theme &theme, int tr
             if (b0 >= take.end())
                 break;
             float low = 0.0f, high = 0.0f;
-            data->range(take.offset + timing.secondsAt(b0) - takeSeconds, take.offset + timing.secondsAt(b1) - takeSeconds, low, high);
+            data->range(clipFileSeconds(timing, take, b0), clipFileSeconds(timing, take, b1), low, high);
             pairs.push_back(std::max(-1.0f, low * take.gain));
             pairs.push_back(std::min(1.0f, high * take.gain));
             ++columns;

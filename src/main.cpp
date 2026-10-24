@@ -28,7 +28,10 @@
 //     --plugin-folder PATH  also scan this folder for plugins, this run only (repeatable)
 //     --demo NAME  start with something open, for screenshots: menu (the Edit menu), project
 //                  (the Project menu), new (the new project dialog), projectsettings, audioclip (a
-//                  generated test tone imported onto an audio track, in the editor), recordmidi (records a
+//                  generated test tone imported onto an audio track, in the editor), warp (a generated
+//                  96 BPM beat warped into the song, its transients pinned, in the editor), freeze (the
+//                  first track frozen and the second bounced), analyzer (the Analyzer panel while the
+//                  transport plays), recordmidi (records a
 //                  phrase sent through the MIDI hub onto the Lead track), browser (the asset
 //                  browser on the library's instruments), appearance (the theme customiser), notetools (the piano roll in A minor with notes
 //                  selected, a muted beat, ghosts and a loop), unsaved (New with an
@@ -289,6 +292,14 @@ int main(int argc, char **argv)
                     app.openProjectSettings();
                 else if (demo == "audioclip")
                     app.importAudioDemo();
+                else if (demo == "warp")
+                    app.warpDemo();
+                else if (demo == "freeze")
+                    app.freezeDemo();
+                else if (demo == "analyzer") {
+                    app.showAnalyzer();
+                    audio.transport().play();
+                }
                 else if (demo == "recordmidi")
                     app.recordMidiDemo();
                 else if (demo == "unsaved") {

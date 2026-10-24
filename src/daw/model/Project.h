@@ -9,6 +9,7 @@
 #include "daw/model/ExportModel.h"
 #include "audio/Device.h"
 #include "audio/TempoMap.h"
+#include "audio/Warp.h"
 
 namespace daw {
 
@@ -16,7 +17,7 @@ namespace daw {
 // gain, pan, mute and solo into an audio::TrackProcessor, plays instrument tracks' notes through
 // their instrument and audio tracks' clips from their sound files. Positions and lengths are in
 // beats (quarter notes), turned into time and bars by `timing`; times inside sound files are in
-// seconds (audio isn't stretched by the tempo).
+// seconds (an audio clip follows the tempo only when it is warped: Clip::warp).
 
 // A MIDI note in a clip, positioned from the clip's start
 struct Note {
@@ -80,13 +81,26 @@ struct Clip {
     double fadeIn = 0.0;   // seconds
     double fadeOut = 0.0;
 
+    // How the sound follows the tempo (docs/design/warping-plan.md): Off plays it at its own speed;
+    // else the file's beats (its bpm and warp markers) are laid on the timeline's, `offset` still
+    // being where in the file the clip starts. clipFileSeconds is the mapping either way.
+    audio::ClipWarp warp;
+
     // In the track's own lane, a comp section: the take (a clip in one of the track's take lanes)
     // it was cut from (docs/design/takes-plan.md). kNoId for an ordinary clip, and in a take lane.
     ObjectId take = kNoId;
 
     bool hasAudio() const { return !audioFile.empty(); }
+    bool warped() const { return warp.on(); }
     double end() const { return start + length; }
 };
+
+// Where an audio clip's sound file is at a beat on the timeline, as seconds into the file (any beat:
+// before the clip's start or past its end extends the same way), and the beat where the file
+// reaches `seconds`. A warped clip goes through its warp; otherwise the tempo map turns beats into
+// seconds from the clip's start, where the file is at `offset`.
+double clipFileSeconds(const audio::TempoMap &timing, const Clip &clip, double beat);
+double clipBeatOfFile(const audio::TempoMap &timing, const Clip &clip, double seconds);
 
 // Recorded passes kept under a track, which don't play: the track's comp (its own clips) is cut
 // from them (Takes.h). A lane's clips don't overlap, sorted by start.
@@ -109,6 +123,17 @@ struct Send {
 
     bool operator==(const Send &o) const { return to == o.to && level == o.level && preFader == o.preFader; }
     bool operator!=(const Send &o) const { return !(*this == o); }
+};
+
+// A track's sound rendered into a file (its instrument and effects, before its fader), which plays in
+// its place while it is current: while freezeHash still gives `hash` (docs/design/freeze-plan.md)
+struct TrackFreeze {
+    std::string file;
+    double seconds = 0.0; // the file's length
+    uint64_t hash = 0;    // freezeHash of the track when it was rendered
+
+    bool operator==(const TrackFreeze &o) const { return file == o.file && seconds == o.seconds && hash == o.hash; }
+    bool operator!=(const TrackFreeze &o) const { return !(*this == o); }
 };
 
 struct Track {
@@ -145,8 +170,11 @@ struct Track {
     std::vector<Send> sends;
     // Audio and instrument tracks: the takes recorded on it, newest first. Content, like clips.
     std::vector<TakeLane> takeLanes;
+    // Audio and instrument tracks: its frozen sound (none while `file` is empty). Content, like clips.
+    TrackFreeze freeze;
 
     bool bus() const { return isBus(kind); }
+    bool frozen() const { return !freeze.file.empty(); }
 };
 
 // Where a device is: in the master's chain, or a track's, at `index` among its effects, or the
