@@ -112,6 +112,7 @@ union EventStorage {
     clap_event_param_value param;
     clap_event_midi midi;
     clap_event_param_gesture gesture;
+    clap_event_note_expression expression;
 };
 
 struct EventList {
@@ -152,15 +153,31 @@ struct EventList {
         }
     }
 
+    // A note's id is its channel and key, as the VST3 host's are (-1 for every note)
+    static int32_t noteId(int key, int channel) { return key < 0 ? -1 : channel * 128 + key; }
+
     void addNote(uint32_t time, uint16_t type, int key, int channel, double velocity)
     {
         if (EventStorage *e = add()) {
             e->note.header = {sizeof(clap_event_note), time, CLAP_CORE_EVENT_SPACE_ID, type, 0};
-            e->note.note_id = -1;
+            e->note.note_id = noteId(key, channel);
             e->note.port_index = 0;
             e->note.channel = static_cast<int16_t>(channel);
             e->note.key = static_cast<int16_t>(key);
             e->note.velocity = velocity;
+        }
+    }
+
+    void addExpression(uint32_t time, clap_note_expression id, int key, int channel, double value)
+    {
+        if (EventStorage *e = add()) {
+            e->expression.header = {sizeof(clap_event_note_expression), time, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_EXPRESSION, 0};
+            e->expression.expression_id = id;
+            e->expression.note_id = noteId(key, channel);
+            e->expression.port_index = 0;
+            e->expression.channel = static_cast<int16_t>(channel);
+            e->expression.key = static_cast<int16_t>(key);
+            e->expression.value = value;
         }
     }
 
@@ -628,6 +645,11 @@ public:
                 }
                 break;
             }
+            case EventKind::NoteExpression:
+                // Tuning in semitones, as CLAP has it; a plugin taking MIDI notes gets none
+                if (noteDialect_ == CLAP_NOTE_DIALECT_CLAP && e.expression == static_cast<uint32_t>(NoteExpression::Tuning))
+                    ev.addExpression(time, CLAP_NOTE_EXPRESSION_TUNING, static_cast<int>(e.id & 127), channel, e.value);
+                break;
             case EventKind::AllNotesOff:
                 if (noteDialect_ == CLAP_NOTE_DIALECT_CLAP)
                     ev.addNote(time, CLAP_EVENT_NOTE_OFF, -1, -1, 0.0);

@@ -135,8 +135,8 @@ public:
     void handleDrops();
     // A generated take imported onto the first audio track and opened in the editor (--demo)
     void importAudioDemo();
-    // --demo warp: a generated 96 BPM beat (its tempo in its name) imported onto the first audio track,
-    // warped into the song with its transients pinned to the eighths, in the audio editor
+    // --demo warp: a drum loop at 100 BPM imported (so it comes in warped), one marker moved, in the
+    // audio editor
     void warpDemo();
     // --demo freeze: the first track frozen and the second bounced to a new audio track
     void freezeDemo();
@@ -298,6 +298,20 @@ private:
     const audio::AudioData *clipAudio(int track, int clip);
     void openClipMenu(ui::Vec2 at, double beat);
     void openTrackMenu(int track, ui::Vec2 at);
+    // Warping (DawWarp.cpp, docs/design/warp-plan.md): the audio editor's warp row, the Warp menu (the
+    // toolbar's, and the clip menu's for an audio clip), the modes, a marker's menu, Quantise audio...
+    // and the song's tempo from a clip. Each acts on the selected audio clip.
+    void buildWarpTools(ui::Container &parent);
+    std::vector<ui::MenuItem> warpMenu();
+    std::vector<ui::MenuItem> warpModeMenu();
+    void openWarpMarkerMenu(int marker, ui::Vec2 at);
+    void openQuantiseAudio();
+    void setSongTempoFromClip();
+    // The selected audio clip, for an edit (null when there is none), and its file's length and
+    // analysis (0 and null while they load)
+    Clip *editWarpClip();
+    double warpFileSeconds(const Clip &clip);
+    const audio::AudioAnalysis *warpAnalysis(const Clip &clip);
     // A take lane's menu (from the arrangement; `take` the take under the mouse, or kNoId), and a
     // change to a track's takes and comp made on a copy, applied when `change` says it changed something
     void openTakeMenu(int track, ObjectId lane, ObjectId take, ui::Vec2 at);
@@ -334,25 +348,6 @@ private:
     void buildPerformanceSettings(ui::Container &body);
     // Settings > Metrics: the audio device and its load, threads, sample memory and frame times
     void buildMetrics(ui::Container &body);
-
-    // Warping audio clips (DawWarp.cpp, docs/design/warping-plan.md). The selected clip when it is an
-    // audio clip with a sound (null otherwise), a change to it, its mode (Off unwarps; turned on from
-    // Off it starts at the song's tempo there, so nothing moves), finding its tempo from its beats
-    // (once the pool has found them: updateWarp, each frame), the menus and the audio editor's tools.
-    using MenuButton = std::function<void(ui::Container &, std::function<std::string()>,
-                                          std::function<std::vector<ui::MenuItem>()>, float)>;
-    const Clip *warpClip() const;
-    void editWarp(const std::function<void(Clip &)> &change);
-    void setWarp(audio::WarpMode mode);
-    void detectWarpTempo();
-    void updateWarp();
-    std::vector<ui::MenuItem> warpModeMenu();
-    std::vector<ui::MenuItem> warpMenu();
-    void buildWarpTools(ui::Container &tools, const MenuButton &menuButton);
-    // An imported sound that is a loop (short, with a tempo in its name or a beat that fits whole
-    // bars) comes in warped at its tempo, when Settings asks for it
-    void autoWarp(Clip &clip, const audio::AudioData &data);
-    ObjectId tempoPending_ = kNoId; // the clip whose tempo is being found
 
     // Freezing and bouncing tracks (DawAudio.cpp, docs/design/freeze-plan.md): a render of the track
     // queued on the Freezer (into the project's audio folder), Flatten of a current freeze at once,
@@ -428,6 +423,12 @@ private:
     double noticeUntil_ = 0.0;
     std::shared_ptr<std::function<void()>> demoTick_; // recordMidiDemo's, run every frame
     double dropFlashUntil_ = -1.0; // the arrangement shows where a drop landed until then
+    // Quantise audio's last settings: the grid in beats, how far toward it, the transients it takes
+    struct WarpQuantise {
+        double grid = 0.25;
+        float strength = 1.0f;
+        float threshold = 0.3f;
+    } warpQuantise_;
     AssetBrowser *browser_ = nullptr;
     bool mouseSinceStep_ = false; // the mouse was used since the last undo step (it isn't merged)
     bool mouseHeld_ = false;      // a button is held (undo waits for the drag to end)

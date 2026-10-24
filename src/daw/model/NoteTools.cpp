@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <map>
 #include <numeric>
 
@@ -647,6 +648,7 @@ int stretch(std::vector<Note> &notes, double factor)
         Note &n = notes[i];
         n.start = first + (n.start - first) * factor;
         n.length = std::max(kMinLength, n.length * factor);
+        stretchCurves(n.expression, factor);
     }
     return static_cast<int>(chosen.size());
 }
@@ -664,6 +666,7 @@ int reverse(std::vector<Note> &notes)
     for (size_t i : chosen) {
         Note &n = notes[i];
         n.start = first + (last - (n.start + n.length));
+        reverseCurves(n.expression, n.length);
     }
     return static_cast<int>(chosen.size());
 }
@@ -701,6 +704,7 @@ int chop(std::vector<Note> &notes, double grid)
             Note p = n;
             p.start = t;
             p.length = std::max(kMinLength, std::min(grid, n.start + n.length - t));
+            p.expression = cutCurves(n.expression, t - n.start, t - n.start + p.length);
             pieces.push_back(p);
         }
     }
@@ -728,6 +732,8 @@ int join(std::vector<Note> &notes)
         while (k < chosen.size() && notes[chosen[k]].key == head.key &&
                notes[chosen[k]].start <= head.start + head.length + 1e-6) {
             const Note &n = notes[chosen[k]];
+            if (!head.expression.empty() || !n.expression.empty())
+                head.expression = joinCurves(head.expression, n.expression, n.start - head.start);
             head.length = std::max(head.length, n.start + n.length - head.start);
             gone[chosen[k]] = true;
             ++joined;
@@ -896,6 +902,7 @@ int stretchAround(std::vector<Note> &notes, double anchor, double factor, double
         Note &n = notes[i];
         n.start = std::max(0.0, anchor + (n.start - anchor) * factor);
         n.length = std::max(minimum, n.length * factor);
+        stretchCurves(n.expression, factor);
     }
     return static_cast<int>(chosen.size());
 }
@@ -910,6 +917,8 @@ bool slice(std::vector<Note> &notes, size_t index, double at, double minimum)
     Note right = n;
     right.start = at;
     right.length = n.start + n.length - at;
+    right.expression = cutCurves(n.expression, at - n.start, std::numeric_limits<double>::infinity());
+    n.expression = cutCurves(n.expression, 0.0, at - n.start);
     n.length = at - n.start;
     notes.push_back(right);
     return true;
@@ -1084,6 +1093,61 @@ void controlLine(ControlLane &lane, double from, float fromValue, double to, flo
     eraseControlPoints(lane, from, to);
     setControlPoint(lane, from, fromValue, 0.0);
     setControlPoint(lane, to, toValue, 0.0);
+}
+
+void setCurvePoint(Note &note, Expression type, double beat, float value, double merge)
+{
+    beat = std::max(0.0, beat);
+    std::vector<ControlPoint> points;
+    if (const NoteCurve *c = note.curve(type))
+        points = c->points;
+    else if (beat > merge)
+        points.push_back({0.0, expressionNeutral(type)});
+    ControlLane lane{1, std::move(points)};
+    eraseControlPoints(lane, beat - merge, beat + merge);
+    const auto at = std::upper_bound(lane.points.begin(), lane.points.end(), beat,
+                                     [](double b, const ControlPoint &p) { return b < p.beat; });
+    lane.points.insert(at, {beat, std::clamp(value, expressionMin(type), expressionMax(type))});
+    note.setCurve(type, std::move(lane.points));
+}
+
+void curveLine(Note &note, Expression type, double from, float fromValue, double to, float toValue)
+{
+    if (to < from) {
+        std::swap(from, to);
+        std::swap(fromValue, toValue);
+    }
+    if (const NoteCurve *c = note.curve(type)) {
+        ControlLane lane{1, c->points};
+        eraseControlPoints(lane, from, to);
+        note.setCurve(type, std::move(lane.points));
+    }
+    setCurvePoint(note, type, from, fromValue, 0.0);
+    setCurvePoint(note, type, to, toValue, 0.0);
+}
+
+void shiftCurve(Note &note, Expression type, float by)
+{
+    std::vector<ControlPoint> points;
+    if (const NoteCurve *c = note.curve(type))
+        points = c->points;
+    else
+        points.push_back({0.0, expressionNeutral(type)});
+    for (ControlPoint &p : points)
+        p.value = std::clamp(p.value + by, expressionMin(type), expressionMax(type));
+    note.setCurve(type, std::move(points));
+}
+
+void tidyCurve(Note &note, Expression type, float tolerance)
+{
+    const NoteCurve *c = note.curve(type);
+    if (!c)
+        return;
+    ControlLane lane{1, c->points}; // a controller that isn't stepped: thinned as a line
+    thinControlPoints(lane, tolerance);
+    const bool neutral = std::all_of(lane.points.begin(), lane.points.end(),
+                                     [type](const ControlPoint &p) { return p.value == expressionNeutral(type); });
+    note.setCurve(type, neutral ? std::vector<ControlPoint>{} : std::move(lane.points));
 }
 
 int thinControlPoints(ControlLane &lane, float tolerance)

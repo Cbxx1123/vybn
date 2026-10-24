@@ -7,8 +7,8 @@
 #include "MidiImportSelfTest.h"
 #include "TakesSelfTest.h"
 #include "FreezeSelfTest.h"
-#include "TempoSelfTest.h"
 #include "WarpSelfTest.h"
+#include "TempoSelfTest.h"
 
 #include <algorithm>
 #include <chrono>
@@ -2434,9 +2434,9 @@ id = "vibin.synth"
     c.failures += runRoutingChecks();
     c.failures += runTempoChecks();
     c.failures += runTakesChecks();
+    c.failures += runWarpModelChecks();
     c.failures += runMarkersChecks();
     c.failures += runMidiImportChecks();
-    c.failures += runWarpProjectChecks();
     c.failures += runFreezeProjectChecks();
 
     return c.finish("project");

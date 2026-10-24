@@ -15,15 +15,14 @@ namespace {
 bool sameNoteContent(const Note &a, const Note &b)
 {
     return a.start == b.start && a.length == b.length && a.key == b.key && a.velocity == b.velocity &&
-           a.muted == b.muted; // not the selection
+           a.muted == b.muted && a.expression == b.expression; // not the selection
 }
 
 bool sameClipContent(const Clip &a, const Clip &b)
 {
     if (a.name != b.name || a.start != b.start || a.length != b.length || a.audioFile != b.audioFile ||
         a.offset != b.offset || a.gain != b.gain || a.fadeIn != b.fadeIn || a.fadeOut != b.fadeOut || a.take != b.take ||
-        a.warp != b.warp ||
-        a.notes.size() != b.notes.size() || a.controls.size() != b.controls.size())
+        a.warp != b.warp || a.notes.size() != b.notes.size() || a.controls.size() != b.controls.size())
         return false;
     for (size_t i = 0; i < a.notes.size(); ++i) {
         if (!sameNoteContent(a.notes[i], b.notes[i]))

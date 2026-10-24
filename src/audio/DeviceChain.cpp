@@ -356,4 +356,10 @@ void ChainInstrument::controlChangeAt(int controller, float value, uint32_t fram
         current_->controlChangeAt(controller, value, frame);
 }
 
+void ChainInstrument::noteExpressionAt(int key, int expression, float value, uint32_t frame)
+{
+    if (current_)
+        current_->noteExpressionAt(key, expression, value, frame);
+}
+
 }

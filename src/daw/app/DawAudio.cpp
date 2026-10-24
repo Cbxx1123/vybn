@@ -21,6 +21,7 @@
 #include "daw/views/PianoRoll.h"
 #include "daw/model/Routing.h"
 #include "daw/model/Takes.h"
+#include "daw/model/Warp.h"
 #include "daw/io/MidiExport.h"
 #include "daw/io/MidiImport.h"
 #include "audio/Synth.h"
@@ -325,7 +326,11 @@ void DawApp::importAudioFiles(const std::vector<std::string> &files, int track, 
         }
         Clip c(fs::path(file).stem().string(), beat, project().beatsFor(beat, data->seconds()));
         c.audioFile = file;
-        autoWarp(c, *data); // a loop comes in at the song's tempo
+        // A loop comes in warped at its tempo (a loop is at most 32 bars, so a long file isn't looked at)
+        if (settings_.warpLoops && data->seconds() <= kLongestLoopSeconds) {
+            if (auto analysis = pool_->analyseNow(file); analysis && analysis->loop)
+                applyGuess(c, *analysis);
+        }
         auto &clips = session_.store().editTrack(index).clips;
         clips.push_back(c);
         added = static_cast<int>(clips.size()) - 1;
@@ -518,6 +523,49 @@ void DawApp::importAudioDemo()
             Clip &c = session_.store().editClip(project().selectedTrack, project().selectedClip);
             c.fadeIn = 0.05;
             c.fadeOut = 0.8;
+        }
+        showEditor();
+    });
+}
+
+void DawApp::warpDemo()
+{
+    // Four bars of a beat at 100 BPM (a kick on each beat, a hat between), so the import finds a loop
+    const double rate = 48000.0;
+    const double beat = 0.6;
+    const size_t frames = static_cast<size_t>(rate * beat * 16.0);
+    std::vector<float> samples(frames * 2, 0.0f);
+    uint32_t noise = 4242u;
+    for (int hit = 0; hit < 32; ++hit) {
+        const bool kick = hit % 2 == 0;
+        const size_t start = static_cast<size_t>(hit * beat * 0.5 * rate);
+        for (size_t i = 0; start + i < frames && i < static_cast<size_t>(rate * 0.25); ++i) {
+            const double t = i / rate;
+            noise = noise * 1664525u + 1013904223u;
+            const double hiss = static_cast<double>(noise >> 8) / 8388608.0 - 1.0;
+            const double v = kick ? 0.7 * std::exp(-t * 18.0) * std::sin(2.0 * 3.14159265358979 * (55.0 + 90.0 * std::exp(-t * 30.0)) * t)
+                                  : 0.25 * std::exp(-t * 60.0) * hiss;
+            samples[(start + i) * 2] += static_cast<float>(v);
+            samples[(start + i) * 2 + 1] += static_cast<float>(v);
+        }
+    }
+    const std::string path = (fs::temp_directory_path() / "VYBN demo loop.wav").string();
+    std::string error;
+    if (!audio::writeWavFile(path, samples.data(), frames, 2, rate, error)) {
+        notify(error);
+        return;
+    }
+    int track = -1;
+    for (size_t i = 0; i < project().tracks.size() && track < 0; ++i) {
+        if (project().tracks[i].kind == TrackKind::Audio)
+            track = static_cast<int>(i);
+    }
+    ui_.post([this, path, track] {
+        importAudioFiles({path}, track, 0.0);
+        if (const Clip *shown = project().clip(); shown && shown->warp.on) {
+            Clip &c = session_.store().editClip(project().selectedTrack, project().selectedClip);
+            const int marker = addWarpMarker(c, c.start + 6.0);
+            moveWarpMarker(c, marker, c.start + 6.5);
         }
         showEditor();
     });
@@ -752,11 +800,7 @@ void DawApp::openClipMenu(Vec2 at, double beat)
                 c.fadeIn = c.fadeOut = 0.0;
             }
         }));
-        // Warping (DawWarp.cpp)
-        if (warpClip()) {
-            items.push_back(MenuItem::sub("Warp", warpModeMenu()));
-            items.push_back(MenuItem::item("Detect tempo", [this] { detectWarpTempo(); }));
-        }
+        items.push_back(MenuItem::sub("Warp", warpMenu()));
     }
     items.push_back(MenuItem::divider());
     items.push_back(MenuItem::item("Delete clip", [this] { session_.store().edit().deleteClip(); }));
@@ -1469,12 +1513,6 @@ void DawApp::buildInputSettings(Container &body)
             bars[c]->setLevel(c < system.inputChannels() ? inputPeaks_[c] : 0.0f);
         }
     });
-    // Sound files that come in: loops warped to the song's tempo
-    body.add<Checkbox>("Warp loops to the song's tempo when they come in", settings_.warpLoops, [this](bool on) {
-        settings_.warpLoops = on;
-        std::string error;
-        settings_.save(error);
-    }).setSize(Size::Small);
     body.add<Label>("An audio track records the channel (or pair) chosen in its inspector. Tick \"Hear the input\" "
                     "to monitor it while armed; use headphones, or a microphone will feed back.",
                     TextStyle::Caption, TextTone::Muted)

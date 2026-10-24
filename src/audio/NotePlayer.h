@@ -13,12 +13,15 @@
 
 namespace audio {
 
-// A note on the timeline, in beats from its start
+// A note on the timeline, in beats from its start; its expression curves are the sequence's
+// curves[firstCurve] onwards
 struct SequencedNote {
     double start = 0.0;
     double end = 0.0;
     int key = 60;
     float velocity = 0.8f;
+    uint32_t firstCurve = 0;
+    uint32_t curveCount = 0;
 };
 
 // A controller's curve on the timeline: points in beats (sorted), values 0-1, joined by straight
@@ -36,10 +39,20 @@ struct ControlCurve {
     float valueAt(double beat) const;
 };
 
+// A note's expression over its length (Instrument::noteExpressionAt): points in beats from the
+// note's start, in the expression's units, joined by straight lines
+struct ExpressionCurve {
+    int expression = Instrument::kTuning;
+    std::vector<ControlCurve::Point> points;
+
+    float valueAt(double beat) const;
+};
+
 // Everything a track plays, sorted by start
 struct NoteSequence {
     std::vector<SequencedNote> notes;
-    std::vector<ControlCurve> controls; // at most one per controller
+    std::vector<ControlCurve> controls;  // at most one per controller
+    std::vector<ExpressionCurve> curves; // the notes' expression
 
     void sort();
 };
@@ -50,6 +63,7 @@ struct NoteSequence {
 // began before playback started aren't played from their middle. Controller curves are read at
 // the start of each block and sent when their value changes (the sustain pedal holds the
 // sequence's note offs until it lifts); stopping or jumping resets the bend and lifts the pedal.
+// A note's expression is sent at its note-on and then every kExpressionFrames while it changes.
 //
 // The sequence is swapped from the main thread (setSequence) through a queue, and the old one
 // comes back for collect() to delete. audition/release play a key straight away, transport or
@@ -84,18 +98,31 @@ private:
         int key;
         float velocity; // 0 for a release
     };
+    // The last value of each expression sent for a note (kUnsent before any, kRelease when its
+    // curve went while it sounded, so it goes back to rest)
+    using Sent = std::array<float, Instrument::kExpressions>;
+    static constexpr float kUnsent = 1e30f, kRelease = -1e30f;
     struct Sounding {
         int key;
-        double end;
+        double start, end;
+        const SequencedNote *note; // in current_, or null once a new sequence lacks it
+        Sent sent;
     };
     struct Event {
         uint32_t frame;
         bool on;
         int key;
-        float velocity;
+        float velocity; // or an expression's value
+        int expression; // -1 for a note on or off
     };
     static constexpr size_t kMaxSounding = 128;
     static constexpr size_t kMaxEvents = 256;
+    static constexpr uint32_t kExpressionFrames = 64;
+
+    // A new sequence: the sounding notes find themselves in it, by key and start
+    void relink();
+    // Adds the note's expression from frame `from` to `to` to events_ (from `count`); returns the count
+    size_t express(const SequencedNote &note, Sent &sent, uint32_t from, uint32_t to, const TransportState &t, size_t count);
 
     void allOff();
     void playControls(double beat);

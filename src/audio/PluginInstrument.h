@@ -42,6 +42,7 @@ public:
     void allNotesOff() override;
     void controlChange(int controller, float value) override { controlChangeAt(controller, value, 0); }
     void controlChangeAt(int controller, float value, uint32_t frame) override;
+    void noteExpressionAt(int key, int expression, float value, uint32_t frame) override;
     // A parameter value event at the start of the next block it processes
     bool automatable() const override { return true; }
     void automate(uint32_t paramId, double value) override;

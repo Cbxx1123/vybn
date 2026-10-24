@@ -1,6 +1,5 @@
 #pragma once
 
-#include <atomic>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -8,29 +7,14 @@
 #include <string>
 #include <vector>
 
-#include "daw/model/Project.h"
+#include "audio/AudioAnalysis.h"
 #include "audio/AudioFile.h"
 #include "audio/Memory.h"
-#include "audio/Warp.h"
 #include "env/Environment.h"
 #include "env/Resources.h"
 #include "env/Scheduler.h"
 
 namespace daw {
-
-// A clip's stretched sound (docs/design/warping-plan.md): the whole file laid at the clip's place,
-// its seconds the timeline's
-struct WarpedSound {
-    std::shared_ptr<const audio::AudioData> data; // null while none has been made for the clip
-    audio::ClipWarp warp; // what it was made with: the clip's, or an earlier one while the new one is made
-    bool exact = false;   // made from the clip's warp and the tempo as they are now
-};
-
-// What a sound file's hits are: its transients (seconds) and the tempo they suggest (0 for none)
-struct FileOnsets {
-    std::vector<double> transients;
-    double tempo = 0.0;
-};
 
 // The sound files the project's audio clips play, loaded once each and shared. Long ones stream
 // through the environment's MemoryManager (when it streams): only their overview and preload stay
@@ -60,19 +44,15 @@ public:
     void addRecording(const std::string &path, double sampleRate, uint32_t channels, std::vector<float> samples);
     // Goes up whenever a file finishes loading (or fails), so users of get() can try again
     uint64_t version() const { return version_; }
-    // Lets go of files no clip uses any more (and their stretched sounds)
+    // Lets go of files no clip uses any more
     void keepOnly(const std::set<std::string> &paths);
 
-    // The stretched sound of a warped clip on `timing`, made on a Background job when there isn't
-    // one yet (its file must be loaded: get). While it is being made the clip gets the last one made
-    // for it (by id), or nothing; a newer request for the same clip cancels the one being made, so a
-    // marker being dragged renders once it stops. version() goes up as one arrives.
-    WarpedSound warped(const Clip &clip, const audio::TempoMap &timing);
-    // Whether the clip's exact stretched sound is ready (asking for it if not)
-    bool warpReady(const Clip &clip, const audio::TempoMap &timing) { return warped(clip, timing).exact; }
-    // A file's transients and tempo, found once on a Background job; null until they are (or while
-    // the file isn't loaded). version() goes up when they arrive.
-    const FileOnsets *onsets(const std::string &path);
+    // A loaded file's analysis (its transients and tempo, for warping): ready, or started on a
+    // background thread once the file has loaded and null until it is (its arrival moves version()).
+    // Kept while the file is.
+    std::shared_ptr<const audio::AudioAnalysis> analysis(const std::string &path);
+    // The same now, on the calling thread (a file just imported), loading the file first if need be
+    std::shared_ptr<const audio::AudioAnalysis> analyseNow(const std::string &path);
 
 private:
     env::Environment &env_;
@@ -81,30 +61,8 @@ private:
     audio::MemoryManager *memory_ = nullptr;
     std::map<std::string, std::string> errors_;
     std::set<std::string> loading_;
-
-    // Stretched sounds by key (the file, '#', and warpKey), what each was made with, and per clip (by
-    // id) the last made for it, the one being made (with its cancel flag) and the newest asked for since
-    struct WarpJob {
-        std::string key, path;
-        audio::ClipWarp warp;
-        audio::TempoMap timing;
-        double anchor = 0.0;
-    };
-    struct WarpRunning {
-        std::string key;
-        std::shared_ptr<std::atomic<bool>> cancel;
-    };
-    void startWarp(ObjectId clip, WarpJob job);
-    env::ResourceCache<const audio::AudioData> warps_{"Warped sounds", [](const audio::AudioData &d) { return static_cast<uint64_t>(d.bytes()); }};
-    std::map<std::string, audio::ClipWarp> warpOf_;
-    std::set<std::string> warping_;
-    std::map<ObjectId, std::string> lastWarp_;
-    std::map<ObjectId, WarpRunning> runningWarp_;
-    std::map<ObjectId, WarpJob> queuedWarp_;
-    std::map<std::string, FileOnsets> onsets_;
-    std::set<std::string> findingOnsets_;
-    std::shared_ptr<std::atomic<bool>> closing_ = std::make_shared<std::atomic<bool>>(false);
-
+    std::map<std::string, std::shared_ptr<const audio::AudioAnalysis>> analyses_;
+    std::set<std::string> analysing_;
     env::JobGroup jobs_; // its background jobs, waited for when it goes
     uint64_t version_ = 0;
 };

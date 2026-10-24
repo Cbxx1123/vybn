@@ -10,7 +10,7 @@
 #include "daw/model/Freeze.h"
 #include "daw/widgets/Format.h"
 #include "daw/model/Routing.h"
-#include "daw/model/Warping.h"
+#include "daw/model/Warp.h"
 #include "audio/DeviceChain.h"
 #include "audio/PluginInstrument.h"
 #include "plugin/Slot.h"
@@ -18,6 +18,10 @@
 namespace daw {
 
 namespace {
+
+// A note's expressions reach the instruments by number
+static_assert(static_cast<int>(Expression::Tuning) == audio::Instrument::kTuning && kExpressions == audio::Instrument::kExpressions,
+              "daw::Expression and audio::Instrument number the expressions alike");
 
 // FNV-1a over the clips a track plays and their notes, to notice edits without tracking every one
 uint64_t hashNotes(const std::vector<Clip> &clips)
@@ -39,6 +43,13 @@ uint64_t hashNotes(const std::vector<Clip> &clips)
             mix(&n.key, sizeof(n.key));
             mix(&n.velocity, sizeof(n.velocity));
             mix(&n.muted, sizeof(n.muted));
+            for (const NoteCurve &curve : n.expression) {
+                mix(&curve.type, sizeof(curve.type));
+                for (const ControlPoint &p : curve.points) {
+                    mix(&p.beat, sizeof(p.beat));
+                    mix(&p.value, sizeof(p.value));
+                }
+            }
         }
         for (const ControlLane &lane : c.controls) {
             mix(&lane.controller, sizeof(lane.controller));
@@ -61,7 +72,20 @@ std::unique_ptr<audio::NoteSequence> sequenceFor(const std::vector<Clip> &clips)
                 continue;
             const double start = c.start + n.start;
             const double end = std::min(start + n.length, c.start + c.length);
-            sequence->notes.push_back({start, end, n.key, n.velocity});
+            audio::SequencedNote played{start, end, n.key, n.velocity, 0, 0};
+            // Its expression: the curves, by the instruments' numbering of them
+            played.firstCurve = static_cast<uint32_t>(sequence->curves.size());
+            for (const NoteCurve &curve : n.expression) {
+                if (curve.points.empty())
+                    continue;
+                audio::ExpressionCurve expression;
+                expression.expression = static_cast<int>(curve.type);
+                for (const ControlPoint &p : curve.points)
+                    expression.points.push_back({p.beat, p.value});
+                sequence->curves.push_back(std::move(expression));
+            }
+            played.curveCount = static_cast<uint32_t>(sequence->curves.size()) - played.firstCurve;
+            sequence->notes.push_back(played);
         }
     }
     // Controller lanes: each controller's points from every clip on the timeline, in order;
@@ -764,17 +788,17 @@ uint64_t AudioBridge::hashClips(const Project &project, const std::vector<Clip> 
         mix(h, &c.fadeOut, sizeof(c.fadeOut));
         mix(h, c.audioFile.data(), c.audioFile.size());
         mix(h, &c.take, sizeof(c.take));
-        // A warped clip plays its stretched sound, which its warp and its id (the last made for it) name
-        mix(h, &c.warp.mode, sizeof(c.warp.mode));
-        if (c.warped()) {
-            mix(h, &c.id, sizeof(c.id));
-            mix(h, &c.warp.bpm, sizeof(c.warp.bpm));
-            mix(h, &c.warp.transpose, sizeof(c.warp.transpose));
-            for (const audio::WarpMarker &m : c.warp.markers) {
-                mix(h, &m.seconds, sizeof(m.seconds));
-                mix(h, &m.beat, sizeof(m.beat));
-            }
-        }
+        mix(h, &c.id, sizeof(c.id));
+        const audio::Warp &w = c.warp;
+        const uint8_t settings[4] = {static_cast<uint8_t>(w.on), static_cast<uint8_t>(w.mode),
+                                     static_cast<uint8_t>(w.preserve), static_cast<uint8_t>(w.loop)};
+        mix(h, settings, sizeof(settings));
+        mix(h, &w.bpm, sizeof(w.bpm));
+        mix(h, &w.pitch, sizeof(w.pitch));
+        mix(h, &w.envelope, sizeof(w.envelope));
+        mix(h, &w.grain, sizeof(w.grain));
+        if (!w.markers.empty())
+            mix(h, w.markers.data(), w.markers.size() * sizeof(audio::WarpMarker));
     }
     // A tempo change moves clips in time; a file finishing loading adds it
     const uint64_t tempo = tempoHash(project.timing);
@@ -800,18 +824,29 @@ std::unique_ptr<audio::ClipSequence> AudioBridge::clipSequenceFor(const Project 
         r.end = c.start + c.length;
         r.data = data;
         r.offset = c.offset;
-        if (c.warped()) {
-            // Its stretched sound, whose seconds are the timeline's (the last one made while the
-            // new one is being made; nothing before the first)
-            const WarpedSound warped = pool_.warped(c, timing);
-            if (!warped.data)
-                continue;
-            r.data = warped.data;
-            r.offset = warpRenderOffset(timing, c, warped.warp);
-        }
         r.gain = c.gain;
         r.fadeIn = c.fadeIn;
         r.fadeOut = c.fadeOut;
+        r.key = c.id;
+        if (c.warp.on) {
+            r.warp = c.warp;
+            r.contentStart = clipContentStart(c);
+            // Beats slices at the transients (or the grid); Complex starts its phases again at them
+            if (c.warp.mode == audio::WarpMode::Beats || c.warp.mode == audio::WarpMode::Complex) {
+                std::shared_ptr<const audio::AudioAnalysis> analysis = pool_.analysis(c.audioFile);
+                if (c.warp.mode == audio::WarpMode::Beats)
+                    r.slices = std::make_shared<const std::vector<audio::WarpSlice>>(
+                        warpSlices(c, analysis.get(), data->sampleRate, data->frames));
+                if (c.warp.mode == audio::WarpMode::Complex && analysis) {
+                    std::vector<double> resets;
+                    for (const audio::Transient &t : analysis->transients) {
+                        if (t.strength >= 0.3f)
+                            resets.push_back(static_cast<double>(t.frame));
+                    }
+                    r.resets = std::make_shared<const std::vector<double>>(std::move(resets));
+                }
+            }
+        }
         sequence->regions.push_back(std::move(r));
         sections.push_back({c.start, c.take != kNoId});
     }
@@ -825,13 +860,17 @@ std::unique_ptr<audio::ClipSequence> AudioBridge::clipSequenceFor(const Project 
         if (!sections[i].second || !sections[i + 1].second || std::fabs(a.end - b.start) > 1e-6)
             continue;
         const double edge = timing.secondsAt(a.end);
-        const double aLeft = a.data->seconds() - (a.offset + edge - timing.secondsAt(a.start)); // a's sound after the edge
-        const double half = std::min({kCompFade / 2.0, std::max(0.0, aLeft), b.offset});
+        // a's sound after the edge, and b's before it
+        const double aAt = a.warp.on ? audio::warpSeconds(a.warp, a.contentStart + a.end - a.start)
+                                     : a.offset + edge - timing.secondsAt(a.start);
+        const double bAt = b.warp.on ? audio::warpSeconds(b.warp, b.contentStart) : b.offset;
+        const double half = std::min({kCompFade / 2.0, std::max(0.0, a.data->seconds() - aAt), bAt});
         if (half <= 0.0)
             continue;
         a.end = timing.beatAt(edge + half);
         const double bStart = timing.beatAt(edge - half);
         b.offset -= half;
+        b.contentStart -= b.start - bStart;
         b.start = bStart;
     }
     sequence->crossfade(timing);

@@ -10,10 +10,10 @@ VYBN, a DAW in C++17 for Windows: a neumorphic UI drawn with Vulkan (GLFW window
 on miniaudio (WASAPI), CLAP and VST3 plugins hosted in sandboxed processes, and its own project format
 (`.vbp`, TOML). Instrument and audio tracks, return and group tracks, a tempo map with time
 signature changes, loop recording into take lanes with comping, markers, MIDI import and file drops,
-automation, sidechains, a piano roll, a step sequencer, a built-in synth and sampler, a library
-browser with downloads, audio warping (time-stretch and transpose, warp markers, tempo detection),
-freezing and bouncing tracks, a live analyzer (spectrum, stereo, loudness), undo for every edit, and
-exports to WAV, AIFF, FLAC, MP3 and MIDI.
+automation, sidechains, audio warping (clips that follow the tempo, warp markers, four stretch
+modes, transposition), freezing and bouncing tracks, a live analyzer (spectrum, stereo, loudness),
+a piano roll, a step sequencer, a built-in synth and sampler, a library browser with downloads, undo
+for every edit, and exports to WAV, AIFF, FLAC, MP3 and MIDI.
 
 ## Layout
 
@@ -90,7 +90,8 @@ Each module is a static library (`vybn_env`, `vybn_engine`, `vybn_ui`, `vybn_plu
   through atomics and lock-free queues.
 - `Track`'s fields are listed by hand in the history (`shellOf`, `sameTrackFields`, ...) and
   `ProjectStore::restore`; a `static_assert` on `sizeof(Track)` in `History.cpp` stops the build when
-  one is added, until those are updated. Project and device fields have the same lists
+  one is added, until those are updated; `Clip` has one too (its lists are in `History.cpp`,
+  `ProjectSession.cpp`, `AudioBridge::hashClips` and the file). Project and device fields have the same lists
   (`docs/architecture/daw.md`).
 - Saved identifiers don't change with the code: the `.vbp` format, its keys, device ids such as
   `vibin.synth` (from before the rename to VYBN).

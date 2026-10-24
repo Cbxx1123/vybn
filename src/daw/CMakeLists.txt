@@ -11,7 +11,7 @@ vybn_module(vybn_daw SOURCES
     model/Routing.cpp
     model/StepSequence.cpp
     model/Takes.cpp
-    model/Warping.cpp
+    model/Warp.cpp
     # Files and formats
     io/Autosave.cpp
     io/Json.cpp

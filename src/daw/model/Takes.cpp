@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <set>
 
+#include "daw/model/Warp.h"
+
 namespace daw {
 
 namespace {
@@ -22,7 +24,7 @@ bool canMerge(const Clip &a, const Clip &b, const audio::TempoMap &timing)
     if (a.take == kNoId || a.take != b.take || std::fabs(a.end() - b.start) > kEdge || a.audioFile != b.audioFile ||
         a.gain != b.gain || a.warp != b.warp)
         return false;
-    const double expected = clipFileSeconds(timing, a, b.start);
+    const double expected = clipSourceSeconds(a, timing, b.start);
     return !a.hasAudio() || std::fabs(b.offset - expected) < 1e-6;
 }
 
@@ -79,7 +81,7 @@ Clip sliceClip(const Clip &clip, double from, double to, const audio::TempoMap &
     const double into = from - clip.start;
     s.start = from;
     s.length = to - from;
-    s.offset = clipFileSeconds(timing, clip, from);
+    s.offset = clipSourceSeconds(clip, timing, from);
     s.fadeIn = into < 1e-9 ? clip.fadeIn : 0.0;
     s.fadeOut = to >= clip.end() - 1e-9 ? clip.fadeOut : 0.0;
     s.notes.clear();
@@ -166,7 +168,7 @@ bool compRange(Track &track, double from, double to, ObjectId take, const audio:
     // Already so: nothing to do (and nothing counted as an edit)
     for (const Clip &c : track.clips) {
         if (c.take == take && c.start <= from + kEdge && c.end() >= to - kEdge &&
-            std::fabs(c.offset - clipFileSeconds(timing, *source, c.start)) < 1e-6)
+            c.warp == source->warp && std::fabs(c.offset - clipSourceSeconds(*source, timing, c.start)) < 1e-6)
             return false;
     }
     std::vector<Clip> clips;

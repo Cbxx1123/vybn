@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "daw/model/NoteTools.h"
+#include "ExpressionSelfTest.h"
 #include "StepSelfTest.h"
 
 namespace tests {
@@ -364,6 +365,7 @@ int runNoteSelfTest()
     }
 
     c.failures += runStepChecks();
+    c.failures += runExpressionChecks();
 
     return c.finish("notes");
 }

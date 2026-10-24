@@ -398,6 +398,21 @@ void runVst3Checks(Checker &c)
             return p && p->value == 1.0;
         });
         c.check(shownBend, "and its controller shows it");
+        // Note expression: tuning against the note's id. Another key's (not sounding) never reaches
+        // it; its own takes it an octave up from where the bend left it
+        std::vector<plugin::Event> tune(1);
+        tune[0].kind = plugin::EventKind::NoteExpression;
+        tune[0].id = 70;
+        tune[0].expression = static_cast<uint32_t>(plugin::NoteExpression::Tuning);
+        tune[0].value = 12.0;
+        sine->process(s.block(false, tune));
+        const int untouched = crossings(*sine, s, 8);
+        tune[0].id = 69;
+        sine->process(s.block(false, tune));
+        const int octave = crossings(*sine, s, 8);
+        c.check(std::fabs(static_cast<double>(untouched) / bent - 1.0) < 0.03 && std::fabs(static_cast<double>(octave) / bent - 2.0) < 0.05,
+                "a note's tuning reaches it as note expression, by the note's id",
+                text("x%.3f, then ", static_cast<double>(untouched) / bent) + text("x%.3f", static_cast<double>(octave) / bent));
         std::vector<plugin::Event> off(1);
         off[0].kind = plugin::EventKind::AllNotesOff;
         sine->process(s.block(false, off));

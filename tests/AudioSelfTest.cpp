@@ -1249,6 +1249,103 @@ int runAudioSelfTest()
                 number("max difference %.2e", poolDifference) + ", " + std::to_string(markedWorkers.load()) + " marked workers");
     }
 
+    // Note expression: the note player sends a note's curve from its note-on, as it changes
+    {
+        struct Heard {
+            bool expression;
+            int key;
+            float value;
+            uint64_t sample;
+        };
+        // An instrument that takes timed events and writes down what it got
+        struct Listener : audio::Instrument {
+            Listener() : Instrument("Listener") {}
+            std::vector<Heard> heard;
+            uint64_t at = 0;
+            void noteOn(int key, float velocity) override { heard.push_back({false, key, velocity, at}); }
+            void noteOff(int key) override { heard.push_back({false, key, 0.0f, at}); }
+            void allNotesOff() override {}
+            bool timedEvents() const override { return true; }
+            void noteOnAt(int key, float velocity, uint32_t frame) override { heard.push_back({false, key, velocity, at + frame}); }
+            void noteOffAt(int key, uint32_t frame) override { heard.push_back({false, key, 0.0f, at + frame}); }
+            void noteExpressionAt(int key, int expression, float value, uint32_t frame) override
+            {
+                if (expression == kTuning)
+                    heard.push_back({true, key, value, at + frame});
+            }
+            void process(audio::AudioBlock &) override {}
+        };
+        auto owned = std::make_unique<Listener>();
+        Listener *listener = owned.get();
+        audio::NotePlayer player(std::move(owned));
+        constexpr double kRate = 48000.0;
+        constexpr uint32_t kBlock = 512;
+        player.prepare(kRate, kBlock);
+        // At 120 BPM a beat is 24000 samples: a glide over half a beat, a plain note, a held tuning
+        auto sequence = [](bool curves) {
+            auto s = std::make_unique<audio::NoteSequence>();
+            s->notes.push_back({0.1, 1.0, 60, 0.8f, 0, curves ? 1u : 0u});
+            s->notes.push_back({0.1, 1.0, 64, 0.8f, 0, 0});
+            s->notes.push_back({0.1, 1.0, 67, 0.8f, curves ? 1u : 0u, curves ? 1u : 0u});
+            audio::ExpressionCurve glide, held;
+            glide.points = {{0.0, 0.0f}, {0.5, 12.0f}};
+            held.points = {{0.0, 3.0f}};
+            if (curves) {
+                s->curves.push_back(glide);
+                s->curves.push_back(held);
+            }
+            return s;
+        };
+        player.setSequence(sequence(true));
+        std::vector<float> left(kBlock), right(kBlock);
+        float *channels[2] = {left.data(), right.data()};
+        audio::TransportState t;
+        t.playing = true;
+        t.sampleRate = kRate;
+        auto play = [&](int blocks) {
+            for (int b = 0; b < blocks; ++b) {
+                listener->at = t.position;
+                audio::AudioBlock block{channels, 2, kBlock, kRate, t};
+                player.process(block);
+                t.position += kBlock;
+            }
+        };
+        play(40); // to beat 0.85, past the glide's end
+        std::vector<Heard> glide, plain, held;
+        size_t onAt = listener->heard.size();
+        for (size_t i = 0; i < listener->heard.size(); ++i) {
+            const Heard &h = listener->heard[i];
+            if (!h.expression && h.key == 60 && h.value > 0.0f && onAt == listener->heard.size())
+                onAt = i;
+            if (h.expression)
+                (h.key == 60 ? glide : h.key == 64 ? plain : held).push_back(h);
+        }
+        const uint64_t start = 2400; // beat 0.1
+        bool rising = glide.size() > 2;
+        for (size_t i = 1; i < glide.size(); ++i)
+            rising = rising && glide[i].value > glide[i - 1].value && glide[i].sample - glide[i - 1].sample <= 64;
+        const bool afterOn = !glide.empty() && glide.front().sample == start && glide.front().value == 0.0f && onAt < listener->heard.size() &&
+                             std::find_if(listener->heard.begin(), listener->heard.end(), [](const Heard &h) { return h.expression; }) >
+                                 listener->heard.begin() + static_cast<std::ptrdiff_t>(onAt);
+        c.check(afterOn, "Note expression: a note's curve starts at its note-on, sent just after it");
+        c.check(rising && !glide.empty() && std::fabs(glide.back().value - 12.0f) < 1e-4f &&
+                    glide.size() > 12000 / 64,
+                "Note expression: a glide is sent at least every 64 frames while it moves, and not once it is still",
+                std::to_string(glide.size()) + " values, the last " + number("%.2f", glide.empty() ? 0.0f : glide.back().value));
+        c.check(plain.empty() && held.size() == 1 && held[0].value == 3.0f,
+                "Note expression: nothing for a note without curves, one value for a still one",
+                std::to_string(plain.size()) + " and " + std::to_string(held.size()));
+        // The curves go while the notes sound: their tuning goes back to rest
+        const size_t before = listener->heard.size();
+        player.setSequence(sequence(false));
+        play(1);
+        int rests = 0;
+        for (size_t i = before; i < listener->heard.size(); ++i)
+            rests += listener->heard[i].expression && listener->heard[i].value == 0.0f && listener->heard[i].key != 64 ? 1 : 0;
+        c.check(rests == 2, "Note expression: a curve taken away from a sounding note sends it back to rest",
+                std::to_string(rests) + " rests");
+    }
+
     c.failures += runWarpAudioChecks();
     c.failures += runAnalysisChecks();
     return c.finish("audio");

@@ -1,117 +1,88 @@
-#include "Warp.h"
+#include "audio/Warp.h"
 
 #include <algorithm>
 #include <cmath>
 
 namespace audio {
 
-namespace {
-
-constexpr double kTiny = 1e-9;
-
-}
-
-const char *warpModeName(WarpMode mode)
+double warpSeconds(const Warp &warp, double beat)
 {
-    switch (mode) {
-    case WarpMode::Off: return "off";
-    case WarpMode::Repitch: return "repitch";
-    case WarpMode::Beats: return "beats";
-    case WarpMode::Tonal: return "tonal";
-    }
-    return "off";
-}
-
-const char *warpModeLabel(WarpMode mode)
-{
-    switch (mode) {
-    case WarpMode::Off: return "Off";
-    case WarpMode::Repitch: return "Re-pitch";
-    case WarpMode::Beats: return "Beats";
-    case WarpMode::Tonal: return "Tonal";
-    }
-    return "Off";
-}
-
-bool warpModeFromName(const std::string &name, WarpMode &mode)
-{
-    for (WarpMode m : {WarpMode::Off, WarpMode::Repitch, WarpMode::Beats, WarpMode::Tonal}) {
-        if (name == warpModeName(m)) {
-            mode = m;
-            return true;
-        }
-    }
-    return false;
-}
-
-double ClipWarp::pitch() const
-{
-    if (mode != WarpMode::Beats && mode != WarpMode::Tonal)
-        return 1.0;
-    return std::pow(2.0, static_cast<double>(transpose) / 12.0);
-}
-
-double warpBeatAt(const ClipWarp &warp, double seconds)
-{
-    const double perSecond = warp.bpm / 60.0;
     const std::vector<WarpMarker> &m = warp.markers;
+    const double spb = warp.secondsPerBeat();
     if (m.empty())
-        return seconds * perSecond;
-    if (seconds <= m.front().seconds)
-        return m.front().beat + (seconds - m.front().seconds) * perSecond;
-    if (seconds >= m.back().seconds)
-        return m.back().beat + (seconds - m.back().seconds) * perSecond;
-    const auto it = std::upper_bound(m.begin(), m.end(), seconds, [](double s, const WarpMarker &k) { return s < k.seconds; });
-    const WarpMarker &b = *it;
-    const WarpMarker &a = *(it - 1);
-    const double t = (seconds - a.seconds) / std::max(kTiny, b.seconds - a.seconds);
-    return a.beat + t * (b.beat - a.beat);
-}
-
-double warpSecondsAt(const ClipWarp &warp, double beat)
-{
-    const double perBeat = 60.0 / warp.bpm;
-    const std::vector<WarpMarker> &m = warp.markers;
-    if (m.empty())
-        return beat * perBeat;
-    if (beat <= m.front().beat)
-        return m.front().seconds + (beat - m.front().beat) * perBeat;
+        return beat * spb;
+    if (m.size() == 1 || beat <= m.front().beat)
+        return m.front().seconds + (beat - m.front().beat) * spb;
     if (beat >= m.back().beat)
-        return m.back().seconds + (beat - m.back().beat) * perBeat;
-    const auto it = std::upper_bound(m.begin(), m.end(), beat, [](double b, const WarpMarker &k) { return b < k.beat; });
-    const WarpMarker &b = *it;
-    const WarpMarker &a = *(it - 1);
-    const double t = (beat - a.beat) / std::max(kTiny, b.beat - a.beat);
-    return a.seconds + t * (b.seconds - a.seconds);
+        return m.back().seconds + (beat - m.back().beat) * spb;
+    const auto next = std::upper_bound(m.begin(), m.end(), beat,
+                                       [](double b, const WarpMarker &k) { return b < k.beat; });
+    const WarpMarker &a = *(next - 1);
+    const WarpMarker &b = *next;
+    return a.seconds + (beat - a.beat) * (b.seconds - a.seconds) / (b.beat - a.beat);
 }
 
-double warpBpmAt(const ClipWarp &warp, double seconds)
+double warpBeat(const Warp &warp, double seconds)
 {
     const std::vector<WarpMarker> &m = warp.markers;
-    if (m.size() < 2 || seconds < m.front().seconds || seconds >= m.back().seconds)
-        return warp.bpm;
-    const auto it = std::upper_bound(m.begin(), m.end(), seconds, [](double s, const WarpMarker &k) { return s < k.seconds; });
-    const WarpMarker &b = *it;
-    const WarpMarker &a = *(it - 1);
-    return (b.beat - a.beat) / std::max(kTiny, b.seconds - a.seconds) * 60.0;
+    const double spb = warp.secondsPerBeat();
+    if (m.empty())
+        return seconds / spb;
+    if (m.size() == 1 || seconds <= m.front().seconds)
+        return m.front().beat + (seconds - m.front().seconds) / spb;
+    if (seconds >= m.back().seconds)
+        return m.back().beat + (seconds - m.back().seconds) / spb;
+    const auto next = std::upper_bound(m.begin(), m.end(), seconds,
+                                       [](double s, const WarpMarker &k) { return s < k.seconds; });
+    const WarpMarker &a = *(next - 1);
+    const WarpMarker &b = *next;
+    return a.beat + (seconds - a.seconds) * (b.beat - a.beat) / (b.seconds - a.seconds);
 }
 
-void tidyWarp(ClipWarp &warp)
+double warpSecondsPerBeat(const Warp &warp, double beat)
 {
-    if (!std::isfinite(warp.bpm))
-        warp.bpm = 120.0;
-    warp.bpm = std::clamp(warp.bpm, ClipWarp::kMinBpm, ClipWarp::kMaxBpm);
-    if (!std::isfinite(warp.transpose))
-        warp.transpose = 0.0f;
-    warp.transpose = std::clamp(warp.transpose, -ClipWarp::kMaxTranspose, ClipWarp::kMaxTranspose);
+    const std::vector<WarpMarker> &m = warp.markers;
+    if (m.size() < 2 || beat < m.front().beat || beat >= m.back().beat)
+        return warp.secondsPerBeat();
+    const int i = warpSegment(warp, beat);
+    const WarpMarker &a = m[static_cast<size_t>(i)];
+    const WarpMarker &b = m[static_cast<size_t>(i) + 1];
+    return (b.seconds - a.seconds) / (b.beat - a.beat);
+}
+
+int warpSegment(const Warp &warp, double beat)
+{
+    const std::vector<WarpMarker> &m = warp.markers;
+    const auto next = std::upper_bound(m.begin(), m.end(), beat,
+                                       [](double b, const WarpMarker &k) { return b < k.beat; });
+    return static_cast<int>(next - m.begin()) - 1;
+}
+
+void tidyWarp(Warp &warp)
+{
+    if (warp.bpm > 0.0)
+        warp.bpm = std::clamp(warp.bpm, kMinWarpBpm, kMaxWarpBpm);
+    else
+        warp.bpm = 0.0;
+    if (warp.bpm <= 0.0)
+        warp.on = false;
+    if (!std::isfinite(warp.pitch))
+        warp.pitch = 0.0;
+    warp.pitch = std::clamp(warp.pitch, -kMaxWarpPitch, kMaxWarpPitch);
+    warp.envelope = std::clamp(std::isfinite(warp.envelope) ? warp.envelope : 100.0f, 0.0f, 100.0f);
+    warp.grain = std::clamp(std::isfinite(warp.grain) ? warp.grain : 50.0f, 0.0f, 100.0f);
     std::vector<WarpMarker> &m = warp.markers;
-    m.erase(std::remove_if(m.begin(), m.end(), [](const WarpMarker &k) { return !std::isfinite(k.seconds) || !std::isfinite(k.beat); }),
+    m.erase(std::remove_if(m.begin(), m.end(),
+                           [](const WarpMarker &k) { return !std::isfinite(k.seconds) || !std::isfinite(k.beat); }),
             m.end());
-    std::stable_sort(m.begin(), m.end(), [](const WarpMarker &a, const WarpMarker &b) { return a.seconds < b.seconds; });
+    std::stable_sort(m.begin(), m.end(), [](const WarpMarker &a, const WarpMarker &b) { return a.beat < b.beat; });
+    // Each kept marker comes later than the one before in both (an even stretch can't run backwards)
     std::vector<WarpMarker> kept;
-    kept.reserve(m.size());
+    kept.reserve(std::min(m.size(), kMaxWarpMarkers));
     for (const WarpMarker &k : m) {
-        if (!kept.empty() && (k.seconds <= kept.back().seconds + 1e-6 || k.beat <= kept.back().beat + 1e-6))
+        if (kept.size() == kMaxWarpMarkers)
+            break;
+        if (!kept.empty() && (k.beat <= kept.back().beat + 1e-9 || k.seconds <= kept.back().seconds + 1e-9))
             continue;
         kept.push_back(k);
     }

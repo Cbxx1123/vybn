@@ -27,6 +27,23 @@ float ControlCurve::valueAt(double beat) const
     return a.value + (b.value - a.value) * static_cast<float>((beat - a.beat) / (b.beat - a.beat));
 }
 
+float ExpressionCurve::valueAt(double beat) const
+{
+    if (points.empty())
+        return 0.0f;
+    if (beat <= points.front().beat)
+        return points.front().value;
+    if (beat >= points.back().beat)
+        return points.back().value;
+    const auto next = std::upper_bound(points.begin(), points.end(), beat,
+                                       [](double b, const ControlCurve::Point &p) { return b < p.beat; });
+    const ControlCurve::Point &b = *next;
+    const ControlCurve::Point &a = *(next - 1);
+    if (b.beat <= a.beat)
+        return a.value;
+    return a.value + (b.value - a.value) * static_cast<float>((beat - a.beat) / (b.beat - a.beat));
+}
+
 NotePlayer::NotePlayer(std::unique_ptr<Instrument> instrument)
     : AudioProcessor(instrument->name()), instrument_(std::move(instrument))
 {
@@ -126,6 +143,50 @@ void NotePlayer::playControls(double beat)
     }
 }
 
+void NotePlayer::relink()
+{
+    for (size_t i = 0; i < soundingCount_; ++i) {
+        Sounding &s = sounding_[i];
+        s.note = nullptr;
+        if (current_) {
+            const auto &notes = current_->notes;
+            auto it = std::lower_bound(notes.begin(), notes.end(), s.start,
+                                       [](const SequencedNote &n, double beat) { return n.start < beat; });
+            for (; it != notes.end() && it->start == s.start && !s.note; ++it)
+                s.note = it->key == s.key ? &*it : nullptr;
+        }
+        // An expression it had that the note no longer has goes back to rest
+        for (size_t e = 0; e < s.sent.size(); ++e) {
+            bool kept = false;
+            for (uint32_t c = 0; s.note && c < s.note->curveCount; ++c)
+                kept = kept || current_->curves[s.note->firstCurve + c].expression == static_cast<int>(e);
+            if (!kept && s.sent[e] != kUnsent)
+                s.sent[e] = kRelease;
+        }
+    }
+}
+
+size_t NotePlayer::express(const SequencedNote &note, Sent &sent, uint32_t from, uint32_t to, const TransportState &t, size_t count)
+{
+    for (uint32_t c = 0; current_ && c < note.curveCount; ++c) {
+        const size_t index = note.firstCurve + c;
+        if (index >= current_->curves.size())
+            break;
+        const ExpressionCurve &curve = current_->curves[index];
+        if (curve.expression < 0 || curve.expression >= Instrument::kExpressions)
+            continue;
+        float &last = sent[static_cast<size_t>(curve.expression)];
+        for (uint32_t f = from; f < to && count < kMaxEvents; f += kExpressionFrames) {
+            const float value = curve.valueAt(t.beatAt(f) - note.start);
+            if (value == last)
+                continue;
+            last = value;
+            events_[count++] = {f, false, note.key, value, curve.expression};
+        }
+    }
+    return count;
+}
+
 void NotePlayer::render(AudioBlock &block, uint32_t from, uint32_t to)
 {
     if (to <= from)
@@ -186,6 +247,7 @@ void NotePlayer::process(AudioBlock &block)
         if (current_)
             retired_.push(current_);
         current_ = next;
+        relink();
     }
 
     instrument_->automateBlock(block.transport);
@@ -232,11 +294,21 @@ void NotePlayer::process(AudioBlock &block)
     };
 
     size_t count = 0;
-    // Sounding notes that end in this block
+    // Sounding notes: their expression through the block (up to their end), and those that end in it
     for (size_t i = 0; i < soundingCount_;) {
-        if (sounding_[i].end < b1) {
+        Sounding &s = sounding_[i];
+        const bool ends = s.end < b1;
+        for (size_t e = 0; e < s.sent.size(); ++e) {
+            if (s.sent[e] == kRelease && count < kMaxEvents) {
+                events_[count++] = {0, false, s.key, 0.0f, static_cast<int>(e)};
+                s.sent[e] = kUnsent;
+            }
+        }
+        if (s.note)
+            count = express(*s.note, s.sent, 0, ends ? frameOf(s.end) : block.frames, t, count);
+        if (ends) {
             if (count < kMaxEvents)
-                events_[count++] = {frameOf(sounding_[i].end), false, sounding_[i].key, 0.0f};
+                events_[count++] = {frameOf(s.end), false, s.key, 0.0f, -1};
             sounding_[i] = sounding_[--soundingCount_];
         } else {
             ++i;
@@ -250,27 +322,39 @@ void NotePlayer::process(AudioBlock &block)
         for (; it != notes.end() && it->start < b1 && count + 2 <= kMaxEvents; ++it) {
             if (it->end <= it->start)
                 continue;
+            const uint32_t on = frameOf(it->start);
             if (it->end < b1) {
-                events_[count++] = {frameOf(it->start), true, it->key, it->velocity};
-                events_[count++] = {std::max(frameOf(it->start), frameOf(it->end)), false, it->key, 0.0f};
+                const uint32_t off = std::max(on, frameOf(it->end));
+                events_[count++] = {on, true, it->key, it->velocity, -1};
+                events_[count++] = {off, false, it->key, 0.0f, -1};
+                Sent sent;
+                sent.fill(kUnsent);
+                count = express(*it, sent, on, off, t, count);
             } else if (soundingCount_ < kMaxSounding) {
-                events_[count++] = {frameOf(it->start), true, it->key, it->velocity};
-                sounding_[soundingCount_++] = {it->key, it->end};
+                events_[count++] = {on, true, it->key, it->velocity, -1};
+                Sounding &s = sounding_[soundingCount_++];
+                s = {it->key, it->start, it->end, &*it, {}};
+                s.sent.fill(kUnsent);
+                count = express(*it, s.sent, on, block.frames, t, count);
             }
         }
     }
 
-    // In frame order; at the same frame, endings before starts, so a repeated key restarts
-    std::stable_sort(events_.begin(), events_.begin() + static_cast<std::ptrdiff_t>(count), [](const Event &a, const Event &b) {
+    // In frame order; at the same frame, endings before starts, so a repeated key restarts, and
+    // a note's expression after its start
+    auto rank = [](const Event &e) { return e.expression >= 0 ? 2 : e.on ? 1 : 0; };
+    std::stable_sort(events_.begin(), events_.begin() + static_cast<std::ptrdiff_t>(count), [&rank](const Event &a, const Event &b) {
         if (a.frame != b.frame)
             return a.frame < b.frame;
-        return !a.on && b.on;
+        return rank(a) < rank(b);
     });
 
     // While the sequence's pedal is down its note offs wait for it to lift
     if (pedal_) {
         for (size_t i = 0; i < count; ++i) {
             Event &e = events_[i];
+            if (e.expression >= 0)
+                continue;
             if (!e.on && e.key >= 0 && e.key < 128) {
                 pedalled_.set(static_cast<size_t>(e.key));
                 e.key = -1;
@@ -286,7 +370,9 @@ void NotePlayer::process(AudioBlock &block)
             const Event &e = events_[i];
             if (e.key < 0)
                 continue;
-            if (e.on)
+            if (e.expression >= 0)
+                instrument_->noteExpressionAt(e.key, e.expression, e.velocity, e.frame);
+            else if (e.on)
                 instrument_->noteOnAt(e.key, e.velocity, e.frame);
             else
                 instrument_->noteOffAt(e.key, e.frame);
@@ -302,7 +388,9 @@ void NotePlayer::process(AudioBlock &block)
             continue;
         render(block, cursor, e.frame);
         cursor = std::max(cursor, e.frame);
-        if (e.on)
+        if (e.expression >= 0)
+            instrument_->noteExpressionAt(e.key, e.expression, e.velocity, e.frame);
+        else if (e.on)
             instrument_->noteOn(e.key, e.velocity);
         else
             instrument_->noteOff(e.key);

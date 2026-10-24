@@ -66,11 +66,17 @@ void mixSound(uint64_t &h, const Track &t)
         mixValue(h, c.gain);
         mixValue(h, c.fadeIn);
         mixValue(h, c.fadeOut);
-        mixValue(h, c.warp.mode);
-        if (c.warped()) {
-            mixValue(h, c.warp.bpm);
-            mixValue(h, c.warp.transpose);
-            for (const audio::WarpMarker &m : c.warp.markers) {
+        const audio::Warp &w = c.warp;
+        mixValue(h, w.on);
+        if (w.on) {
+            mixValue(h, w.mode);
+            mixValue(h, w.bpm);
+            mixValue(h, w.pitch);
+            mixValue(h, w.preserve);
+            mixValue(h, w.loop);
+            mixValue(h, w.envelope);
+            mixValue(h, w.grain);
+            for (const audio::WarpMarker &m : w.markers) {
                 mixValue(h, m.seconds);
                 mixValue(h, m.beat);
             }

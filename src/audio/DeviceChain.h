@@ -146,6 +146,7 @@ public:
     void allNotesOff() override;
     void controlChange(int controller, float value) override;
     void controlChangeAt(int controller, float value, uint32_t frame) override;
+    void noteExpressionAt(int key, int expression, float value, uint32_t frame) override;
 
 private:
     std::atomic<const DeviceChain *> chain_{nullptr};

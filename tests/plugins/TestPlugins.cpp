@@ -9,7 +9,8 @@
 //   changes while inactive), for the delay compensation checks.
 //   It has a window of its own (CLAP's floating win32 interface): clicking its left half takes
 //   1 dB off, its right half adds 1 dB, sent to the host as a gesture, as a real editor would.
-// - vybn.test.sine: an instrument: sine voices for CLAP or MIDI notes, Level parameter.
+// - vybn.test.sine: an instrument: sine voices for CLAP or MIDI notes, Level parameter; a note's
+//   tuning expression (by its note id) bends its voice.
 // - vybn.test.duck: a stereo effect with a stereo sidechain input; its output is its input times (1 - the key's peak in the block).
 // - vybn.test.crashinit: crashes when it is initialised; the scan lists it, its sidechain probe dies in a host of its own.
 // - vybn.test.faulty: a stereo pass-through whose Fault parameter makes it misbehave on the next
@@ -413,8 +414,10 @@ struct Gain : Base {
 struct Sine : Base {
     struct Voice {
         int key = -1;
+        int32_t id = -1; // the host's note id
         double phase = 0.0;
         double step = 0.0;
+        double base = 0.0; // the step untuned
         float level = 0.0f;
         float release = 1.0f; // 1 while held, falling to 0 once released
         bool held = false;
@@ -445,7 +448,7 @@ struct Sine : Base {
             level = std::fmin(1.0, std::fmax(0.0, value));
     }
 
-    void noteOn(int key, double velocity)
+    void noteOn(int key, double velocity, int32_t id = -1)
     {
         Voice *v = &voices[0];
         for (Voice &candidate : voices)
@@ -454,8 +457,9 @@ struct Sine : Base {
                 break;
             }
         v->key = key;
+        v->id = id;
         v->phase = 0.0;
-        v->step = 2.0 * kPi * 440.0 * std::pow(2.0, (key - 69) / 12.0) / sampleRate;
+        v->step = v->base = 2.0 * kPi * 440.0 * std::pow(2.0, (key - 69) / 12.0) / sampleRate;
         v->level = static_cast<float>(velocity);
         v->release = 1.0f;
         v->held = true;
@@ -476,9 +480,16 @@ struct Sine : Base {
             // A wildcard note off (key -1) is ignored, as Surge XT does: the host has to release
             // its notes by key
             if (e->type == CLAP_EVENT_NOTE_ON)
-                noteOn(n->key, n->velocity);
+                noteOn(n->key, n->velocity, n->note_id);
             else if (n->key >= 0)
                 noteOff(n->key);
+        } else if (e->type == CLAP_EVENT_NOTE_EXPRESSION) {
+            const auto *x = reinterpret_cast<const clap_event_note_expression *>(e);
+            if (x->expression_id != CLAP_NOTE_EXPRESSION_TUNING)
+                return;
+            for (Voice &v : voices)
+                if (v.key >= 0 && (x->note_id >= 0 ? v.id == x->note_id : v.key == x->key))
+                    v.step = v.base * std::pow(2.0, x->value / 12.0);
         } else if (e->type == CLAP_EVENT_MIDI) {
             const auto *m = reinterpret_cast<const clap_event_midi *>(e);
             const int status = m->data[0] & 0xF0;

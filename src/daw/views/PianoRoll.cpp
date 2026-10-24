@@ -28,6 +28,12 @@ constexpr float kEdge = 24.0f;      // dragging this close to an edge scrolls
 constexpr float kDragStart = 4.0f;  // pixels the mouse goes before a press becomes a drag
 constexpr double kMinLength = 1.0 / 64.0;
 constexpr double kLeadBeats = 2.0;  // the view can show this much before the clip's start
+
+// Semitones of tuning to the lane's 0-1, which shows -kTuningRange to +kTuningRange
+float tuneUnit(float semitones)
+{
+    return std::clamp((semitones + PianoRollView::kTuningRange) / (2.0f * PianoRollView::kTuningRange), 0.0f, 1.0f);
+}
 constexpr double kTailBeats = 8.0;  // and this much after its end
 
 const double kGridBeats[] = {0.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125, 0.0625};
@@ -806,13 +812,17 @@ std::string PianoRollView::hint() const
         return "From \"" + name + "\"" + (g.sameTrack ? "" : " on " + (t ? t->name : std::string())) +
                ": double-click to edit that clip";
     }
+    if (lane_.contains(mouse_) && laneController_ == kTuningLane)
+        return tool_ == Tool::Erase ? "Drag across notes to clear their tuning"
+                                    : "Drag across notes to bend them (with a selection, only those)  /  drag a handle to move a "
+                                      "note's curve, double-click to reset it  /  Alt-drag draws a line  /  Ctrl: free of semitones";
     if (lane_.contains(mouse_) && laneController_ != kVelocityLane)
         return tool_ == Tool::Erase ? "Drag across points to erase them"
                                     : "Drag to draw  /  drag a point to move it, double-click to delete it  /  Alt-drag draws a line";
     if (lane_.contains(mouse_))
         return "Drag a handle for its velocity  /  drag across to paint  /  Alt-drag draws a ramp";
     if (laneKeys_.contains(mouse_))
-        return "Choose what the lane shows: velocity or a controller";
+        return "Choose what the lane shows: velocity, the notes' tuning or a controller";
     if (loopBand_.contains(mouse_))
         return "Drag to set the loop  /  click it to loop or not  /  L loops the selection";
     if (ruler_.contains(mouse_))
@@ -1385,6 +1395,93 @@ void PianoRollView::updateDrag(const Input &input)
         shownVelocity_ = value;
         break;
     }
+    case Drag::TunePaint: {
+        if (!c || !sameCount)
+            break;
+        // The notes the stroke passed over since last frame take its height, on the grid between
+        // where the mouse was and where it is; with a selection, only selected notes
+        Clip *w = editClip();
+        const double beat = std::clamp(xBeat(input.mouse.x), 0.0, c->length);
+        const float value = yTune(input.mouse.y, free || !snapping_);
+        const double step = free || !snapping_ ? 1.0 / 32.0 : std::max(snap(), 1.0 / 64.0);
+        const double a = std::min(paintBeat_, beat), b = std::max(paintBeat_, beat);
+        auto along = [&](double g) {
+            return b > a ? paintValue_ + (value - paintValue_) * static_cast<float>((g - paintBeat_) / (beat - paintBeat_)) : value;
+        };
+        const bool onlySelected = daw::selectedCount(before_) > 0;
+        for (size_t i = 0; i < w->notes.size(); ++i) {
+            Note &n = w->notes[i];
+            const double from = std::max(a, n.start), to = std::min(b, n.start + n.length);
+            if (!tuneTarget(before_[i], onlySelected) || to < from - 1e-9)
+                continue;
+            bool any = false;
+            for (double g = std::ceil(from / step - 1e-9) * step; g <= to + 1e-9; g += step) {
+                setCurvePoint(n, Expression::Tuning, g - n.start, along(g), step * 0.49);
+                any = true;
+            }
+            if (!any) // a note shorter than the grid, or a stroke between two of its lines
+                setCurvePoint(n, Expression::Tuning, from - n.start, along(from), 0.0);
+        }
+        paintBeat_ = beat;
+        paintValue_ = value;
+        shownVelocity_ = tuneUnit(value);
+        break;
+    }
+    case Drag::TuneLine: {
+        if (!c || !sameCount)
+            break;
+        // A straight line from the press to the mouse, over the notes as they were
+        Clip *w = editClip();
+        const double from = std::clamp(snapRound(pressBeat_, free), 0.0, c->length);
+        const double to = std::clamp(snapRound(xBeat(input.mouse.x), free), 0.0, c->length);
+        const float value = yTune(input.mouse.y, free || !snapping_);
+        const double a = std::min(from, to), b = std::max(from, to);
+        auto along = [&](double g) { return b > a ? paintValue_ + (value - paintValue_) * static_cast<float>((g - from) / (to - from)) : value; };
+        const bool onlySelected = daw::selectedCount(before_) > 0;
+        for (size_t i = 0; i < w->notes.size(); ++i) {
+            Note &n = w->notes[i];
+            n.expression = before_[i].expression;
+            const double s = std::max(a, n.start), e = std::min(b, n.start + n.length);
+            if (tuneTarget(before_[i], onlySelected) && e >= s - 1e-9 && b > a)
+                curveLine(n, Expression::Tuning, s - n.start, along(s), e - n.start, along(e));
+        }
+        shownVelocity_ = tuneUnit(value);
+        break;
+    }
+    case Drag::TuneShift: {
+        if (!sameCount || anchor_ < 0 || anchor_ >= static_cast<int>(before_.size()))
+            break;
+        // The note's whole curve moves so its start is at the mouse; the selection follows by as much
+        const Note &pressed = before_[static_cast<size_t>(anchor_)];
+        const float v = yTune(input.mouse.y, free || !snapping_);
+        const float by = v - pressed.expressionAt(Expression::Tuning, 0.0);
+        Clip *w = editClip();
+        for (size_t i = 0; i < w->notes.size(); ++i) {
+            if (static_cast<int>(i) != anchor_ && !(pressed.selected && before_[i].selected))
+                continue;
+            w->notes[i].expression = before_[i].expression;
+            shiftCurve(w->notes[i], Expression::Tuning, by);
+        }
+        shownVelocity_ = tuneUnit(v);
+        break;
+    }
+    case Drag::TuneErase: {
+        Clip *w = c ? editClip() : nullptr;
+        if (!w)
+            break;
+        const double beat = xBeat(input.mouse.x);
+        const double pad = 4.0 / pixelsPerBeat_;
+        const double a = std::min(paintBeat_, beat) - pad, b = std::max(paintBeat_, beat) + pad;
+        const bool onlySelected = daw::selectedCount(w->notes) > 0;
+        for (Note &n : w->notes) {
+            if (tuneTarget(n, onlySelected) && n.curve(Expression::Tuning) && n.start <= b && n.start + n.length >= a) {
+                n.setCurve(Expression::Tuning, {});
+                ++anchor_;
+            }
+        }
+        paintBeat_ = beat;
+        break;
+    }
     case Drag::CcErase: {
         Clip *w = c ? editClip() : nullptr;
         ControlLane *lane = w ? findLane(w->controls, laneController_) : nullptr;
@@ -1464,6 +1561,25 @@ void PianoRollView::finishDrag()
             dropEmptyLanes(w->controls);
         }
         break;
+    case Drag::TunePaint:
+    case Drag::TuneLine:
+    case Drag::TuneShift:
+    case Drag::TuneErase:
+        if (c) {
+            if (drag_ == Drag::TuneErase) {
+                if (anchor_ > 0)
+                    message_ = "Cleared the tuning of " + plural(anchor_, "note");
+                break;
+            }
+            // Thinned, and curves left at no bend at all go
+            Clip *w = editClip();
+            for (size_t i = 0; i < w->notes.size(); ++i) {
+                if (i >= before_.size() || w->notes[i].expression != before_[i].expression)
+                    tidyCurve(w->notes[i], Expression::Tuning, 0.02f);
+            }
+            message_ = "Edited " + laneName();
+        }
+        break;
     default:
         break;
     }
@@ -1503,6 +1619,8 @@ void PianoRollView::hover(const Input &input)
     hoverPoint_ = -1;
     if (velocityLane_ && laneController_ == kVelocityLane)
         hoverHandle_ = handleAt(input.mouse);
+    else if (velocityLane_ && laneController_ == kTuningLane)
+        hoverHandle_ = tuneHandleAt(input.mouse);
     else if (velocityLane_)
         hoverPoint_ = pointAt(input.mouse);
 }
@@ -1570,7 +1688,25 @@ void PianoRollView::handleInput(const Input &input)
         drag_ = Drag::None;
 
     hover(input);
-    if (laneController_ != kVelocityLane) {
+    if (laneController_ == kTuningLane) {
+        // A note's tuning: at its start for a handle, else where the mouse is along the note under it
+        // (a selected one first)
+        if (drag_ == Drag::None) {
+            shownVelocity_ = -1.0f;
+            if (c && hoverHandle_ >= 0 && hoverHandle_ < static_cast<int>(c->notes.size())) {
+                shownVelocity_ = tuneUnit(c->notes[static_cast<size_t>(hoverHandle_)].expressionAt(Expression::Tuning, 0.0));
+            } else if (c && lane_.contains(input.mouse)) {
+                const double beat = xBeat(input.mouse.x);
+                const Note *under = nullptr;
+                for (const Note &n : c->notes) {
+                    if (beat >= n.start && beat < n.start + n.length && (!under || (n.selected && !under->selected)))
+                        under = &n;
+                }
+                if (under)
+                    shownVelocity_ = tuneUnit(under->expressionAt(Expression::Tuning, beat - under->start));
+            }
+        }
+    } else if (laneController_ != kVelocityLane) {
         // A controller's value: at the point under the mouse, or where the mouse is in time
         const ControlLane *lane = shownLane();
         if (drag_ == Drag::None) {
@@ -1629,6 +1765,8 @@ void PianoRollView::handleInput(const Input &input)
             startDrag(Drag::Mini, input, -1);
         } else if (c && velocityLane_ && laneKeys_.contains(input.mouse)) {
             laneMenuPressed_ = true; // opens on the release, so the release can't pick from it
+        } else if (c && lane_.contains(input.mouse) && laneController_ == kTuningLane) {
+            pressTuning(input);
         } else if (c && lane_.contains(input.mouse) && laneController_ != kVelocityLane) {
             pressLane(input);
         } else if (c && lane_.contains(input.mouse)) {
@@ -1668,11 +1806,15 @@ void PianoRollView::handleInput(const Input &input)
     case Drag::ClipStart:
     case Drag::ClipEnd: cursor = Cursor::ResizeX; break;
     case Drag::Velocity:
+    case Drag::TuneShift:
     case Drag::Divider: cursor = Cursor::ResizeY; break;
     case Drag::Point: cursor = Cursor::Move; break;
     case Drag::CcPaint:
     case Drag::CcLine:
-    case Drag::CcErase: cursor = Cursor::Crosshair; break;
+    case Drag::CcErase:
+    case Drag::TunePaint:
+    case Drag::TuneLine:
+    case Drag::TuneErase: cursor = Cursor::Crosshair; break;
     case Drag::Keys:
     case Drag::Ruler:
     case Drag::Mini: cursor = Cursor::Hand; break;
@@ -1721,6 +1863,8 @@ void PianoRollView::handleInput(const Input &input)
 
 std::string PianoRollView::laneName() const
 {
+    if (laneController_ == kTuningLane)
+        return expressionName(Expression::Tuning);
     return laneController_ == kVelocityLane ? std::string("Velocity") : controllerName(laneController_);
 }
 
@@ -1740,6 +1884,19 @@ void PianoRollView::clearLane()
 {
     if (!clip() || laneController_ == kVelocityLane)
         return;
+    if (laneController_ == kTuningLane) {
+        Clip *c = editClip();
+        const bool onlySelected = daw::selectedCount(c->notes) > 0;
+        int cleared = 0;
+        for (Note &n : c->notes) {
+            if (tuneTarget(n, onlySelected) && n.curve(Expression::Tuning)) {
+                n.setCurve(Expression::Tuning, {});
+                ++cleared;
+            }
+        }
+        message_ = "Cleared the tuning of " + plural(cleared, "note");
+        return;
+    }
     Clip *c = editClip();
     c->controls.erase(std::remove_if(c->controls.begin(), c->controls.end(),
                                      [this](const ControlLane &l) { return l.controller == laneController_; }),
@@ -1756,6 +1913,8 @@ std::string PianoRollView::valueText(float value) const
 {
     if (laneController_ == kVelocityLane)
         return format("%.0f", std::round(value * 127.0f));
+    if (laneController_ == kTuningLane)
+        return format("%+.1f st", value * 2.0f * kTuningRange - kTuningRange);
     if (laneController_ == kPitchBend)
         return format("%+.0f", std::round((value - 0.5f) * 16383.0f));
     if (laneController_ == 64)
@@ -1821,6 +1980,129 @@ void PianoRollView::pressLane(const Input &input)
     setControlPoint(laneFor(c->controls, laneController_), snapRound(paintBeat_, freeOf(input) || !snapping_), paintValue_,
                     std::max(snap(), 1.0 / 64.0) * 0.49);
     shownVelocity_ = paintValue_;
+}
+
+// --- The tuning lane --------------------------------------------------------------------
+
+float PianoRollView::tuneY(float semitones) const { return velocityY(tuneUnit(semitones)); }
+
+float PianoRollView::yTune(float y, bool free) const
+{
+    const float semitones = yValue(y) * 2.0f * kTuningRange - kTuningRange;
+    return free ? semitones : std::round(semitones);
+}
+
+bool PianoRollView::tuneTarget(const Note &note, bool onlySelected) const { return !onlySelected || note.selected; }
+
+int PianoRollView::tuneHandleAt(Vec2 p) const
+{
+    const Clip *c = clip();
+    if (!c || !lane_.contains(p))
+        return -1;
+    int best = -1;
+    float distance = 9.0f;
+    for (size_t i = 0; i < c->notes.size(); ++i) {
+        const Note &n = c->notes[i];
+        const float x = beatX(n.start) + 4.0f;
+        const float d = std::max(std::fabs(p.x - x), std::fabs(p.y - tuneY(n.expressionAt(Expression::Tuning, 0.0))) * 0.6f);
+        // Selected notes win ties, as velocity handles do
+        if (d < distance || (d <= distance + 0.01f && best >= 0 && n.selected && !c->notes[static_cast<size_t>(best)].selected)) {
+            distance = d;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
+void PianoRollView::pressTuning(const Input &input)
+{
+    Clip *c = editClip();
+    const bool alt = (input.mods & engine::ModAlt) != 0;
+    const bool quick = lastPress_ >= 0.0 && input.time - lastPress_ < 0.3;
+    lastPress_ = input.time;
+    lastPressNote_ = -1;
+    if (tool_ == Tool::Erase) {
+        startDrag(Drag::TuneErase, input, 0);
+        anchor_ = 0;
+        paintBeat_ = xBeat(input.mouse.x);
+        return;
+    }
+    if (hoverHandle_ >= 0 && hoverHandle_ < static_cast<int>(c->notes.size()) && !alt) {
+        if (quick && hoverHandle_ == lastPressGhost_) {
+            // A double-click on a handle takes the note's tuning away
+            c->notes[static_cast<size_t>(hoverHandle_)].setCurve(Expression::Tuning, {});
+            lastPressGhost_ = -1;
+            message_ = "Reset a note's tuning";
+            return;
+        }
+        lastPressGhost_ = hoverHandle_;
+        startDrag(Drag::TuneShift, input, hoverHandle_);
+        return;
+    }
+    lastPressGhost_ = -1;
+    startDrag(alt ? Drag::TuneLine : Drag::TunePaint, input, -1);
+    paintBeat_ = std::clamp(xBeat(input.mouse.x), 0.0, c->length);
+    paintValue_ = yTune(input.mouse.y, freeOf(input) || !snapping_);
+    shownVelocity_ = tuneUnit(paintValue_);
+}
+
+void PianoRollView::drawTuning(DrawList &list, const Theme &theme, const Clip &c) const
+{
+    // No bend, where notes rest
+    list.add(theme.ink({lane_.x, tuneY(0.0f), lane_.w, 1.0f}, Shape::Rounded, TextTone::Secondary, true, 0.35f));
+    const bool any = std::any_of(c.notes.begin(), c.notes.end(), [](const Note &n) { return n.curve(Expression::Tuning) != nullptr; });
+    if (!any && drag_ == Drag::None)
+        list.add(theme.text("Drag across notes to bend them  /  Alt-drag for a line", lane_, TextStyle::Caption, TextTone::Muted,
+                            TextAlign::Center));
+    const bool small = lane_.h < 50.0f;
+    // Each note's curve across its own span, the selection's drawn last so a chord's stay on top
+    std::vector<float> values;
+    for (int pass = 0; pass < 2; ++pass) {
+        for (size_t i = 0; i < c.notes.size(); ++i) {
+            const Note &n = c.notes[i];
+            if (n.selected != (pass == 1))
+                continue;
+            const float x = beatX(n.start) + 4.0f;
+            const float x0 = std::max(lane_.x, beatX(n.start)), x1 = std::min(lane_.x + lane_.w, beatX(n.start + n.length));
+            if (x1 < lane_.x - 8.0f || x0 > lane_.x + lane_.w + 8.0f)
+                continue;
+            const bool hot = static_cast<int>(i) == hoverHandle_ || static_cast<int>(i) == hovered_ ||
+                             (drag_ == Drag::TuneShift && static_cast<int>(i) == anchor_);
+            const float alpha = n.muted ? 0.3f : n.selected || hot ? 1.0f : 0.45f;
+            const NoteCurve *curve = n.curve(Expression::Tuning);
+            values.clear();
+            for (float px = x0; curve && px < x1; px += 1.0f)
+                values.push_back(curve->valueAt(xBeat(px) - n.start));
+            if (values.size() >= 2) {
+                const Rect area{x0, tuneY(kTuningRange), static_cast<float>(values.size() - 1), tuneY(-kTuningRange) - tuneY(kTuningRange)};
+                ui::Plot line = theme.accentPlot(area, ui::PlotMode::Line, 0.9f * alpha);
+                line.values = values.data();
+                line.count = static_cast<uint32_t>(values.size());
+                line.low = -kTuningRange;
+                line.high = kTuningRange;
+                list.add(line);
+            } else if (x1 > x0) {
+                list.add(theme.accent({x0, tuneY(0.0f) - 1.0f, x1 - x0, 2.0f}, Shape::Pill, alpha * 0.35f));
+            }
+            // The handle at its start, at its tuning there: a small dot for a plain note
+            const float y = tuneY(n.expressionAt(Expression::Tuning, 0.0));
+            if (!curve && !hot && !n.selected) {
+                list.add(theme.accent({x - 2.5f, y - 2.5f, 5.0f, 5.0f}, Shape::Circle, alpha * 0.7f));
+                continue;
+            }
+            const float d = hot ? 13.0f : small ? 9.0f : 11.0f;
+            list.add(theme.surface({x - d * 0.5f, y - d * 0.5f, d, d}, Shape::Circle, Elevation::Raised, hot ? 0.7f : 0.4f, Finish::Convex));
+            list.add(theme.accent({x - d * 0.5f + 2.5f, y - d * 0.5f + 2.5f, d - 5.0f, d - 5.0f}, Shape::Circle, alpha));
+        }
+    }
+    // The line being drawn
+    if (drag_ == Drag::TuneLine && dragMoved_) {
+        const float x0 = pressMouse_.x, y0 = tuneY(paintValue_);
+        const float x1 = dragMouse_.x, y1 = velocityY(shownVelocity_);
+        const float length = std::max(1.0f, std::hypot(x1 - x0, y1 - y0));
+        for (float t = 0.0f; t <= length; t += 5.0f)
+            list.add(theme.accent({x0 + (x1 - x0) * t / length - 1.5f, y0 + (y1 - y0) * t / length - 1.5f, 3.0f, 3.0f}, Shape::Circle, 0.8f));
+    }
 }
 
 void PianoRollView::drawControls(DrawList &list, const Theme &theme, const Clip &c) const
@@ -1916,7 +2198,7 @@ void PianoRollView::setView(const ViewSettings &v)
     ghosts_ = v.ghosts;
     fold_ = v.fold;
     velocityLane_ = v.laneShown;
-    laneController_ = v.lane >= kVelocityLane && v.lane <= kPitchBend ? v.lane : kVelocityLane;
+    laneController_ = v.lane >= kTuningLane && v.lane <= kPitchBend ? v.lane : kVelocityLane;
     laneHeight_ = std::clamp(v.laneHeight, 30.0f, 400.0f);
     auditionOn_ = v.audition;
     follow_ = v.follow;
@@ -2017,7 +2299,10 @@ std::string PianoRollView::readout() const
     case Drag::Ramp: return format("Velocity %.0f", std::round(shownVelocity_ * 127.0f));
     case Drag::Point:
     case Drag::CcPaint:
-    case Drag::CcLine: return laneName() + "  " + valueText(shownVelocity_);
+    case Drag::CcLine:
+    case Drag::TunePaint:
+    case Drag::TuneLine:
+    case Drag::TuneShift: return laneName() + "  " + valueText(shownVelocity_);
     case Drag::Loop:
     case Drag::LoopStart:
     case Drag::LoopEnd: return hasLoop() ? "Loop " + barsBeats(project().loopStart, timing) + " - " + barsBeats(project().loopEnd, timing) : std::string();
@@ -2128,6 +2413,7 @@ void PianoRollView::drawGrid(DrawList &list, const Theme &theme, const Clip &c) 
 void PianoRollView::drawNotes(DrawList &list, const Theme &theme, const Clip &c) const
 {
     const Rect view{grid_.x - 2.0f, grid_.y - 2.0f, grid_.w + 4.0f, grid_.h + 4.0f};
+    std::vector<float> tuning; // a note's tuning line, one value a pixel
     // Ghosts: other clips' notes, faint and hollow
     if (ghosts_ != Ghosts::Off) {
         for (size_t i = 0; i < ghostNotes_.size(); ++i) {
@@ -2172,6 +2458,25 @@ void PianoRollView::drawNotes(DrawList &list, const Theme &theme, const Clip &c)
             if (r.w > 8.0f && r.h >= 16.0f)
                 list.add(theme.ink({r.x + 2.0f, r.y + r.h - 3.0f, std::max(2.0f, (r.w - 4.0f) * n.velocity), 1.5f}, Shape::Pill,
                                    TextTone::OnAccent, true, n.selected ? 0.55f : 0.35f));
+        }
+        // Its tuning, as a line along it a row a semitone from its middle
+        if (const NoteCurve *curve = n.curve(Expression::Tuning); curve && r.w > 6.0f) {
+            const float x0 = std::max(r.x, view.x), x1 = std::min(r.x + r.w, view.x + view.w);
+            tuning.clear();
+            for (float px = x0; px < x1; px += 1.0f)
+                tuning.push_back(curve->valueAt(xBeat(px) - n.start));
+            if (tuning.size() >= 2) {
+                const float mid = r.y + r.h * 0.5f;
+                ui::Plot line = theme.inkPlot({x0, mid - kTuningRange * rowHeight_, static_cast<float>(tuning.size() - 1),
+                                               2.0f * kTuningRange * rowHeight_},
+                                              ui::PlotMode::Line, TextTone::Primary, n.selected ? 0.9f : 0.6f);
+                line.values = tuning.data();
+                line.count = static_cast<uint32_t>(tuning.size());
+                line.low = -kTuningRange;
+                line.high = kTuningRange;
+                line.width = 1.5f;
+                list.add(line);
+            }
         }
         // Grips at the edge the mouse is on
         if (static_cast<int>(i) == hovered_ && hoverEdge_ != 0 && (tool_ == Tool::Draw || tool_ == Tool::Select)) {
@@ -2308,6 +2613,11 @@ void PianoRollView::drawLane(DrawList &list, const Theme &theme, const Clip &c) 
         list.add(theme.scrim({lane_.x, lane_.y, start - lane_.x, lane_.h}, 0.55f));
     if (end < lane_.x + lane_.w)
         list.add(theme.scrim({end, lane_.y, lane_.x + lane_.w - end, lane_.h}, 0.55f));
+    if (laneController_ == kTuningLane) {
+        drawTuning(list, theme, c);
+        list.popClip();
+        return;
+    }
     if (laneController_ != kVelocityLane) {
         drawControls(list, theme, c);
         list.popClip();

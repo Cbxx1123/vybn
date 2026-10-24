@@ -25,6 +25,7 @@
 #include <vector>
 #include <thread>
 
+#include "audio/AudioAnalysis.h"
 #include "audio/AudioFile.h"
 #include "audio/AudioSystem.h"
 #include "audio/Effects.h"
@@ -36,6 +37,7 @@
 #include "daw/app/Appearance.h"
 #include "daw/views/Analyzer.h"
 #include "daw/views/Arrangement.h"
+#include "daw/views/AudioEditor.h"
 #include "daw/views/Browser.h"
 #include "daw/library/DeviceCatalogue.h"
 #include "daw/library/Online.h"
@@ -44,6 +46,7 @@
 #include "daw/views/DevicesPanel.h"
 #include "daw/model/FoldState.h"
 #include "daw/model/History.h"
+#include "daw/model/Warp.h"
 #include "daw/library/Library.h"
 #include "daw/views/Mixer.h"
 #include "daw/views/PianoRoll.h"
@@ -2754,6 +2757,70 @@ Picture sceneWaveforms()
     return renderWaveforms(0, nullptr);
 }
 
+// Warping (docs/design/warp-plan.md): a drum loop at 100 BPM warped onto a 120 BPM song in Beats,
+// transposed up three semitones, one marker moved so its bar stretches, over the same clip unwarped;
+// below, the audio editor on the warped clip with its markers, its transients and the file around it
+Picture sceneWarp()
+{
+    // Hits every 0.6 s (100 BPM), loud on the beat, softer between
+    const double rate = 48000.0;
+    std::vector<float> samples(static_cast<size_t>(4.8 * rate));
+    uint32_t state = 12345u;
+    for (size_t i = 0; i < samples.size(); ++i) {
+        const double inBeat = std::fmod(static_cast<double>(i) / rate, 0.3);
+        const bool strong = static_cast<size_t>(static_cast<double>(i) / rate / 0.3) % 2 == 0;
+        state = state * 1664525u + 1013904223u;
+        const float noise = static_cast<float>(state >> 8) / 8388608.0f - 1.0f;
+        samples[i] = noise * static_cast<float>(std::exp(-inBeat * (strong ? 14.0 : 30.0)) * (strong ? 0.8 : 0.35));
+    }
+    auto sound = audio::makeAudioData("loop", rate, 1, samples);
+    const auto analysis = std::make_shared<audio::AudioAnalysis>(audio::analyseSamples(samples.data(), samples.size(), 1, rate));
+
+    daw::Project project;
+    project.name = "Warp";
+    daw::Track warpedTrack;
+    warpedTrack.name = "Loop (warped)";
+    daw::Clip clip("Drum loop", 0.0, 8.0);
+    clip.id = 1;
+    clip.audioFile = "loop";
+    clip.warp.on = true;
+    clip.warp.bpm = 100.0;
+    clip.warp.mode = audio::WarpMode::Beats;
+    clip.warp.pitch = 3.0;
+    clip.warp.markers = {{0.0, 0.0}, {1.2, 2.0}, {2.4, 4.0}};
+    clip.length = 8.0;
+    daw::moveWarpMarker(clip, 1, 2.5);
+    warpedTrack.clips.push_back(clip);
+    project.tracks.push_back(warpedTrack);
+    daw::Track plainTrack;
+    plainTrack.name = "Loop (unwarped)";
+    daw::Clip plain("Drum loop", 0.0, project.beatsFor(0.0, sound->seconds()));
+    plain.id = 2;
+    plain.audioFile = "loop";
+    plainTrack.clips.push_back(plain);
+    project.tracks.push_back(plainTrack);
+
+    daw::TransportHooks hooks = quietTransport();
+    hooks.audioFor = [&sound](int, int) -> const audio::AudioData * { return sound.get(); };
+    daw::AudioEditorHooks editorHooks;
+    editorHooks.audioFor = [&sound](const daw::Clip &) -> const audio::AudioData * { return sound.get(); };
+    editorHooks.analysisFor = [&analysis](const daw::Clip &) -> const audio::AudioAnalysis * { return analysis.get(); };
+    editorHooks.position = [] { return 0.0; };
+    editorHooks.seek = [](double) {};
+    daw::ProjectStore store(std::move(project));
+    store.select(0, 0);
+    return renderPicture(1200, 600, daw::studioTheme(true), [&store, &hooks, &editorHooks](ui::Context &context) {
+        auto &column = context.root().add<ui::Container>(ui::Direction::Column);
+        stretch(column);
+        auto &view = column.add<daw::ArrangementView>(store, hooks);
+        view.showTiming(false);
+        view.setMinSize({0.0f, 250.0f});
+        view.setAlignSelf(ui::Align::Stretch);
+        auto &editor = column.add<daw::AudioEditorView>(store, editorHooks);
+        stretch(editor);
+    });
+}
+
 // The piano roll on the demo project; with timedFrames, the settled view is timed (see renderPicture),
 // and with `after`, one more frame is run after the picture
 Picture renderPianoRoll(int timedFrames, Timing *timing, ui::FrameStats *after = nullptr)
@@ -2768,6 +2835,39 @@ Picture renderPianoRoll(int timedFrames, Timing *timing, ui::FrameStats *after =
 Picture scenePianoRoll()
 {
     return renderPianoRoll(0, nullptr);
+}
+
+// The piano roll's tuning lane: the demo's first instrument clip with a note gliding up, one held
+// down and one wavering, two of them selected, each drawn across its own span (and along its note)
+Picture renderTuning(ui::FrameStats *after)
+{
+    daw::Project project = daw::demoProject();
+    for (daw::Track &t : project.tracks) {
+        if (t.kind != daw::TrackKind::Instrument || t.clips.empty() || t.clips[0].notes.size() < 4)
+            continue;
+        std::vector<daw::Note> &notes = t.clips[0].notes;
+        notes[0].setCurve(daw::Expression::Tuning, {{0.0, 0.0f}, {notes[0].length * 0.5, 5.0f}});
+        notes[1].setCurve(daw::Expression::Tuning, {{0.0, -3.0f}});
+        std::vector<daw::ControlPoint> waver;
+        for (int i = 0; i <= 16; ++i)
+            waver.push_back({notes[2].length * i / 16.0, i % 2 ? 0.6f : -0.6f});
+        notes[2].setCurve(daw::Expression::Tuning, waver);
+        notes[0].selected = notes[2].selected = true;
+        break;
+    }
+    daw::ProjectStore store(project);
+    selectFirstInstrumentClip(store);
+    return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
+        auto &roll = context.root().add<daw::PianoRollView>(store, quietPianoRoll());
+        roll.setLane(daw::PianoRollView::kTuningLane);
+        roll.setVelocityLane(true);
+        stretch(roll);
+    }, 0, nullptr, after);
+}
+
+Picture sceneTuning()
+{
+    return renderTuning(nullptr);
 }
 
 // The step sequencer on a drum clip; with timedFrames, the settled view is timed (see renderPicture),
@@ -3651,6 +3751,7 @@ const CacheScene kCacheScenes[] = {
     {"takes", renderTakes},
     {"waveforms", [](ui::FrameStats *after) { return renderWaveforms(0, nullptr, after); }},
     {"pianoroll", [](ui::FrameStats *after) { return renderPianoRoll(0, nullptr, after); }},
+    {"tuning", renderTuning},
     {"steps", [](ui::FrameStats *after) { return renderSteps(0, nullptr, after); }},
     {"synth", [](ui::FrameStats *after) { return renderSynth(0, nullptr, after); }},
     {"sidechain", renderSidechain},
@@ -3703,7 +3804,9 @@ const SceneEntry kScenes[] = {
     {"mixer", sceneMixer},
     {"radial", sceneRadial},
     {"waveforms", sceneWaveforms},
+    {"warp", sceneWarp},
     {"pianoroll", scenePianoRoll},
+    {"tuning", sceneTuning},
     {"steps", sceneSteps},
     {"scroll", sceneScroll},
     {"synth", sceneSynth},

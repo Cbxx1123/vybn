@@ -5,6 +5,7 @@ add_library(vybn_selftests STATIC
     BridgeSelfTest.cpp
     BrowserSelfTest.cpp
     EngineSelfTest.cpp
+    ExpressionSelfTest.cpp
     ExportSelfTest.cpp
     InputSelfTest.cpp
     MarkersSelfTest.cpp

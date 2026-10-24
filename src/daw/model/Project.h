@@ -17,7 +17,38 @@ namespace daw {
 // gain, pan, mute and solo into an audio::TrackProcessor, plays instrument tracks' notes through
 // their instrument and audio tracks' clips from their sound files. Positions and lengths are in
 // beats (quarter notes), turned into time and bars by `timing`; times inside sound files are in
-// seconds (an audio clip follows the tempo only when it is warped: Clip::warp).
+// seconds (audio isn't stretched by the tempo).
+
+// A point of a curve: a controller's in an instrument clip (beats from the clip's start, values
+// 0-1), or a note's expression (beats from the note's start, in the expression's units)
+constexpr int kPitchBend = 128; // the lane for the pitch bend, beside MIDI's controllers 0-127
+struct ControlPoint {
+    double beat = 0.0;
+    float value = 0.0f;
+};
+
+// What a single note can change while it sounds. Tuning is in semitones (-48 to 48). Saved as
+// words ("tuning"), so the order here can change.
+enum class Expression : uint8_t { Tuning };
+constexpr int kExpressions = 1;
+const char *expressionKey(Expression type);       // "tuning"
+bool expressionFromKey(const std::string &key, Expression &type);
+std::string expressionName(Expression type);      // "Note tuning"
+float expressionNeutral(Expression type);         // the value of a note without the curve
+float expressionMin(Expression type);
+float expressionMax(Expression type);
+
+// A note's expression over its length: points in beats from its start (sorted), joined by straight
+// lines; before the first point its value, after the last the last's. Points past the note's end
+// are kept (so shortening and lengthening a note gives them back) but never play.
+struct NoteCurve {
+    Expression type = Expression::Tuning;
+    std::vector<ControlPoint> points;
+
+    float valueAt(double beat) const;
+};
+bool operator==(const NoteCurve &a, const NoteCurve &b);
+inline bool operator!=(const NoteCurve &a, const NoteCurve &b) { return !(a == b); }
 
 // A MIDI note in a clip, positioned from the clip's start
 struct Note {
@@ -27,15 +58,29 @@ struct Note {
     float velocity = 0.8f; // 0-1
     bool muted = false;    // kept in the clip but not played
     bool selected = false; // in the piano roll's selection; not saved
+    std::vector<NoteCurve> expression = {}; // at most one curve per type; empty for most notes
+
+    const NoteCurve *curve(Expression type) const;
+    // The curve's value, or the type's neutral value without one
+    float expressionAt(Expression type, double beat) const;
+    // Sets the curve's points (empty removes it)
+    void setCurve(Expression type, std::vector<ControlPoint> points);
 };
+
+// A note's curves over [from, to) of it (beats from its start), moved to start at `from`: the
+// points inside, and a point at each cut holding the value there so nothing jumps. A curve whose
+// part is all at the neutral value is left out. For cutting a note in two (`to` infinite: the rest).
+std::vector<NoteCurve> cutCurves(const std::vector<NoteCurve> &curves, double from, double to);
+// `b`'s curves joined onto `a`'s at `offset` beats into `a` (a's points from there on go): for
+// joining a note that starts there onto `a`
+std::vector<NoteCurve> joinCurves(const std::vector<NoteCurve> &a, const std::vector<NoteCurve> &b, double offset);
+// Times scaled by `factor`
+void stretchCurves(std::vector<NoteCurve> &curves, double factor);
+// Played backwards over a note `length` long (points past its end go first)
+void reverseCurves(std::vector<NoteCurve> &curves, double length);
 
 // A controller's curve in an instrument clip: points in beats from the clip's start (sorted),
 // values 0-1, joined by straight lines (held, for switches such as the sustain pedal)
-constexpr int kPitchBend = 128; // the lane for the pitch bend, beside MIDI's controllers 0-127
-struct ControlPoint {
-    double beat = 0.0;
-    float value = 0.0f;
-};
 struct ControlLane {
     int controller = 1;
     std::vector<ControlPoint> points;
@@ -80,27 +125,17 @@ struct Clip {
     float gain = 1.0f;     // linear, 0-4
     double fadeIn = 0.0;   // seconds
     double fadeOut = 0.0;
-
-    // How the sound follows the tempo (docs/design/warping-plan.md): Off plays it at its own speed;
-    // else the file's beats (its bpm and warp markers) are laid on the timeline's, `offset` still
-    // being where in the file the clip starts. clipFileSeconds is the mapping either way.
-    audio::ClipWarp warp;
+    // Warping (daw/model/Warp.h): with warp.on the sound follows the bars through its map, `offset`
+    // still the file's seconds at the clip's start
+    audio::Warp warp;
 
     // In the track's own lane, a comp section: the take (a clip in one of the track's take lanes)
     // it was cut from (docs/design/takes-plan.md). kNoId for an ordinary clip, and in a take lane.
     ObjectId take = kNoId;
 
     bool hasAudio() const { return !audioFile.empty(); }
-    bool warped() const { return warp.on(); }
     double end() const { return start + length; }
 };
-
-// Where an audio clip's sound file is at a beat on the timeline, as seconds into the file (any beat:
-// before the clip's start or past its end extends the same way), and the beat where the file
-// reaches `seconds`. A warped clip goes through its warp; otherwise the tempo map turns beats into
-// seconds from the clip's start, where the file is at `offset`.
-double clipFileSeconds(const audio::TempoMap &timing, const Clip &clip, double beat);
-double clipBeatOfFile(const audio::TempoMap &timing, const Clip &clip, double seconds);
 
 // Recorded passes kept under a track, which don't play: the track's comp (its own clips) is cut
 // from them (Takes.h). A lane's clips don't overlap, sorted by start.

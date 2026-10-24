@@ -208,7 +208,6 @@ void DawApp::buildBody()
         // again only when they differ)
         refreshWindowIcon();
         recordingController_->updateCountIn(); // starts the take when the count-in ends
-        updateWarp(); // a clip's tempo being found
         updateFreezes(); // renders for freezing and bouncing, and what finished
         // The analyzer's tap is on only while it shows; the selected track writes the track tap
         const bool analyzing = analyzer_ && dock_->isShowing(*analyzerPanel_);
@@ -629,23 +628,20 @@ void DawApp::buildBody()
         const Clip *c = audioEditor_ ? audioEditor_->clip() : nullptr;
         if (!c)
             return std::string();
-        return decibels(c->gain) + format(",  fades %.2f", c->fadeIn) + format(" / %.2f s", c->fadeOut);
+        return decibels(c->gain) + format(",  fade in %.2f s", c->fadeIn) + format(", out %.2f s", c->fadeOut);
     }, TextStyle::Caption, TextTone::Secondary);
-    // Warping: on or off, the mode, the file's tempo, a transpose and the warp tools
-    waveTools.add<Divider>();
-    buildWarpTools(waveTools, menuButton);
     waveTools.add<Spacer>();
-    waveTools.add<LiveLabel>([this] {
-        const std::string hint = audioEditor_ ? audioEditor_->hint() : std::string();
-        return hint.empty() ? std::string("Drag edges to trim, corners to fade") : hint;
-    }, TextStyle::Caption, TextTone::Muted);
+    waveTools.add<LiveLabel>([this] { return audioEditor_ ? audioEditor_->hint() : std::string(); }, TextStyle::Caption,
+                             TextTone::Muted);
     waveTools.add<Button>([this] { splitSelectedClip(); }).setLabel("Split at playhead").setSize(Size::Small);
+    // Its warp row: the mode, the clip's tempo, transposition and the mode's settings
+    buildWarpTools(wave);
     AudioEditorHooks waveHooks;
     waveHooks.audioFor = [this](const Clip &c) { return c.hasAudio() ? pool_->get(c.audioFile).get() : nullptr; };
+    waveHooks.analysisFor = [this](const Clip &c) { return warpAnalysis(c); };
+    waveHooks.markerMenu = [this](int marker, Vec2 at) { openWarpMarkerMenu(marker, at); };
     waveHooks.position = hooks.position;
     waveHooks.seek = hooks.seek;
-    waveHooks.onsets = [this](const Clip &c) { return pool_->onsets(c.audioFile); };
-    waveHooks.version = [this] { return pool_->version(); };
     audioEditor_ = &wave.add<AudioEditorView>(session_.store(), waveHooks);
     audioEditor_->setGrow(1.0f);
     AudioEditorView &audioEditor = *audioEditor_;
@@ -1557,6 +1553,13 @@ void DawApp::openSettings(const std::string &section)
         Container &body = page("Recording");
         body.add<Label>("Recording", TextStyle::Subtitle);
         buildInputSettings(body);
+        body.add<Checkbox>("Warp imported loops (files whose length is whole bars at the tempo found in them)",
+                           settings_.warpLoops, [this](bool on) {
+                               settings_.warpLoops = on;
+                               std::string error;
+                               settings_.save(error);
+                           })
+            .setSize(Size::Small);
     }
 
     {

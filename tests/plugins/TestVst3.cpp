@@ -12,7 +12,8 @@
 // - VST Sine (Instrument|Synth): a sine voice on its event input; Level, and Bend, which the pitch
 //   bend drives through IMidiMapping (plus Mod, driven by controller 1, reported but unused), and
 //   Program, a choice of three programs from the root unit's program list. Level is in the unit
-//   "Voice", Bend in "Pitch" under it (IUnitInfo). A note-off ends its note by the note's id.
+//   "Voice", Bend in "Pitch" under it (IUnitInfo). A note-off ends its note by the note's id. It
+//   lists the tuning note expression (INoteExpressionController) and bends its note by it, by id.
 // - VST Duck (Fx): a stereo effect with a stereo aux input (its sidechain): its output is its input
 //   times (1 - the key's peak in the block). Its edit controller is a separate class, and it
 //   processes 64-bit audio only.
@@ -36,6 +37,7 @@
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivstevents.h"
 #include "pluginterfaces/vst/ivstmidicontrollers.h"
+#include "pluginterfaces/vst/ivstnoteexpression.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include "pluginterfaces/vst/ivstunits.h"
@@ -96,7 +98,12 @@ bool lastPoint(IParameterChanges *changes, ParamID id, ParamValue &value)
 class Editor;
 
 // One plugin: a component that is (for every kind but Duck) its own edit controller too
-class Plugin : public IComponent, public IAudioProcessor, public IEditController, public IMidiMapping, public IUnitInfo {
+class Plugin : public IComponent,
+               public IAudioProcessor,
+               public IEditController,
+               public IMidiMapping,
+               public IUnitInfo,
+               public INoteExpressionController {
 public:
     explicit Plugin(Kind kind) : kind_(kind) {}
     virtual ~Plugin() = default;
@@ -118,6 +125,8 @@ public:
             *obj = static_cast<IMidiMapping *>(this);
         } else if (kind_ == Sine && same(iid, IUnitInfo_iid)) {
             *obj = static_cast<IUnitInfo *>(this);
+        } else if (kind_ == Sine && same(iid, INoteExpressionController_iid)) {
+            *obj = static_cast<INoteExpressionController *>(this);
         } else {
             *obj = nullptr;
             return kNoInterface;
@@ -245,7 +254,11 @@ public:
                     if (e.type == Event::kNoteOnEvent && e.noteOn.velocity > 0.0f) {
                         key_ = e.noteOn.pitch;
                         noteId_ = e.noteOn.noteId;
+                        tuning_ = 0.0;
                         on_ = true;
+                    } else if (e.type == Event::kNoteExpressionValueEvent && e.noteExpressionValue.typeId == kTuningTypeID &&
+                               e.noteExpressionValue.noteId == noteId_) {
+                        tuning_ = 240.0 * (e.noteExpressionValue.value - 0.5);
                     } else if ((e.type == Event::kNoteOffEvent && (e.noteOff.noteId != -1 ? e.noteOff.noteId == noteId_ : e.noteOff.pitch == key_)) ||
                                (e.type == Event::kNoteOnEvent && e.noteOn.velocity == 0.0f && e.noteOn.pitch == key_)) {
                         on_ = false;
@@ -254,7 +267,7 @@ public:
                 float s = 0.0f;
                 if (on_) {
                     // Bend: 0.5 is centre, two semitones each way
-                    const double hz = 440.0 * std::pow(2.0, (key_ - 69 + (bend_ - 0.5) * 4.0) / 12.0);
+                    const double hz = 440.0 * std::pow(2.0, (key_ - 69 + (bend_ - 0.5) * 4.0 + tuning_) / 12.0);
                     phase_ += hz / rate_;
                     phase_ -= std::floor(phase_);
                     s = static_cast<float>(0.5 * level_ * std::sin(2.0 * kPi * phase_));
@@ -401,6 +414,32 @@ public:
         return kResultFalse;
     }
 
+    // INoteExpressionController (the sine): tuning, on its one event bus
+    int32 PLUGIN_API getNoteExpressionCount(int32 bus, int16) override { return bus == 0 ? 1 : 0; }
+    tresult PLUGIN_API getNoteExpressionInfo(int32 bus, int16, int32 index, NoteExpressionTypeInfo &info) override
+    {
+        if (bus != 0 || index != 0)
+            return kInvalidArgument;
+        info = NoteExpressionTypeInfo{};
+        info.typeId = kTuningTypeID;
+        copy(info.title, "Tuning");
+        copy(info.shortTitle, "Tune");
+        copy(info.units, "st");
+        info.unitId = -1;
+        info.valueDesc = {0.5, 0.0, 1.0, 0};
+        info.associatedParameterId = kNoParamId;
+        info.flags = NoteExpressionTypeInfo::kIsBipolar;
+        return kResultOk;
+    }
+    tresult PLUGIN_API getNoteExpressionStringByValue(int32, int16, NoteExpressionTypeID, NoteExpressionValue, String128) override
+    {
+        return kNotImplemented;
+    }
+    tresult PLUGIN_API getNoteExpressionValueByString(int32, int16, NoteExpressionTypeID, const TChar *, NoteExpressionValue &) override
+    {
+        return kNotImplemented;
+    }
+
     // The editor's clicks: the gain a step down or up, through the host
     void step(int direction)
     {
@@ -468,6 +507,7 @@ private:
     double phase_ = 0.0;
     int key_ = 69;
     int32 noteId_ = -1;
+    double tuning_ = 0.0; // the note's tuning expression, in semitones
     bool on_ = false;
     std::vector<std::vector<float>> delay_ = std::vector<std::vector<float>>(2, std::vector<float>(8192, 0.0f));
     size_t write_ = 8192 * 4;

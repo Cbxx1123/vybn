@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "daw/model/Takes.h"
+#include "daw/model/Warp.h"
 #include "daw/widgets/Format.h"
 
 namespace daw {
@@ -63,7 +64,7 @@ void ArrangementView::drawTakeContent(DrawList &list, const Theme &theme, int tr
             if (b0 >= take.end())
                 break;
             float low = 0.0f, high = 0.0f;
-            data->range(clipFileSeconds(timing, take, b0), clipFileSeconds(timing, take, b1), low, high);
+            data->range(clipSourceSeconds(take, timing, b0), clipSourceSeconds(take, timing, b1), low, high);
             pairs.push_back(std::max(-1.0f, low * take.gain));
             pairs.push_back(std::min(1.0f, high * take.gain));
             ++columns;

@@ -38,6 +38,7 @@
 #include "pluginterfaces/vst/ivsthostapplication.h"
 #include "pluginterfaces/vst/ivstmessage.h"
 #include "pluginterfaces/vst/ivstmidicontrollers.h"
+#include "pluginterfaces/vst/ivstnoteexpression.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include "pluginterfaces/vst/ivstunits.h"
@@ -628,6 +629,22 @@ public:
                 midiMapping_ = static_cast<IMidiMapping *>(p);
             if (controller_->queryInterface(IUnitInfo_iid, &p) == kResultOk && p)
                 unitInfo_ = static_cast<IUnitInfo *>(p);
+            // The note expressions it takes on its first event bus: only tuning is sent, within
+            // the range it gives
+            if (controller_->queryInterface(INoteExpressionController_iid, &p) == kResultOk && p) {
+                auto *expressions = static_cast<INoteExpressionController *>(p);
+                for (int32 i = 0, n = std::min<int32>(expressions->getNoteExpressionCount(0, 0), 1000); i < n; ++i) {
+                    NoteExpressionTypeInfo type{};
+                    if (expressions->getNoteExpressionInfo(0, 0, i, type) == kResultOk && type.typeId == kTuningTypeID) {
+                        tuning_ = true;
+                        if (type.valueDesc.maximum > type.valueDesc.minimum) { // else the whole range
+                            tuningLow_ = std::clamp(type.valueDesc.minimum, 0.0, 0.5);
+                            tuningHigh_ = std::clamp(type.valueDesc.maximum, 0.5, 1.0);
+                        }
+                    }
+                }
+                expressions->release();
+            }
         }
         buildTables();
 
@@ -979,6 +996,10 @@ public:
                     applied(id, time, e.value < 0.0 ? 0.0 : (e.value > 1.0 ? 1.0 : e.value));
                 break;
             }
+            case EventKind::NoteExpression:
+                if (e.expression == static_cast<uint32_t>(NoteExpression::Tuning))
+                    tune(time, channel, static_cast<int>(e.id & 127), e.value);
+                break;
             case EventKind::AllNotesOff:
                 for (int key = 0; key < 128; ++key)
                     if (held_[channel][key])
@@ -1386,6 +1407,22 @@ private:
         events_.addEvent(e);
     }
 
+    // A sounding note's tuning in semitones, against its id, for a plugin that listed tuning
+    void tune(int32 time, int channel, int key, double semitones)
+    {
+        if (!tuning_ || !held_[channel][key])
+            return;
+        Steinberg::Vst::Event e{};
+        e.busIndex = 0;
+        e.sampleOffset = time;
+        e.flags = Steinberg::Vst::Event::kIsLive;
+        e.type = Steinberg::Vst::Event::kNoteExpressionValueEvent;
+        e.noteExpressionValue.typeId = kTuningTypeID;
+        e.noteExpressionValue.noteId = channel * 128 + key;
+        e.noteExpressionValue.value = std::clamp(semitones / 240.0 + 0.5, tuningLow_, tuningHigh_);
+        events_.addEvent(e);
+    }
+
     bool makeView(std::string &error)
     {
         if (view_) {
@@ -1451,6 +1488,8 @@ private:
     IConnectionPoint *controllerPoint_ = nullptr;
     IMidiMapping *midiMapping_ = nullptr;
     IUnitInfo *unitInfo_ = nullptr;
+    bool tuning_ = false; // it takes the tuning note expression, normalised within these
+    double tuningLow_ = 0.0, tuningHigh_ = 1.0;
     std::map<UnitID, UnitInfo> units_;
     std::map<ProgramListID, int32> programCounts_;
     std::map<ParamID, ProgramListID> programParams_;

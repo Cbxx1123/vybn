@@ -24,8 +24,9 @@
 namespace plugin {
 
 constexpr uint32_t kMagic = 0x48504256; // "VBPH"
-constexpr uint32_t kProtocolVersion = 4; // 2: the sidechain key in the block; 3: the Probe request;
-                                         // 4: the time signature, bar and tempo ramp in the transport
+constexpr uint32_t kProtocolVersion = 5; // 2: the sidechain key in the block; 3: the Probe request;
+                                         // 4: the time signature, bar and tempo ramp in the transport;
+                                         // 5: note expression events
 constexpr uint32_t kMaxFrames = 4096;    // a block; longer ones are split
 constexpr uint32_t kMaxChannels = 2;     // of the main ports: stereo
 constexpr uint32_t kMaxBlockEvents = 512;
@@ -38,6 +39,12 @@ enum class EventKind : uint32_t {
     AllNotesOff, // every key (the transport stopped or jumped)
     ParamValue,  // id = parameter id, value = plain value
     Controller,  // id = MIDI controller 0-127, or 128 for the pitch bend; value 0-1 (bend: 0.5 is centre)
+    NoteExpression, // id = the sounding note's key, channel, expression, value in its units
+};
+
+// What a NoteExpression event changes (numbered as daw::Expression and audio::Instrument's)
+enum class NoteExpression : uint32_t {
+    Tuning, // semitones, 0 for none
 };
 
 struct Event {
@@ -45,6 +52,7 @@ struct Event {
     uint32_t frame = 0; // into the block, in order
     uint32_t id = 0;    // key or parameter id
     int32_t channel = 0;
+    uint32_t expression = 0; // NoteExpression, for a NoteExpression event
     double value = 0.0;
 };
 

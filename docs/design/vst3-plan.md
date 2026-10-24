@@ -104,5 +104,8 @@ input. A **format** is the rest, behind one interface in the host:
   and lists its plugins without a host; without one, or with one that can't be read, the bundle is
   scanned in a host as before. The class ids are taken as the file writes them, the TUID's bytes in
   order. The test bundle carries one (`tests/plugins/moduleinfo.json`), checked against its factory.
-- Not done: note expression. The app has nothing per note to send (a note is a key, a velocity and a
-  length), so it needs per-note data in the model, the file, the piano roll and the bridge first.
+- Note expression: built with per-note expression in the app (docs/design/note-expression-plan.md).
+  The host reads the plugin's `INoteExpressionController` (its first event bus, channel 0) and, if it
+  lists `kTuningTypeID`, sends a sounding note's tuning as `kNoteExpressionValueEvent`s against the
+  note's id (240 semitones across 0-1, within the range the plugin gives); a plugin that lists none
+  gets none. The app's other expressions (pressure, timbre, volume, pan) are for later.

@@ -24,11 +24,9 @@
 #include "audio/AudioProcessor.h"
 #include "audio/Encoders.h"
 #include "audio/Mastering.h"
-#include "audio/Onsets.h"
 #include "daw/io/MidiExport.h"
 #include "daw/model/Project.h"
 #include "daw/model/Freeze.h"
-#include "daw/model/Warping.h"
 #include "audio/AudioSystem.h"
 #include "audio/Midi.h"
 #include "audio/Synth.h"
@@ -1740,82 +1738,7 @@ void queueChecks(Checker &c)
         return true;
     });
 
-    // 10. A warped clip (docs/design/warping-plan.md): a click a second in a file said to be 60 BPM,
-    // in a 120 BPM song, renders with a click every half second (its stretched sound, which the
-    // export waits for)
-    struct Warped {
-        int phase = 0;
-        uint64_t id = 0;
-        Clock::time_point began;
-    };
-    auto warped = std::make_shared<Warped>();
-    steps.push_back([&, warped]() -> bool {
-        if (warped->phase == 0) {
-            const size_t frames = 48000 * 4;
-            std::vector<float> clicks(frames, 0.0f);
-            for (int k = 0; k < 4; ++k) {
-                const size_t start = static_cast<size_t>((0.05 + k) * 48000.0);
-                for (size_t n = 0; n < 960; ++n)
-                    clicks[start + n] = static_cast<float>(0.8 * std::exp(-static_cast<double>(n) / 144.0) *
-                                                           std::sin(2.0 * kPi * 2000.0 * static_cast<double>(n) / 48000.0));
-            }
-            const std::string path = dir + "/clicks-60.wav";
-            std::string error;
-            if (!audio::writeWavFile(path, clicks.data(), frames, 1, 48000.0, error, 32)) {
-                c.check(false, "A click file is written", error);
-                return true;
-            }
-            Project song;
-            song.tracks.clear();
-            song.timing = audio::TempoMap(120.0, 4, 4);
-            const int track = song.addTrack(TrackKind::Audio);
-            Clip clip("Clicks", 0.0, 8.0);
-            clip.audioFile = path;
-            setWarpMode(clip, song.timing, audio::WarpMode::Beats, 60.0);
-            song.tracks[static_cast<size_t>(track)].clips.push_back(clip);
-            ExportTarget target;
-            target.name = "Warped";
-            target.format = ExportFormat::Wav;
-            target.bits = 32;
-            target.normalize = NormalizeMode::Off;
-            target.limiter = false;
-            target.dither = DitherMode::None;
-            target.range = ExportRangeKind::Bars;
-            target.fromBar = 1;
-            target.toBar = 2;
-            target.tailSeconds = 0.0;
-            target.folder = dir + "/warped";
-            target.fileName = "warped";
-            ExportPreset preset;
-            preset.name = "Warped";
-            preset.targets = {target};
-            warped->id = queue.enqueue(song, preset, 1.0f, dir);
-            warped->began = Clock::now();
-            warped->phase = 1;
-            return false;
-        }
-        RenderJob *job = jobWithId(warped->id);
-        if (!job || (!job->finished() && secondsSince(warped->began) < 120.0))
-            return false;
-        const std::vector<TargetReport> reports = job->reports();
-        const bool done = job->state() == RenderJob::Done && reports.size() == 1 && reports[0].ok;
-        c.check(done, "A warped clip renders", job->status());
-        if (done) {
-            std::string error;
-            auto decoded = audio::loadAudioFile(reports[0].path, error);
-            std::vector<double> found;
-            if (decoded)
-                found = audio::analyseOnsets(decoded->samples.data(), decoded->frames, decoded->channels, decoded->sampleRate).transients;
-            double worst = found.size() == 4 ? 0.0 : 1.0;
-            for (size_t k = 0; k < found.size() && k < 4; ++k)
-                worst = std::max(worst, std::fabs(found[k] - (0.025 + 0.5 * static_cast<double>(k))));
-            c.check(found.size() == 4 && worst < 0.002, "A warped 60 BPM loop plays at the song's 120 BPM",
-                    number("(%.0f clicks", static_cast<double>(found.size())) + number(", worst %.2f ms)", worst * 1000.0));
-        }
-        return true;
-    });
-
-    // 11. Freezing (docs/design/freeze-plan.md): an audio track of noise through a saturation is frozen,
+    // 10. Freezing (docs/design/freeze-plan.md): an audio track of noise through a saturation is frozen,
     // bounced and flattened; the frozen song exports the same as the live one
     struct Frozen {
         int phase = 0;

@@ -9,6 +9,15 @@ namespace {
 
 constexpr double kLowest = 20.0, kHighest = 20000.0;
 
+// A periodic Hann window
+std::vector<float> hannWindow(size_t size)
+{
+    std::vector<float> w(size);
+    for (size_t i = 0; i < size; ++i)
+        w[i] = static_cast<float>(0.5 - 0.5 * std::cos(6.283185307179586 * static_cast<double>(i) / static_cast<double>(size)));
+    return w;
+}
+
 }
 
 // The tap
@@ -95,8 +104,10 @@ SpectrumAnalyzer::SpectrumAnalyzer(size_t size) : fft_(size)
 void SpectrumAnalyzer::setSize(size_t size)
 {
     size = std::clamp<size_t>(size, 1024, 32768);
-    fft_ = RealFft(size);
-    const size_t n = fft_.size();
+    size_t n = 1024; // a power of two, as the FFT takes
+    while (n < size)
+        n *= 2;
+    fft_ = Fft(n);
     window_ = hannWindow(n);
     double sum = 0.0;
     for (float w : window_)

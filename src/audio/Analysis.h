@@ -78,7 +78,7 @@ public:
     float levelAt(double frequency) const;
 
 private:
-    RealFft fft_;
+    Fft fft_;
     std::vector<float> window_;
     float windowGain_ = 1.0f;
     std::vector<float> left_, right_; // the newest size() frames, a ring

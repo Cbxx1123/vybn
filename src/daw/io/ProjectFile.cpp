@@ -15,6 +15,7 @@
 #include <system_error>
 
 #include "daw/model/Routing.h"
+#include "daw/model/Warp.h"
 #include "daw/io/Toml.h"
 #include "audio/Effects.h"
 #include "audio/Encoders.h"
@@ -173,6 +174,30 @@ void writeDevice(std::ostringstream &out, const char *header, const audio::Devic
 }
 
 namespace {
+
+// A clip's warp as one inline table (readWarp reads it back)
+void writeWarp(std::ostringstream &out, const audio::Warp &w)
+{
+    using toml::number;
+    using toml::quote;
+    out << "warp = { on = " << (w.on ? "true" : "false") << ", mode = " << quote(warpModeKey(w.mode))
+        << ", bpm = " << number(w.bpm);
+    if (w.pitch != 0.0)
+        out << ", pitch = " << number(w.pitch);
+    if (w.preserve != audio::WarpPreserve::Transients)
+        out << ", preserve = " << quote(warpPreserveKey(w.preserve));
+    if (w.loop != audio::WarpLoop::Off)
+        out << ", loop = " << quote(warpLoopKey(w.loop));
+    if (w.envelope != 100.0f)
+        out << ", envelope = " << number(w.envelope);
+    if (w.grain != 50.0f)
+        out << ", grain = " << number(w.grain);
+    out << ", markers = [";
+    for (size_t i = 0; i < w.markers.size(); ++i)
+        out << (i ? ", " : " ") << "{ seconds = " << number(w.markers[i].seconds) << ", beat = " << number(w.markers[i].beat)
+            << " }";
+    out << (w.markers.empty() ? "] }\n" : " ] }\n");
+}
 
 // One export target as a table under "[[export_presets.targets]]": every field, enums by name
 void writeExportTarget(std::ostringstream &out, const ExportTarget &t)
@@ -346,20 +371,8 @@ std::string writeProject(const Project &project, const std::string &folder)
                     out << "gain = " << number(c.gain) << "\n";
                     out << "fade_in = " << number(c.fadeIn) << "\n";
                     out << "fade_out = " << number(c.fadeOut) << "\n";
-                    // Its warp, when on (docs/design/warping-plan.md)
-                    if (c.warped()) {
-                        out << "warp = " << quote(audio::warpModeName(c.warp.mode)) << "\n";
-                        out << "bpm = " << number(c.warp.bpm) << "\n";
-                        if (c.warp.transpose != 0.0f)
-                            out << "transpose = " << number(c.warp.transpose) << "\n";
-                        if (!c.warp.markers.empty()) {
-                            out << "warp_markers = [";
-                            for (size_t i = 0; i < c.warp.markers.size(); ++i)
-                                out << (i ? ", " : " ") << "{ seconds = " << number(c.warp.markers[i].seconds)
-                                    << ", beat = " << number(c.warp.markers[i].beat) << " }";
-                            out << " ]\n";
-                        }
-                    }
+                    if (c.warp.bpm > 0.0)
+                        writeWarp(out, c.warp);
                 }
                 return;
             }
@@ -382,7 +395,21 @@ std::string writeProject(const Project &project, const std::string &folder)
             out << "notes = [\n";
             for (const Note &n : c.notes) {
                 out << "  { start = " << number(n.start) << ", length = " << number(n.length) << ", key = " << n.key
-                    << ", velocity = " << number(n.velocity) << (n.muted ? ", muted = true" : "") << " },\n";
+                    << ", velocity = " << number(n.velocity) << (n.muted ? ", muted = true" : "");
+                // Its expression curves, only when it has any
+                if (!n.expression.empty()) {
+                    out << ", expression = [";
+                    for (size_t e = 0; e < n.expression.size(); ++e) {
+                        const NoteCurve &curve = n.expression[e];
+                        out << (e ? ", " : " ") << "{ type = \"" << expressionKey(curve.type) << "\", points = [";
+                        for (size_t i = 0; i < curve.points.size(); ++i)
+                            out << (i ? ", " : " ") << "{ beat = " << number(curve.points[i].beat) << ", value = "
+                                << number(curve.points[i].value) << " }";
+                        out << " ] }";
+                    }
+                    out << " ]";
+                }
+                out << " },\n";
             }
             out << "]\n";
         };
@@ -523,6 +550,48 @@ private:
 std::string at(const char *what, size_t index)
 {
     return std::string(what) + " " + std::to_string(index + 1) + ": ";
+}
+
+// A clip's warp, the inline table readWarp reads: `warp = { on, mode, bpm, ..., markers = [...] }`, the
+// Beats and Tones settings only when not their defaults
+bool readWarp(FieldReader &r, const toml::Value &clip, const std::string &where, audio::Warp &w)
+{
+    const toml::Value *v = clip.at("warp");
+    if (!v)
+        return true;
+    if (!v->isTable())
+        return r.fail(where + "warp should be a table, not " + toml::typeName(v->type()));
+    const std::string warpWhere = where + "warp: ";
+    r.flag(*v, "on", warpWhere, w.on);
+    r.real(*v, "bpm", warpWhere, w.bpm);
+    r.real(*v, "pitch", warpWhere, w.pitch);
+    r.real(*v, "envelope", warpWhere, w.envelope);
+    r.real(*v, "grain", warpWhere, w.grain);
+    std::string mode = warpModeKey(w.mode), preserve = warpPreserveKey(w.preserve), loop = warpLoopKey(w.loop);
+    r.text(*v, "mode", warpWhere, mode);
+    r.text(*v, "preserve", warpWhere, preserve);
+    r.text(*v, "loop", warpWhere, loop);
+    if (!r.ok())
+        return false;
+    if (!warpModeFromKey(mode, w.mode))
+        return r.fail(warpWhere + "unknown mode \"" + mode + "\"");
+    if (!warpPreserveFromKey(preserve, w.preserve))
+        return r.fail(warpWhere + "unknown preserve \"" + preserve + "\"");
+    if (!warpLoopFromKey(loop, w.loop))
+        return r.fail(warpWhere + "unknown loop \"" + loop + "\"");
+    const toml::Array *markers = r.tables(*v, "markers", warpWhere);
+    if (!r.ok())
+        return false;
+    for (size_t i = 0; markers && i < markers->size(); ++i) {
+        audio::WarpMarker m;
+        r.real((*markers)[i], "seconds", warpWhere + at("marker", i), m.seconds);
+        r.real((*markers)[i], "beat", warpWhere + at("marker", i), m.beat);
+        if (!r.ok())
+            return false;
+        w.markers.push_back(m);
+    }
+    audio::tidyWarp(w); // clamped, sorted, and on only with a tempo
+    return true;
 }
 
 // A track's or clip's id: optional (missing keeps kNoId); anything but a whole number from 0 to
@@ -996,21 +1065,8 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
                 r.real(cv, "gain", clipWhere, c.gain);
                 r.real(cv, "fade_in", clipWhere, c.fadeIn);
                 r.real(cv, "fade_out", clipWhere, c.fadeOut);
-                // The warp: a mode by name, the file's tempo, a transpose and the markers (tidied)
-                std::string mode;
-                r.text(cv, "warp", clipWhere, mode);
-                if (!mode.empty() && !audio::warpModeFromName(mode, c.warp.mode))
-                    return r.fail(clipWhere + "unknown warp mode \"" + mode + "\"");
-                r.real(cv, "bpm", clipWhere, c.warp.bpm);
-                r.real(cv, "transpose", clipWhere, c.warp.transpose);
-                const toml::Array *markers = r.tables(cv, "warp_markers", clipWhere);
-                for (size_t mi = 0; r.ok() && markers && mi < markers->size(); ++mi) {
-                    audio::WarpMarker m;
-                    r.real((*markers)[mi], "seconds", clipWhere + at("warp marker", mi), m.seconds);
-                    r.real((*markers)[mi], "beat", clipWhere + at("warp marker", mi), m.beat);
-                    c.warp.markers.push_back(m);
-                }
-                audio::tidyWarp(c.warp);
+                if (!readWarp(r, cv, clipWhere, c.warp))
+                    return false;
             }
             if (!r.ok())
                 return false;
@@ -1039,6 +1095,36 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
                 n.length = std::max(1.0 / 64.0, n.length);
                 n.key = std::clamp(n.key, 0, 127);
                 n.velocity = std::clamp(n.velocity, 0.0f, 1.0f);
+                // Expression curves: an unknown type (a newer file's) is dropped, as unknown keys
+                // are; values clamped, points sorted, one curve per type
+                const toml::Array *curves = r.tables(nv, "expression", noteWhere);
+                if (!r.ok())
+                    return false;
+                for (size_t ei = 0; curves && ei < curves->size(); ++ei) {
+                    const toml::Value &ev = (*curves)[ei];
+                    const std::string curveWhere = noteWhere + at("expression", ei);
+                    std::string key;
+                    r.text(ev, "type", curveWhere, key);
+                    const toml::Array *points = r.tables(ev, "points", curveWhere);
+                    if (!r.ok())
+                        return false;
+                    Expression type = Expression::Tuning;
+                    if (!expressionFromKey(key, type) || n.curve(type))
+                        continue;
+                    std::vector<ControlPoint> curve;
+                    for (size_t pi = 0; points && pi < points->size(); ++pi) {
+                        ControlPoint point;
+                        r.real((*points)[pi], "beat", curveWhere + at("point", pi), point.beat);
+                        r.real((*points)[pi], "value", curveWhere + at("point", pi), point.value);
+                        if (!r.ok())
+                            return false;
+                        curve.push_back({std::max(0.0, point.beat),
+                                         std::clamp(point.value, expressionMin(type), expressionMax(type))});
+                    }
+                    std::stable_sort(curve.begin(), curve.end(),
+                                     [](const ControlPoint &a, const ControlPoint &b) { return a.beat < b.beat; });
+                    n.setCurve(type, std::move(curve));
+                }
                 c.notes.push_back(n);
             }
             // Controller lanes: values clamped, points sorted, one lane per controller

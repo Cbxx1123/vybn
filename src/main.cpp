@@ -28,8 +28,8 @@
 //     --plugin-folder PATH  also scan this folder for plugins, this run only (repeatable)
 //     --demo NAME  start with something open, for screenshots: menu (the Edit menu), project
 //                  (the Project menu), new (the new project dialog), projectsettings, audioclip (a
-//                  generated test tone imported onto an audio track, in the editor), warp (a generated
-//                  96 BPM beat warped into the song, its transients pinned, in the editor), freeze (the
+//                  generated test tone imported onto an audio track, in the editor), warp (a drum loop
+//                  at 100 BPM imported warped, one marker moved, in the editor), freeze (the
 //                  first track frozen and the second bounced), analyzer (the Analyzer panel while the
 //                  transport plays), recordmidi (records a
 //                  phrase sent through the MIDI hub onto the Lead track), browser (the asset

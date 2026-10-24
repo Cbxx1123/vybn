@@ -106,11 +106,6 @@ bool renderReady(const Project &project, AudioBridge &bridge, InstrumentLibrary 
                 waiting = std::filesystem::path(c.audioFile).filename().string();
                 return false;
             }
-            // A warped clip plays its stretched sound, made from the file once it is in
-            if (c.warped() && pool.get(c.audioFile) && !pool.warpReady(c, project.timing)) {
-                waiting = "stretching " + std::filesystem::path(c.audioFile).filename().string();
-                return false;
-            }
         }
     }
     return true;
