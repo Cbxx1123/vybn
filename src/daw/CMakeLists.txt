@@ -2,6 +2,7 @@ vybn_module(vybn_daw SOURCES
     # The project and its rules
     model/AutomationLanes.cpp
     model/ExportModel.cpp
+    model/Freeze.cpp
     model/History.cpp
     model/NoteTools.cpp
     model/Project.cpp
@@ -30,10 +31,12 @@ vybn_module(vybn_daw SOURCES
     audio/AudioPool.cpp
     audio/AutomationWriter.cpp
     audio/Exporter.cpp
+    audio/Freezer.cpp
     audio/Recording.cpp
     audio/RecordingController.cpp
     audio/RenderJob.cpp
     # Panels, editors and dialogs
+    views/Analyzer.cpp
     views/Arpeggiator.cpp
     views/Arrangement.cpp
     views/ArrangementTakes.cpp

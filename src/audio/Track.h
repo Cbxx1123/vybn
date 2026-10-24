@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "Analysis.h"
 #include "AudioProcessor.h"
 #include "DeviceChain.h"
 #include "Routing.h"
@@ -63,6 +64,10 @@ public:
     // The delay line is made in prepare, so changing it never allocates.
     static constexpr uint32_t kMaxCompensation = 16384;
     std::atomic<uint32_t> compensation{0};
+
+    // The Analyzer's tap this track writes after its fader and pan (what it adds into the mix), or none
+    // (any thread; the tap is the AudioSystem's, which outlives the track)
+    std::atomic<AnalysisTap *> analysis{nullptr};
 
     // The highest absolute sample on a channel after gain and pan since the last call (one
     // reader: it resets the value)

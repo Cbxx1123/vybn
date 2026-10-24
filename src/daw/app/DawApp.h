@@ -20,6 +20,7 @@
 #include "daw/library/Online.h"
 #include "daw/library/PreviewPlayer.h"
 #include "daw/audio/Exporter.h"
+#include "daw/audio/Freezer.h"
 #include "daw/audio/RecordingController.h"
 #include "daw/model/Project.h"
 #include "daw/model/ProjectSession.h"
@@ -47,6 +48,7 @@ namespace daw {
 
 class AutomationWriter;
 class AutosaveController;
+class AnalyzerView;
 class ArrangementView;
 class AssetBrowser;
 class AudioEditorView;
@@ -136,6 +138,8 @@ public:
     // --demo warp: a drum loop at 100 BPM imported (so it comes in warped), one marker moved, in the
     // audio editor
     void warpDemo();
+    // --demo freeze: the first track frozen and the second bounced to a new audio track
+    void freezeDemo();
     // Records a phrase sent through the MIDI hub onto the Lead track, as if played on a
     // keyboard, then opens the take in the piano roll (--demo recordmidi)
     void recordMidiDemo();
@@ -168,6 +172,8 @@ public:
     void showMixer();
     void showEffects();
     void showExports();
+    // The Analyzer panel (View > Analyzer, Ctrl+6)
+    void showAnalyzer();
     // The selected clip's name, start (bar and beat) and length
     void openClipDialog();
     // The shortcuts editor; changes are saved to keybinds.toml as they're made
@@ -343,6 +349,16 @@ private:
     // Settings > Metrics: the audio device and its load, threads, sample memory and frame times
     void buildMetrics(ui::Container &body);
 
+    // Freezing and bouncing tracks (DawAudio.cpp, docs/design/freeze-plan.md): a render of the track
+    // queued on the Freezer (into the project's audio folder), Flatten of a current freeze at once,
+    // Unfreeze, each frame's finished renders applied to the project (one undo step each), and what a
+    // track's header says about it
+    void freezeTrack(int track, FreezeKind kind);
+    void unfreezeTrack(int track);
+    void updateFreezes();
+    std::string freezeText(int track) const;
+    std::unique_ptr<Freezer> freezer_;
+
     // Settings > Plugins: the sandbox, folders, importing, and each plugin (DawPlugins.cpp)
     void buildPluginSettings(ui::Container &body);
     // The settings' plugin folders, sandbox and per-plugin choices into the PluginManager, and saved
@@ -443,6 +459,8 @@ private:
     ui::DockPanel *editorPanel_ = nullptr;
     ui::DockPanel *effectsPanel_ = nullptr;
     ui::DockPanel *exportsPanel_ = nullptr;
+    ui::DockPanel *analyzerPanel_ = nullptr;
+    AnalyzerView *analyzer_ = nullptr;
     DevicesView *effects_ = nullptr;
     ui::Pages *editors_ = nullptr; // the piano roll, the audio editor and the step sequencer
 };

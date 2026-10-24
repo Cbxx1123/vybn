@@ -82,6 +82,7 @@ void AudioSystem::reserveBuffers()
         channel.assign(kMaxBlock, 0.0f);
     for (auto &channel : inputScratch_)
         channel.assign(kMaxBlock, 0.0f);
+    tapScratch_.assign(static_cast<size_t>(kMaxBlock) * kChannels, 0.0f);
     for (auto &key : masterKey_) {
         for (auto &channel : key)
             channel.assign(kMaxBlock, 0.0f);
@@ -545,14 +546,21 @@ void AudioSystem::render(float *out, uint32_t frames, double sampleRate, const f
         float volume = masterVolume_.get();
         masterEffects_.automateMixParam(state, kVolumeParam, volume);
         float *o = out + static_cast<size_t>(done) * kChannels;
+        const bool tapped = masterTap_.enabled.load(std::memory_order_relaxed);
         for (uint32_t i = 0; i < n; ++i) {
-            const float g = gain_.next(target) * volume_.next(volume);
+            const float v = volume_.next(volume);
+            const float g = gain_.next(target) * v;
             for (uint32_t c = 0; c < kChannels; ++c) {
-                const float v = scratch_[c][i] * g;
-                o[i * kChannels + c] = v;
-                peak[c] = std::max(peak[c], std::fabs(v));
+                if (tapped)
+                    tapScratch_[i * kChannels + c] = scratch_[c][i] * v;
+                const float heard = scratch_[c][i] * g;
+                o[i * kChannels + c] = heard;
+                peak[c] = std::max(peak[c], std::fabs(heard));
             }
         }
+        // The Analyzer's tap, when it is on: the mix after the master volume, before the monitoring gain
+        if (tapped)
+            masterTap_.writeInterleaved(tapScratch_.data(), n);
         transport_.advance(state, n);
         done += n;
     }

@@ -116,7 +116,7 @@ bool sameTrackFields(const Track &a, const Track &b)
     return a.name == b.name && a.kind == b.kind && a.gain == b.gain && a.pan == b.pan && a.mute == b.mute &&
            a.solo == b.solo && a.instrument == b.instrument && a.inputChannel == b.inputChannel &&
            a.inputStereo == b.inputStereo && a.effects == b.effects && a.automation == b.automation &&
-           a.output == b.output && a.sends == b.sends && sameTakeLanes(a.takeLanes, b.takeLanes);
+           a.output == b.output && a.sends == b.sends && sameTakeLanes(a.takeLanes, b.takeLanes) && a.freeze == b.freeze;
 }
 
 bool sameTrack(const Track &a, const Track &b)
@@ -268,7 +268,7 @@ bool sameSavedTrack(const Track &a, const Track &b)
     if (a.kind != b.kind || a.name != b.name || a.gain != b.gain || a.pan != b.pan || a.mute != b.mute ||
         a.solo != b.solo || a.armed != b.armed || a.folded != b.folded || a.effects.size() != b.effects.size() ||
         a.clips.size() != b.clips.size() || a.automation != b.automation || a.output != b.output ||
-        a.sends != b.sends)
+        a.sends != b.sends || a.freeze != b.freeze)
         return false;
     const bool instrument = a.kind == TrackKind::Instrument;
     if (!instrument && (a.inputChannel != b.inputChannel || a.inputStereo != b.inputStereo || a.monitor != b.monitor))
@@ -380,6 +380,14 @@ std::string describeChange(const Project &a, const Project &b)
         return "Edit export preset";
     if (a.exportMetadata != b.exportMetadata)
         return "Edit export details";
+
+    // Freezing and unfreezing (docs/design/freeze-plan.md)
+    for (size_t i = 0; i < a.tracks.size(); ++i) {
+        const Track &ta = a.tracks[i];
+        const Track &tb = b.tracks[i];
+        if (ta.freeze != tb.freeze)
+            return !tb.frozen() ? "Unfreeze track" : ta.frozen() ? "Refreeze track" : "Freeze track";
+    }
 
     // Takes recorded, removed or comped (before the clips: comping cuts and joins them)
     for (size_t i = 0; i < a.tracks.size(); ++i) {
@@ -494,7 +502,7 @@ namespace {
 // a field added to Track would quietly drop out of undo. This stops the build when Track's size
 // changes (on the toolchain the project builds with): add the field to those three, then update the size.
 #if defined(__GLIBCXX__) && defined(__x86_64__)
-static_assert(sizeof(Track) == 344, "Track changed: add the new field to shellOf, sameTrackFields and "
+static_assert(sizeof(Track) == 392, "Track changed: add the new field to shellOf, sameTrackFields and "
                                      "ProjectStore::restore, then update this size");
 // Clip's fields are listed by hand too: sameClip and sameSavedClip here, sameClipContent
 // (ProjectSession.cpp), AudioBridge::hashClips and the project file
@@ -524,6 +532,7 @@ Track shellOf(const Track &t)
     s.output = t.output;
     s.sends = t.sends;
     s.takeLanes = t.takeLanes;
+    s.freeze = t.freeze;
     return s;
 }
 
@@ -644,7 +653,8 @@ HistoryRestore History::makePlan(const Snapshot &from, const Snapshot &to, const
         if (a.shell != b.shell) {
             mix = !sameMixFields(*a.shell, *b.shell);
             content = a.shell->instrument != b.shell->instrument || a.shell->effects != b.shell->effects ||
-                      a.shell->automation != b.shell->automation || !sameTakeLanes(a.shell->takeLanes, b.shell->takeLanes);
+                      a.shell->automation != b.shell->automation || !sameTakeLanes(a.shell->takeLanes, b.shell->takeLanes) ||
+                      a.shell->freeze != b.shell->freeze;
         }
         if (a.clips.size() != b.clips.size())
             content = true;

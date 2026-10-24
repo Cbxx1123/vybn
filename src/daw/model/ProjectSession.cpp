@@ -46,7 +46,7 @@ bool sameClipContent(const Clip &a, const Clip &b)
 bool sameTrackContent(const Track &a, const Track &b)
 {
     if (a.kind != b.kind || a.instrument != b.instrument || a.effects != b.effects || a.automation != b.automation ||
-        a.clips.size() != b.clips.size() || a.takeLanes.size() != b.takeLanes.size())
+        a.clips.size() != b.clips.size() || a.takeLanes.size() != b.takeLanes.size() || a.freeze != b.freeze)
         return false;
     for (size_t i = 0; i < a.clips.size(); ++i) {
         if (!sameClipContent(a.clips[i], b.clips[i]))

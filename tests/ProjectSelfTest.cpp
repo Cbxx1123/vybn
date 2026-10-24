@@ -6,6 +6,7 @@
 #include "MarkersSelfTest.h"
 #include "MidiImportSelfTest.h"
 #include "TakesSelfTest.h"
+#include "FreezeSelfTest.h"
 #include "WarpSelfTest.h"
 #include "TempoSelfTest.h"
 
@@ -2436,6 +2437,7 @@ id = "vibin.synth"
     c.failures += runWarpModelChecks();
     c.failures += runMarkersChecks();
     c.failures += runMidiImportChecks();
+    c.failures += runFreezeProjectChecks();
 
     return c.finish("project");
 }
