@@ -1,4 +1,5 @@
 vybn_module(vybn_audio SOURCES
+    Analysis.cpp
     AudioAnalysis.cpp
     AudioFile.cpp
     AudioSystem.cpp
@@ -46,6 +47,6 @@ if(VYBN_OPTIMISE_AUDIO AND NOT MSVC)
     set_source_files_properties(
         AudioAnalysis.cpp AudioSystem.cpp Automation.cpp ClipPlayer.cpp DeviceChain.cpp Effects.cpp Encoders.cpp Fft.cpp Mastering.cpp
         Memory.cpp NotePlayer.cpp PluginEffect.cpp PluginInstrument.cpp Preview.cpp Processors.cpp Recorder.cpp
-        Sampler.cpp Stretch.cpp Synth.cpp SynthTables.cpp TempoMap.cpp Track.cpp Warp.cpp
+        Sampler.cpp Stretch.cpp Synth.cpp SynthTables.cpp TempoMap.cpp Track.cpp Warp.cpp Analysis.cpp
         PROPERTIES COMPILE_OPTIONS "-O3")
 endif()

@@ -85,6 +85,7 @@ void defineActions(ui::Keymap &keymap)
     define("view.effects", "Show the devices", "View", {{Key::Num3, ctrl}});
     define("view.exports", "Show the exports", "View", {{Key::Num4, ctrl}});
     define("view.steps", "Step sequencer", "View", {{Key::Num5, ctrl}});
+    define("view.analyzer", "Show the analyzer", "View", {{Key::Num6, ctrl}});
     define("view.browser", "Browser", "View", {{Key::Tab, 0}});
     define("view.zoomIn", "Zoom in", "View", {{Key::Equal, ctrl}}, true);
     define("view.zoomOut", "Zoom out", "View", {{Key::Minus, ctrl}}, true);

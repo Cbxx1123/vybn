@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "Analysis.h"
 #include "AudioProcessor.h"
 #include "DeviceChain.h"
 #include "Routing.h"
@@ -133,6 +134,12 @@ public:
     // The project's master volume (linear, 0-2), after the master effects and before the master gain:
     // part of the mix, so offline engines (exports) play it too, while the master gain is monitoring
     AudioParam &masterVolume() { return masterVolume_; }
+    // The Analyzer's taps (docs/design/analyzer-plan.md), kept for the system's life so they outlive every
+    // processor that writes them: the master's, written after the master volume and before the
+    // monitoring gain (the mix as an export renders it), and one a track writes after its fader when
+    // pointed at it (TrackProcessor::analysis)
+    AnalysisTap &masterTap() { return masterTap_; }
+    AnalysisTap &trackTap() { return trackTap_; }
     // Effects on the master bus, before the master gain (set with apply(), collect() once a frame)
     DeviceChain &masterEffects() { return masterEffects_; }
     // While the device is stopped: prepares every processor for offline renders at `sampleRate`
@@ -237,6 +244,7 @@ private:
     env::RealtimePool *pool_ = nullptr;      // the scheduler's, when there is one
     std::array<std::vector<float>, kChannels> scratch_;
     std::array<std::vector<float>, kMaxInputs> inputScratch_;
+    std::vector<float> tapScratch_; // the master tap's block, interleaved (made up front)
     // The master effects' sidechain keys (Routing::masterKeys), read from the tracks once they have rendered
     static constexpr uint32_t kMaxMasterKeys = kMaxKeys;
     std::array<std::array<std::vector<float>, kChannels>, kMaxMasterKeys> masterKey_;
@@ -249,6 +257,7 @@ private:
     AudioParam masterVolume_{1.0f, 0.0f, 2.0f};
     DeviceChain masterEffects_;
     std::array<std::atomic<float>, kChannels> peaks_{};
+    AnalysisTap masterTap_, trackTap_;
     std::array<std::atomic<float>, kMaxInputs> inputPeaks_{};
     std::atomic<float> load_{0.0f};
     std::atomic<uint64_t> overloads_{0};

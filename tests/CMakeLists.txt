@@ -18,8 +18,10 @@ add_library(vybn_selftests STATIC
     StepSelfTest.cpp
     SynthSelfTest.cpp
     TakesSelfTest.cpp
-    WarpSelfTest.cpp
+    AnalysisSelfTest.cpp
+    FreezeSelfTest.cpp
     TempoSelfTest.cpp
+    WarpSelfTest.cpp
     Vst3SelfTest.cpp
 )
 target_include_directories(vybn_selftests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

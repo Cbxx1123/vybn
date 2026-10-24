@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "daw/model/AutomationLanes.h"
+#include "daw/model/Freeze.h"
 #include "daw/widgets/Format.h"
 #include "daw/model/Routing.h"
 #include "daw/model/Warp.h"
@@ -131,14 +132,20 @@ AudioBridge::AudioBridge(audio::AudioSystem &audio, audio::MidiHub &midi, plugin
 {
 }
 
-AudioBridge::TrackAudio AudioBridge::makeTrack(const Track &t)
+AudioBridge::TrackAudio AudioBridge::makeTrack(const Track &t, bool frozen)
 {
     // Instrument tracks play their notes (and MIDI keyboards) through a sampler; audio tracks
     // play their clips and monitor the input
     std::unique_ptr<audio::AudioProcessor> source;
     TrackAudio fresh;
     audio::ChainInstrument *chainInstrument = nullptr;
-    if (t.kind == TrackKind::Instrument) {
+    if (frozen && !isBus(t.kind)) {
+        // Its freeze plays in place of its notes or clips and its devices
+        auto audioClips = std::make_unique<audio::AudioClipPlayer>();
+        fresh.clips = audioClips.get();
+        source = std::move(audioClips);
+        fresh.frozen = true;
+    } else if (t.kind == TrackKind::Instrument) {
         // Whatever instrument the track's chain has
         auto instrument = std::make_unique<audio::ChainInstrument>();
         chainInstrument = instrument.get();
@@ -183,10 +190,12 @@ void AudioBridge::reconcile(const Project &project)
     std::vector<TrackAudio> next;
     next.reserve(project.tracks.size());
     std::vector<bool> taken(tracks_.size(), false);
-    for (const Track &t : project.tracks) {
+    for (size_t i = 0; i < project.tracks.size(); ++i) {
+        const Track &t = project.tracks[i];
+        const bool frozen = i < frozen_.size() && frozen_[i];
         size_t match = tracks_.size();
         for (size_t j = 0; j < tracks_.size(); ++j) {
-            if (!taken[j] && tracks_[j].id == t.id && tracks_[j].kind == t.kind) {
+            if (!taken[j] && tracks_[j].id == t.id && tracks_[j].kind == t.kind && tracks_[j].frozen == frozen) {
                 match = j;
                 break;
             }
@@ -195,7 +204,7 @@ void AudioBridge::reconcile(const Project &project)
             taken[match] = true;
             next.push_back(std::move(tracks_[match]));
         } else {
-            next.push_back(makeTrack(t));
+            next.push_back(makeTrack(t, frozen));
         }
     }
     for (size_t j = 0; j < tracks_.size(); ++j) {
@@ -225,6 +234,14 @@ void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
     // The tempo map (published only when it changed)
     audio_.transport().setTiming(project.timing);
     const uint64_t tempo = tempoHash(project.timing);
+    // Frozen tracks whose freeze is current play it (docs/design/freeze-plan.md): looked at again
+    // whenever the project moved, since a freeze goes out of date with its track's sound
+    if (store.revision() != frozenRevision_ || frozen_.size() != project.tracks.size()) {
+        frozenRevision_ = store.revision();
+        frozen_.assign(project.tracks.size(), false);
+        for (size_t i = 0; i < project.tracks.size(); ++i)
+            frozen_[i] = freezeCurrent(project, static_cast<int>(i));
+    }
     reconcile(project);
     levels_.resize(tracks_.size());
     // The master effects
@@ -250,23 +267,28 @@ void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
         p.gain.set(t.gain);
         p.pan.set(t.pan);
         p.mute = t.mute;
+        p.analysis.store(analysed_ != kNoId && t.id == analysed_ ? &audio_.trackTap() : nullptr, std::memory_order_relaxed);
         // (its solo comes from the routing: what a soloed track feeds, or is fed by, is heard too)
         for (size_t k = 0; k < t.sends.size() && k < audio::TrackProcessor::kMaxSends; ++k)
             p.setSendLevel(static_cast<uint32_t>(k), t.sends[k].level);
         // Its devices: the instrument (instrument tracks) and the effects, and the plugins' own
         // changes back into the project
+        // (a frozen track's are in its freeze: its chain is empty, so its plugins are let go)
         static const audio::DeviceSetting kNone;
-        p.chain.apply(t.kind == TrackKind::Instrument ? t.instrument : kNone, t.effects);
+        static const std::vector<audio::DeviceSetting> kNoEffects;
+        const bool frozen = state.frozen;
+        const std::vector<audio::DeviceSetting> &effects = frozen ? kNoEffects : t.effects;
+        p.chain.apply(t.kind == TrackKind::Instrument && !frozen ? t.instrument : kNone, effects);
         p.chain.collect();
         // Its automation: the curves made again when the track's content or its devices moved
         const uint64_t key = automationKey(p.chain, store.trackRevision(static_cast<int>(i)));
         if (key != state.automationKey) {
-            syncAutomation(p.chain, t.kind == TrackKind::Instrument ? &t.instrument : nullptr, t.effects, &t.automation);
+            syncAutomation(p.chain, t.kind == TrackKind::Instrument && !frozen ? &t.instrument : nullptr, effects, &t.automation);
             state.automationKey = key;
         }
-        if (t.kind == TrackKind::Instrument && t.hasInstrument())
+        if (t.kind == TrackKind::Instrument && t.hasInstrument() && !frozen)
             syncDevice(store, DevicePlace::instrumentOf(static_cast<int>(i)), p.chain.instrument());
-        for (size_t j = 0; j < t.effects.size(); ++j)
+        for (size_t j = 0; j < effects.size(); ++j)
             syncDevice(store, DevicePlace::effect(false, static_cast<int>(i), static_cast<int>(j)), p.chain.effect(j));
         levels_[i] = std::max(p.takePeak(0), p.takePeak(1));
 
@@ -278,8 +300,9 @@ void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
             if (trackRevision != state.clipsRevision || poolVersion != state.clipsPoolVersion ||
                 tempo != state.clipsTempo || auditionVersion_ != state.clipsAudition) {
                 const std::vector<Clip> &played = playedClips(t);
-                const uint64_t hash = hashClips(project, played);
-                if (hash == state.clipHash || clips->setSequence(clipSequenceFor(project, played))) {
+                const uint64_t hash = frozen ? hashFreeze(project, t) : hashClips(project, played);
+                if (hash == state.clipHash ||
+                    clips->setSequence(frozen ? freezeSequenceFor(project, t) : clipSequenceFor(project, played))) {
                     state.clipHash = hash;
                     state.clipsRevision = trackRevision;
                     state.clipsPoolVersion = poolVersion;
@@ -386,7 +409,7 @@ void AudioBridge::syncRouting(const Project &project)
     latencies.reserve(count);
     for (const TrackAudio &t : tracks_)
         latencies.push_back(t.latency);
-    const RoutingPlan plan = planRouting(project, latencies, audio::TrackProcessor::kMaxCompensation);
+    const RoutingPlan plan = planRouting(project, latencies, audio::TrackProcessor::kMaxCompensation, frozen_);
     auto routing = std::make_unique<audio::Routing>();
     for (int stage = 0; stage < plan.stages; ++stage) {
         routing->beginStage();
@@ -567,6 +590,36 @@ std::vector<plugin::Slot *> AudioBridge::pluginSlots()
     for (const TrackAudio &t : tracks_)
         collect(t.processor->chain);
     return out;
+}
+
+bool AudioBridge::playsFreeze(int track) const
+{
+    return track >= 0 && static_cast<size_t>(track) < tracks_.size() && tracks_[static_cast<size_t>(track)].frozen;
+}
+
+uint64_t AudioBridge::hashFreeze(const Project &project, const Track &t) const
+{
+    uint64_t h = 7809847782465536322ull;
+    mix(h, t.freeze.file.data(), t.freeze.file.size());
+    mix(h, &t.freeze.seconds, sizeof(t.freeze.seconds));
+    const uint64_t tempo = tempoHash(project.timing);
+    mix(h, &tempo, sizeof(tempo));
+    const uint64_t version = pool_.version();
+    mix(h, &version, sizeof(version));
+    return h;
+}
+
+std::unique_ptr<audio::ClipSequence> AudioBridge::freezeSequenceFor(const Project &project, const Track &t)
+{
+    auto sequence = std::make_unique<audio::ClipSequence>();
+    if (auto data = pool_.get(t.freeze.file)) {
+        audio::ClipRegion r;
+        r.start = 0.0;
+        r.end = project.timing.beatAt(data->seconds());
+        r.data = data;
+        sequence->regions.push_back(std::move(r));
+    }
+    return sequence;
 }
 
 uint32_t AudioBridge::trackLatency(size_t track) const

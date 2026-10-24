@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <iterator>
@@ -336,6 +338,14 @@ std::string writeProject(const Project &project, const std::string &folder)
                 out << (i ? ", " : " ") << "{ to = " << t.sends[i].to << ", level = " << number(t.sends[i].level)
                     << ", pre_fader = " << boolean(t.sends[i].preFader) << " }";
             out << " ]\n";
+        }
+        // Its frozen sound (docs/design/freeze-plan.md): the file, its length and what it was made from
+        if (t.frozen() && !t.bus()) {
+            char hash[24];
+            std::snprintf(hash, sizeof(hash), "%016llx", static_cast<unsigned long long>(t.freeze.hash));
+            out << "freeze_file = " << quote(relativeTo(t.freeze.file, folder)) << "\n";
+            out << "freeze_seconds = " << number(t.freeze.seconds) << "\n";
+            out << "freeze_hash = " << quote(hash) << "\n";
         }
         writeAutomation(out, t.automation, true);
         // Its devices: the instrument, then the effects
@@ -989,6 +999,21 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
         t.pan = std::clamp(t.pan, -1.0f, 1.0f);
         t.armed = t.armed && !t.bus(); // buses record nothing
         t.folded = t.folded && t.kind == TrackKind::Group; // only groups fold
+        // Its frozen sound: kept only on a track that makes sound, with a hash of 16 hex digits
+        std::string freezeHash;
+        r.text(tv, "freeze_file", where, t.freeze.file);
+        r.real(tv, "freeze_seconds", where, t.freeze.seconds);
+        r.text(tv, "freeze_hash", where, freezeHash);
+        if (!r.ok())
+            return false;
+        if (!t.freeze.file.empty()) {
+            char *end = nullptr;
+            t.freeze.hash = std::strtoull(freezeHash.c_str(), &end, 16);
+            if (freezeHash.empty() || (end && *end))
+                return r.fail(where + "freeze_hash must be 16 hex digits");
+            t.freeze.file = t.bus() ? std::string() : resolve(t.freeze.file, folder);
+            t.freeze.seconds = std::max(0.0, t.freeze.seconds);
+        }
         // Its output (a group's id) and sends (each to a return's or group's id), checked once every track is read
         if (const toml::Value *output = tv.at("output")) {
             if (output->type() != toml::Type::Integer || output->integer() < 0 || output->integer() > 4294967295LL)

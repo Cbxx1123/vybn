@@ -179,6 +179,8 @@ struct RoutingPlan {
 // each path is held back (at most `maxDelay`) so all a destination takes in lines up with the
 // latest of it. Solo: a track is heard while something is soloed when it is soloed, feeds a soloed
 // track (a group's or a return's sources), or is fed by one of those (the returns they send to).
-RoutingPlan planRouting(const Project &project, const std::vector<uint32_t> &latencies, uint32_t maxDelay);
+// Tracks marked in `frozen` play their freeze, whose effects are in the sound: they take no keys.
+RoutingPlan planRouting(const Project &project, const std::vector<uint32_t> &latencies, uint32_t maxDelay,
+                        const std::vector<bool> &frozen = {});
 
 }

@@ -1038,6 +1038,11 @@ void ArrangementView::drawClip(DrawList &list, const Theme &theme, int track, in
             }
         }
     }
+    // A frozen track's clips say so at the right, and are veiled
+    if (t.frozen() && r.w > 120.0f)
+        list.add(theme.text("Frozen", {r.x, r.y + 6.0f, r.w - 10.0f, px}, TextStyle::Caption, TextTone::Muted, TextAlign::End));
+    if (t.frozen())
+        list.add(theme.ink(r, Shape::Soft, TextTone::Muted, true, 0.08f)); // a frost over it
 
     // Audio clips show their waveform (the take so far, while recording); instrument clips their
     // notes

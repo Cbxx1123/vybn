@@ -15,6 +15,7 @@
 #include "daw/views/Arrangement.h"
 #include "daw/views/AudioEditor.h"
 #include "daw/model/AutomationLanes.h"
+#include "daw/model/Freeze.h"
 #include "daw/widgets/Format.h"
 #include "daw/views/Mixer.h"
 #include "daw/views/PianoRoll.h"
@@ -160,17 +161,97 @@ std::string DawApp::trackInputText(int index) const
     const Track *t = project().track(index);
     if (!t)
         return {};
+    const std::string frozen = freezeText(index); // "Frozen  /  ", "Freezing 40%  /  "
     if (t->kind == TrackKind::Instrument) { // "MIDI in" has its own line above it in the header
-        return t->hasInstrument() ? t->instrument.name : std::string("No instrument  (click to choose)");
+        return frozen + (t->hasInstrument() ? t->instrument.name : std::string("No instrument  (click to choose)"));
     }
     if (t->bus()) // a bus: what it is and where it goes
         return std::string(kindName(t->kind)) + "  /  to " + outputName(project(), index) + extraDestinations(project(), index);
     if (t->inputChannel < 0)
-        return "Audio  /  no input";
+        return frozen + "Audio  /  no input";
     std::string in = "In " + std::to_string(t->inputChannel + 1);
     if (t->inputStereo)
         in += "-" + std::to_string(t->inputChannel + 2);
-    return "Audio  /  " + in + (t->monitor ? ", heard" : "");
+    return frozen + "Audio  /  " + in + (t->monitor ? ", heard" : "");
+}
+
+// Freezing and bouncing
+
+std::string DawApp::freezeText(int track) const
+{
+    const Track *t = project().track(track);
+    if (!t)
+        return {};
+    if (freezer_ && freezer_->busy(t->id))
+        return format("Freezing %.0f%%  /  ", freezer_->progress(t->id) * 100.0f);
+    if (!t->frozen())
+        return {};
+    return bridge_->playsFreeze(track) ? std::string("Frozen  /  ") : std::string("Frozen, out of date  /  ");
+}
+
+void DawApp::freezeTrack(int track, FreezeKind kind)
+{
+    const Track *t = project().track(track);
+    if (!t)
+        return;
+    // A current freeze flattens at once: its file is the sound
+    if (kind == FreezeKind::Flatten && freezeCurrent(project(), track)) {
+        flattenTrack(session_.store().edit(), track);
+        notify("Flattened \"" + t->name + "\" into audio");
+        return;
+    }
+    std::string why;
+    const uint32_t rate = audio_.sampleRate() > 0 ? audio_.sampleRate() : 48000;
+    if (!freezer_->start(project(), track, kind, recordingController_->takeFolder(), rate, why))
+        notify(why);
+}
+
+void DawApp::freezeDemo()
+{
+    freezeTrack(0, FreezeKind::Freeze);
+    freezeTrack(1, FreezeKind::Bounce);
+}
+
+void DawApp::unfreezeTrack(int track)
+{
+    if (const Track *t = project().track(track); t && t->frozen())
+        session_.store().editTrack(track).freeze = {}; // the file stays, as recordings do
+}
+
+void DawApp::updateFreezes()
+{
+    freezer_->update();
+    for (const Freezer::Result &result : freezer_->takeFinished()) {
+        const int index = project().trackIndex(result.track);
+        const Track *t = project().track(index);
+        if (result.cancelled) {
+            notify("Rendering cancelled");
+            continue;
+        }
+        if (!result.error.empty() || !t) {
+            notify(result.error.empty() ? std::string("The track went before its render finished") : "Couldn't render: " + result.error);
+            continue;
+        }
+        const std::string name = t->name;
+        pool_->get(result.file); // loads it now, so it plays at once
+        switch (result.kind) {
+        case FreezeKind::Freeze:
+            session_.store().editTrack(index).freeze = TrackFreeze{result.file, result.seconds, result.hash};
+            notify("Froze \"" + name + "\"");
+            break;
+        case FreezeKind::Bounce:
+            addBounce(session_.store().edit(), index, result.file, result.seconds);
+            notify("Bounced \"" + name + "\" to a new audio track, and muted it");
+            break;
+        case FreezeKind::Flatten: {
+            Project &p = session_.store().edit();
+            p.tracks[static_cast<size_t>(index)].freeze = TrackFreeze{result.file, result.seconds, result.hash};
+            flattenTrack(p, index);
+            notify("Flattened \"" + name + "\" into audio");
+            break;
+        }
+        }
+    }
 }
 
 void DawApp::notify(std::string message)
@@ -1050,6 +1131,23 @@ void DawApp::openTrackMenu(int track, Vec2 at)
             }
         }));
         items.push_back(MenuItem::item("Import audio file here...", [this, track] { importAudio(track); }));
+    }
+    if (canFreeze(*t)) {
+        // Freezing and bouncing (docs/design/freeze-plan.md)
+        items.push_back(MenuItem::divider());
+        if (freezer_->busy(t->id)) {
+            const ObjectId id = t->id;
+            items.push_back(MenuItem::item("Cancel rendering", [this, id] { freezer_->cancel(id); }));
+        } else if (!t->frozen()) {
+            items.push_back(MenuItem::item("Freeze track", [this, track] { freezeTrack(track, FreezeKind::Freeze); }));
+        } else {
+            if (!freezeCurrent(project(), track))
+                items.push_back(MenuItem::item("Refreeze (out of date)", [this, track] { freezeTrack(track, FreezeKind::Freeze); }));
+            items.push_back(MenuItem::item("Unfreeze track", [this, track] { unfreezeTrack(track); }));
+            items.push_back(MenuItem::item("Flatten to audio", [this, track] { freezeTrack(track, FreezeKind::Flatten); }));
+        }
+        if (!freezer_->busy(t->id))
+            items.push_back(MenuItem::item("Bounce to audio track", [this, track] { freezeTrack(track, FreezeKind::Bounce); }));
     }
     if (t->bus()) {
         items.push_back(MenuItem::item("Add effect...", [this, track, at] {

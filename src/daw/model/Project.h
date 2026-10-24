@@ -160,6 +160,17 @@ struct Send {
     bool operator!=(const Send &o) const { return !(*this == o); }
 };
 
+// A track's sound rendered into a file (its instrument and effects, before its fader), which plays in
+// its place while it is current: while freezeHash still gives `hash` (docs/design/freeze-plan.md)
+struct TrackFreeze {
+    std::string file;
+    double seconds = 0.0; // the file's length
+    uint64_t hash = 0;    // freezeHash of the track when it was rendered
+
+    bool operator==(const TrackFreeze &o) const { return file == o.file && seconds == o.seconds && hash == o.hash; }
+    bool operator!=(const TrackFreeze &o) const { return !(*this == o); }
+};
+
 struct Track {
     ObjectId id = kNoId;
     std::string name;
@@ -194,8 +205,11 @@ struct Track {
     std::vector<Send> sends;
     // Audio and instrument tracks: the takes recorded on it, newest first. Content, like clips.
     std::vector<TakeLane> takeLanes;
+    // Audio and instrument tracks: its frozen sound (none while `file` is empty). Content, like clips.
+    TrackFreeze freeze;
 
     bool bus() const { return isBus(kind); }
+    bool frozen() const { return !freeze.file.empty(); }
 };
 
 // Where a device is: in the master's chain, or a track's, at `index` among its effects, or the

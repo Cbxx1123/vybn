@@ -91,6 +91,12 @@ public:
     void releaseKey(int key);
     // Each track's peak this frame, for the mixer's meters
     const std::vector<float> &levels() const { return levels_; }
+    // Frames from the earliest sound to the master (the latest path's plugin latency), from the last routing
+    uint32_t masterLatency() const { return masterTime_; }
+    // Whether a track plays its freeze now (frozen, and the freeze current): its devices are let go
+    bool playsFreeze(int track) const;
+    // The track (by id) that writes the AudioSystem's track tap for the Analyzer (kNoId: none), from the next sync
+    void setAnalysed(ObjectId track) { analysed_ = track; }
 
 private:
     // Everything the bridge keeps for one track. Instrument tracks have a player, audio tracks a
@@ -117,6 +123,7 @@ private:
         std::string error;                          // why loading failed
         uint32_t latency = 0;                       // its plugins' latency at the last sync
         uint64_t automationKey = 0;                 // what its chain's automation was made from (automationKey)
+        bool frozen = false;                        // made to play the track's freeze (Track::freeze)
     };
 
     // Automation: a key for what a chain's curves are made from (the part's revision, the devices
@@ -132,8 +139,11 @@ private:
     const std::vector<Clip> &playedClips(const Track &t) const;
     uint64_t hashClips(const Project &project, const std::vector<Clip> &played) const;
     std::unique_ptr<audio::ClipSequence> clipSequenceFor(const Project &project, const std::vector<Clip> &played);
-    // A new processor and players for a track (added to the graph)
-    TrackAudio makeTrack(const Track &t);
+    // A frozen track's sound: its freeze file from the song's start
+    uint64_t hashFreeze(const Project &project, const Track &t) const;
+    std::unique_ptr<audio::ClipSequence> freezeSequenceFor(const Project &project, const Track &t);
+    // A new processor and players for a track (added to the graph); a frozen one plays its freeze
+    TrackAudio makeTrack(const Track &t, bool frozen);
     // Takes one track's processor out of the graph
     void removeAudio(TrackAudio &state);
     // Puts tracks_ in the project's order by id: keeps what matches, makes what is new, and sets the
@@ -158,6 +168,10 @@ private:
     uint64_t auditionVersion_ = 0;          // moved by every change of audition_
     uint64_t masterAutomationKey_ = 0;
     std::vector<float> levels_; // kept as its own vector: MixerView holds a reference to it
+    // Which of the project's tracks play their freeze (freezeCurrent), worked out when the store moved
+    std::vector<bool> frozen_;
+    uint64_t frozenRevision_ = ~0ull;
+    ObjectId analysed_ = kNoId;
 };
 
 }
