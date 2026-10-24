@@ -75,6 +75,14 @@ public:
     Tab tab() const { return tab_; }
     // How far it has slid up, 0-1 (for tests and screenshots)
     float openness() const { return open_; }
+    // Where the row of an entry (by its key) is, for tests; empty when it isn't in the list
+    ui::Rect rowRect(const std::string &key) const
+    {
+        for (const auto &row : rows_)
+            if (row.first == key)
+                return row.second->rect();
+        return {};
+    }
 
     ui::Vec2 measure(const ui::Theme &) const override { return {}; }
     void arrange(const ui::Rect &window, const ui::Theme &theme) override;
@@ -134,6 +142,7 @@ private:
     double lastClickTime_ = -10.0;
     std::string message_;   // the latest thing done, under the details
     std::vector<Entry> shownEntries_;
+    std::vector<std::pair<std::string, const ui::Component *>> rows_; // each shown entry's row, by key
     std::string built_;     // stamp of the last rebuild
     std::string detailBuilt_;
     bool pending_ = false;

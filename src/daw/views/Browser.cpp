@@ -380,6 +380,7 @@ void AssetBrowser::rebuild()
     }
 
     list_->clear();
+    rows_.clear();
     for (const Entry &e : shownEntries_) {
         const std::string key = e.key;
         auto &item = list_->add<AssetRow>(e.title, [this, key] {
@@ -394,6 +395,7 @@ void AssetBrowser::rebuild()
             }
         }, [this, e] { return trailing(e); });
         item.setSubtitle(e.subtitle).setSize(Size::Small).setSelected(key == selectedKey_);
+        rows_.emplace_back(key, &item);
         if (e.from == Entry::From::Instrument || e.from == Entry::From::Plugin || e.from == Entry::From::Builtin) {
             // Library instruments, plugins and built-in instruments drag onto tracks alike
             item.setDrag([this, key] {

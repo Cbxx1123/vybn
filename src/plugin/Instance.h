@@ -61,7 +61,8 @@ public:
     // that crashes when made costs only this call (false, with why)
     static bool probeSidechain(const std::string &path, const std::string &id, const SandboxOptions &options, uint32_t &channels,
                                std::string &error);
-    // Lists the plugins in a plugin file (.clap, .vst3), loading it in a sandboxed host of its own
+    // Lists the plugins in a plugin file (.clap, .vst3), loading it in a sandboxed host of its own; a VST3
+    // bundle with a moduleinfo.json is read from that instead, without a host
     static bool scan(const std::string &path, const SandboxOptions &options, std::vector<Descriptor> &found, std::string &error);
 
     const Descriptor &descriptor() const { return descriptor_; }

@@ -48,3 +48,9 @@ set_target_properties(vybn-test-plugins-vst3 PROPERTIES PREFIX "" OUTPUT_NAME "v
 vybn_warnings(vybn-test-plugins-vst3)
 vybn_standalone(vybn-test-plugins-vst3)
 vybn_output(vybn-test-plugins-vst3 FOLDER plugins/vybn-test-plugins.vst3/Contents/x86_64-win)
+# and the bundle's list of its classes, read by a scan instead of loading it
+add_custom_command(TARGET vybn-test-plugins-vst3 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${VYBN_OUTPUT_DIR}/plugins/vybn-test-plugins.vst3/Contents/Resources"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/plugins/moduleinfo.json"
+            "${VYBN_OUTPUT_DIR}/plugins/vybn-test-plugins.vst3/Contents/Resources/moduleinfo.json")
+set_property(TARGET vybn-test-plugins-vst3 APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/plugins/moduleinfo.json")

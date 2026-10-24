@@ -35,7 +35,7 @@ src/
     app/              DawApp (the window and its menus), actions, settings, splash, the look
   win/                the icon patcher and the executable's resource
 tests/                the self-test suites, plugins/ (the test CLAP and VST3 plugins), render/ (golden images)
-tools/                test.sh (runs the suites), check.sh (syntax check), link-dev.ps1
+tools/                test.sh (runs the suites), coverage.sh (gcov), check.sh (syntax check), link-dev.ps1
 shaders/              GLSL, compiled to output/shaders
 assets/               the font and the icon
 docs/                 architecture/, reference/, design/, testing.md
@@ -67,6 +67,8 @@ Each module is a static library (`vybn_env`, `vybn_engine`, `vybn_ui`, `vybn_plu
   `bash tools/test.sh render` one suite; `--full` the full-size inputs; `--bench` adds the benchmarks;
   `--times` the slowest checks. Each suite is also `output/vybn.exe --<suite>-selftest`
   (audio, project, input, notes, engine, browser, plugin, synth, export, render).
+- `bash tools/coverage.sh` prints the lines of `src/` the suites run, from a gcov build of its own
+  (`build-coverage/`, `output-coverage/`; about 50 s once built).
 - The render suite compares pictures with `tests/render/<scene>.png`. Write a golden with
   `output/vybn.exe --render-selftest --scene NAME --update-goldens` only after looking at the picture.
 - Developer switches: `VYBN_FRAME_STATS=1` (a FRAME line a second), `VYBN_VERIFY_CACHE=1` (draw caches

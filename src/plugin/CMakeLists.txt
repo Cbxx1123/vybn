@@ -1,6 +1,7 @@
 vybn_module(vybn_plugin SOURCES
     Instance.cpp
     Manager.cpp
+    ModuleInfo.cpp
     Sandbox.cpp
     Slot.cpp
 )

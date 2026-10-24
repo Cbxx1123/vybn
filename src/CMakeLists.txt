@@ -2,7 +2,7 @@
 #   env      the environment: daemons, the scheduler and its thread pools, resources
 #   engine   windows, input and Vulkan (GLFW)
 #   ui       the UI layer: layout, components, drawing, the UI system
-#   plugin   CLAP plugins, each hosted in a sandboxed process (and that host, plugin/host)
+#   plugin   CLAP and VST3 plugins, each hosted in a sandboxed process (and that host, plugin/host)
 #   audio    the audio system, devices, instruments, effects, routing, encoders
 #   daw      the DAW itself: model, files, library, the audio bridge, views and the app
 #   win      Windows-only helpers (the icon patcher)
@@ -21,6 +21,9 @@ add_executable(vybn main.cpp)
 target_link_libraries(vybn PRIVATE vybn_daw vybn_selftests)
 vybn_warnings(vybn)
 vybn_output(vybn)
+if(VYBN_COVERAGE)
+    target_link_options(vybn PRIVATE --coverage) # the modules' counters, written when it exits
+endif()
 add_dependencies(vybn shaders vybn-plugin-host vybn-test-plugins)
 if(WIN32)
     vybn_add_icon(vybn)
