@@ -557,7 +557,7 @@ void AudioEditorView::drawContent(DrawList &list, const Theme &theme) const
             list.add(theme.accent(tab, Shape::Soft));
             list.add(theme.accent({x - 0.75f, area_.y + 2.0f, 1.5f, area_.h - 4.0f}, Shape::Rounded, 0.8f));
         } else {
-            list.add(theme.surface(tab, Shape::Soft, Elevation::Raised, 0.7f, Finish::Convex));
+            list.add(theme.accent(tab, Shape::Soft, 0.55f));
             list.add(theme.accent({x - 0.5f, area_.y + 2.0f, 1.0f, area_.h - 4.0f}, Shape::Rounded, 0.35f));
         }
     }

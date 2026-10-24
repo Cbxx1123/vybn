@@ -57,9 +57,10 @@ public:
     void handleInput(const ui::Input &input) override;
     void draw(ui::DrawList &list, const ui::Theme &theme) const override;
 
-    // For tests: where a marker's tab is drawn, and the strip
+    // For tests: where a marker's tab is drawn, the strip, and the x of a beat
     ui::Rect markerRect(int index) const;
     const ui::Rect &markerStrip() const { return strip_; }
+    float xOfBeat(double beat) const { return beatX(beat); }
 
 private:
     const Project &project() const { return store_.project(); }

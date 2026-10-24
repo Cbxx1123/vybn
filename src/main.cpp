@@ -289,6 +289,8 @@ int main(int argc, char **argv)
                     app.openProjectSettings();
                 else if (demo == "audioclip")
                     app.importAudioDemo();
+                else if (demo == "warp")
+                    app.warpDemo();
                 else if (demo == "recordmidi")
                     app.recordMidiDemo();
                 else if (demo == "unsaved") {

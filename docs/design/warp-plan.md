@@ -1,6 +1,6 @@
 # Audio warping: plan
 
-Status: planned. Decided with the user: warping only (of the three ideas offered: warping, freeze and
+Status: built (stages 1-4), with the differences under "As built". Decided with the user: warping only (of the three ideas offered: warping, freeze and
 bounce, modulators); imported and dropped files are warped when they are loops (their length fits whole
 bars at a tempo found in them), else left as they are, with a setting; recordings are warped at the
 tempo they were recorded at; turning warp on picks the mode from the file (Beats for percussive sound,
@@ -236,3 +236,38 @@ The editor gains a toolbar row (in its panel, as the piano roll's) and marks on 
 2. The stretch voices and the player (Repitch, Beats, Tones, Complex), with the audio checks.
 3. The file, the history, the bridge, the takes and split/trim paths, import and recording.
 4. The audio editor, the arrangement, the menus and the dialog; render scenes; the docs.
+
+## As built
+
+- Stages 1-4 as planned: `audio/Warp`, `audio/Fft`, `audio/AudioAnalysis`, `audio/Stretch` and the player;
+  `daw/model/Warp` and its uses; the file, the history, the bridge, recording and import; the editor's
+  strip, the warp row (`DawWarp.cpp`), the menus and the Quantise audio dialog; `--demo warp`.
+- The analysis is worked out on demand rather than with every load: `AudioPool::analysis(path)` starts
+  it once the file is in (the bridge asks for Beats and Complex clips, the editor for the clip shown), so
+  files that are never warped cost nothing. An import looks at a file of up to two minutes at once
+  (`analyseNow`), so a loop comes in warped in the same edit and undo step as the import, instead of
+  arriving later as its own step.
+- Onsets needed two corrections found by the checks: a frame is placed by the energy's steepest rise
+  over its whole span (the log magnitudes rise as soon as a hit enters a frame, not at its middle), the
+  file's first frame counting (a hit at frame 0), and a peak must stand well clear of the flux's median
+  (`5 x median + 20`), which a held chord's flux never does (it had 70 false transients before).
+- Beats: a slice whose time outlasts its sound fades out in the last 4 ms before its end (reading past
+  it played the next hit early), and a new slice starts at full level with the one before fading out
+  under it, so hits keep their attack. The slot a slice has is worked out when it starts.
+- A followed tempo ramp gets a marker every eighth of a beat (every beat was 10 ms out in a 90-140 BPM
+  ramp; an eighth is 0.18 ms).
+- Moving a marker anchors the clip's start first (a marker at its offset and content beat), since the
+  start's moment of the file is what keeps a clip in place; that anchor doesn't move, and slipping it
+  moves the clip's offset with it. Delete doesn't remove a marker (the action belongs to clips there);
+  a double-click or the marker's menu does.
+- The arrangement shows a badge ("Beats +3 st") only on a warped clip that is stretched or transposed,
+  so recordings, which are all warped, look as before. Transposition is in the warp row, not a dialog.
+- Not checked by a test: a streamed file's underrun while stretching (it reads silence for that grain
+  or slice and keeps time, as unwarped clips do), and the audio thread's lack of allocation, which is by
+  construction (the voices and the player's buffers are made on the main thread; no `std::vector` is
+  resized in `Stretch.cpp`'s render paths).
+- Measured (`VYBN_TEST_BENCH`, Debug build with the audio code at -O3, 10 s of stereo stretched by 1.5
+  and transposed): Repitch 9.8 ms, Beats 13.4 ms, Tones 63 ms, Complex 242 ms, so one Complex clip takes
+  about 2.4% of a core while it plays and a Tones clip 0.6%.
+- Checks: 21 in the audio suite (`runWarpAudioChecks`), 22 in the project suite (`runWarpModelChecks`, the editor's strip among them),
+  and the render suite's `warp` scene.

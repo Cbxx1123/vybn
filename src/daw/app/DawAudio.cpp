@@ -447,6 +447,49 @@ void DawApp::importAudioDemo()
     });
 }
 
+void DawApp::warpDemo()
+{
+    // Four bars of a beat at 100 BPM (a kick on each beat, a hat between), so the import finds a loop
+    const double rate = 48000.0;
+    const double beat = 0.6;
+    const size_t frames = static_cast<size_t>(rate * beat * 16.0);
+    std::vector<float> samples(frames * 2, 0.0f);
+    uint32_t noise = 4242u;
+    for (int hit = 0; hit < 32; ++hit) {
+        const bool kick = hit % 2 == 0;
+        const size_t start = static_cast<size_t>(hit * beat * 0.5 * rate);
+        for (size_t i = 0; start + i < frames && i < static_cast<size_t>(rate * 0.25); ++i) {
+            const double t = i / rate;
+            noise = noise * 1664525u + 1013904223u;
+            const double hiss = static_cast<double>(noise >> 8) / 8388608.0 - 1.0;
+            const double v = kick ? 0.7 * std::exp(-t * 18.0) * std::sin(2.0 * 3.14159265358979 * (55.0 + 90.0 * std::exp(-t * 30.0)) * t)
+                                  : 0.25 * std::exp(-t * 60.0) * hiss;
+            samples[(start + i) * 2] += static_cast<float>(v);
+            samples[(start + i) * 2 + 1] += static_cast<float>(v);
+        }
+    }
+    const std::string path = (fs::temp_directory_path() / "VYBN demo loop.wav").string();
+    std::string error;
+    if (!audio::writeWavFile(path, samples.data(), frames, 2, rate, error)) {
+        notify(error);
+        return;
+    }
+    int track = -1;
+    for (size_t i = 0; i < project().tracks.size() && track < 0; ++i) {
+        if (project().tracks[i].kind == TrackKind::Audio)
+            track = static_cast<int>(i);
+    }
+    ui_.post([this, path, track] {
+        importAudioFiles({path}, track, 0.0);
+        if (const Clip *shown = project().clip(); shown && shown->warp.on) {
+            Clip &c = session_.store().editClip(project().selectedTrack, project().selectedClip);
+            const int marker = addWarpMarker(c, c.start + 6.0);
+            moveWarpMarker(c, marker, c.start + 6.5);
+        }
+        showEditor();
+    });
+}
+
 void DawApp::dropDemo()
 {
     // A WAV dropped on the Drums track at bar 5, and a MIDI file of two parts at 96 BPM in 3/4 on the

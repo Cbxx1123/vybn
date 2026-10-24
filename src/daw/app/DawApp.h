@@ -133,6 +133,9 @@ public:
     void handleDrops();
     // A generated take imported onto the first audio track and opened in the editor (--demo)
     void importAudioDemo();
+    // --demo warp: a drum loop at 100 BPM imported (so it comes in warped), one marker moved, in the
+    // audio editor
+    void warpDemo();
     // Records a phrase sent through the MIDI hub onto the Lead track, as if played on a
     // keyboard, then opens the take in the piano roll (--demo recordmidi)
     void recordMidiDemo();

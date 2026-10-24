@@ -2,6 +2,7 @@
 #include "Harness.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -14,11 +15,14 @@
 #include "audio/Fft.h"
 #include "audio/TempoMap.h"
 #include "audio/Warp.h"
+#include "daw/app/Appearance.h"
 #include "daw/io/ProjectFile.h"
 #include "daw/model/History.h"
 #include "daw/model/Project.h"
+#include "daw/model/ProjectStore.h"
 #include "daw/model/Takes.h"
 #include "daw/model/Warp.h"
+#include "daw/views/AudioEditor.h"
 
 namespace tests {
 
@@ -410,6 +414,55 @@ int runWarpAudioChecks()
                 number("level %.3f in the first 10 ms", rms(jumped.left, 0.0, 0.01)));
     }
 
+    // Every mode plays the same in big blocks as in small ones (an export renders 4096 frames at a time)
+    {
+        auto data = audio::makeAudioData("clicks", kRate, 1, clicks);
+        const audio::AudioAnalysis a = audio::analyseSamples(clicks.data(), clicks.size(), 1, kRate);
+        float worst = 0.0f;
+        for (audio::WarpMode mode : {audio::WarpMode::Beats, audio::WarpMode::Tones, audio::WarpMode::Complex}) {
+            audio::ClipRegion r = warped(data, 0.0, 16.0, 120.0, mode, 2.0);
+            daw::Clip clip("Clicks", 0.0, 16.0);
+            clip.warp = r.warp;
+            r.slices = std::make_shared<const std::vector<audio::WarpSlice>>(daw::warpSlices(clip, &a, kRate, data->frames));
+            Output small, big;
+            for (uint32_t block : {256u, 4096u}) {
+                audio::AudioClipPlayer player;
+                send(player, {r});
+                uint64_t pos = 0;
+                run(player, at80, pos, 3.0, block == 256u ? small : big, block);
+            }
+            for (size_t i = 0; i < small.left.size(); ++i)
+                worst = std::max(worst, std::fabs(small.left[i] - big.left[i]));
+        }
+        c.check(worst < 1e-4f, "Warp: every mode plays the same in blocks of 4096 as of 256", number("worst %.2e", worst));
+    }
+
+    // The cost of each mode: ten seconds of a stereo clip stretched by 1.5 and transposed, in 256-frame blocks
+    if (bench()) {
+        std::vector<float> stereo(static_cast<size_t>(8.0 * kRate) * 2);
+        for (size_t i = 0; i < stereo.size() / 2; ++i) {
+            const double t = static_cast<double>(i) / kRate;
+            stereo[i * 2] = static_cast<float>(0.3 * std::sin(2.0 * kPi * 220.0 * t) + 0.1 * std::sin(2.0 * kPi * 1500.0 * t));
+            stereo[i * 2 + 1] = static_cast<float>(0.3 * std::sin(2.0 * kPi * 330.0 * t));
+        }
+        auto data = audio::makeAudioData("bench", kRate, 2, stereo);
+        for (audio::WarpMode mode : {audio::WarpMode::Repitch, audio::WarpMode::Beats, audio::WarpMode::Tones, audio::WarpMode::Complex}) {
+            audio::ClipRegion r = warped(data, 0.0, 16.0, 120.0, mode, 2.0);
+            daw::Clip clip("Bench", 0.0, 16.0);
+            clip.warp = r.warp;
+            r.slices = std::make_shared<const std::vector<audio::WarpSlice>>(daw::warpSlices(clip, nullptr, kRate, data->frames));
+            audio::AudioClipPlayer player;
+            send(player, {r});
+            Output out;
+            uint64_t pos = 0;
+            const auto start = std::chrono::steady_clock::now();
+            run(player, at80, pos, 10.0, out);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            std::printf("INFO  warp bench: %s, 10 s of stereo stretched by 1.5: %.1f ms (%.2f%% of real time)\n",
+                        daw::warpModeName(mode), ms, ms / 100.0);
+        }
+    }
+
     // A tempo change while a stretched clip plays: it follows (the beats move under it)
     {
         audio::TempoMap change(120.0);
@@ -662,6 +715,54 @@ int runWarpModelChecks()
                     daw::describeChange(back, transposed) == "Transpose clip" && daw::describeChange(back, unwarped) == "Unwarp clip" &&
                     daw::describeChange(unwarped, back) == "Warp clip",
                 "Warp: undo names its edits", daw::describeChange(back, moved));
+    }
+
+    // The audio editor's marker strip: a press makes a marker and drags it; a double-click removes it
+    {
+        daw::Project p;
+        p.tracks.clear();
+        p.addTrack(daw::TrackKind::Audio);
+        Clip w("Loop", 0.0, 8.0);
+        w.id = 3;
+        w.audioFile = "loop.wav";
+        daw::setWarp(w, timing, true, 4.0);
+        p.tracks[0].clips = {w};
+        daw::ProjectStore store(std::move(p));
+        store.select(0, 0);
+        daw::AudioEditorHooks hooks;
+        daw::AudioEditorView editor(store, hooks);
+        const ui::Theme theme = daw::studioTheme(true);
+        editor.arrange({0.0f, 0.0f, 1000.0f, 300.0f}, theme);
+        double time = 10.0;
+        auto frame = [&](float x, float y, bool down, bool pressed, uint8_t mods = 0) {
+            ui::Input in;
+            in.mouse = {x, y};
+            in.down = down;
+            in.pressed = pressed;
+            in.released = !down;
+            in.mods = mods;
+            in.time = time;
+            time += 0.5;
+            editor.handleInput(in);
+        };
+        const float y = editor.markerStrip().y + editor.markerStrip().h * 0.5f;
+        frame(0.0f, 0.0f, false, false); // the clip is fitted in
+        const daw::Project before = store.project();
+        frame(editor.xOfBeat(3.0), y, true, true);
+        frame(editor.xOfBeat(3.5), y, true, false);
+        frame(editor.xOfBeat(3.5), y, false, false);
+        const Clip &edited = *store.project().clip();
+        c.check(edited.warp.markers.size() == 2 && near(daw::clipBeatAt(edited, timing, 1.5), 3.5, 1e-4) &&
+                    daw::describeChange(before, store.project()) == "Add warp marker",
+                "Warp: pressing the marker strip makes a marker that drags its sound along",
+                number("%.0f markers", static_cast<double>(edited.warp.markers.size())) + ", " +
+                    daw::describeChange(before, store.project()));
+        frame(editor.markerRect(1).x + 5.0f, y, true, true);
+        frame(editor.markerRect(1).x + 5.0f, y, false, false);
+        time -= 0.8; // the next press comes within a double-click of the last
+        frame(editor.markerRect(1).x + 5.0f, y, true, true);
+        frame(editor.markerRect(1).x + 5.0f, y, false, false);
+        c.check(store.project().clip()->warp.markers.size() == 1, "Warp: double-clicking a marker removes it");
     }
 
     return c.failures;
