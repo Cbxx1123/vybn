@@ -17,6 +17,10 @@ namespace daw {
 
 namespace {
 
+// A note's expressions reach the instruments by number
+static_assert(static_cast<int>(Expression::Tuning) == audio::Instrument::kTuning && kExpressions == audio::Instrument::kExpressions,
+              "daw::Expression and audio::Instrument number the expressions alike");
+
 // FNV-1a over the clips a track plays and their notes, to notice edits without tracking every one
 uint64_t hashNotes(const std::vector<Clip> &clips)
 {
@@ -66,7 +70,20 @@ std::unique_ptr<audio::NoteSequence> sequenceFor(const std::vector<Clip> &clips)
                 continue;
             const double start = c.start + n.start;
             const double end = std::min(start + n.length, c.start + c.length);
-            sequence->notes.push_back({start, end, n.key, n.velocity});
+            audio::SequencedNote played{start, end, n.key, n.velocity, 0, 0};
+            // Its expression: the curves, by the instruments' numbering of them
+            played.firstCurve = static_cast<uint32_t>(sequence->curves.size());
+            for (const NoteCurve &curve : n.expression) {
+                if (curve.points.empty())
+                    continue;
+                audio::ExpressionCurve expression;
+                expression.expression = static_cast<int>(curve.type);
+                for (const ControlPoint &p : curve.points)
+                    expression.points.push_back({p.beat, p.value});
+                sequence->curves.push_back(std::move(expression));
+            }
+            played.curveCount = static_cast<uint32_t>(sequence->curves.size()) - played.firstCurve;
+            sequence->notes.push_back(played);
         }
     }
     // Controller lanes: each controller's points from every clip on the timeline, in order;

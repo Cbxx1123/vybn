@@ -6,6 +6,9 @@
 
 namespace audio {
 
+static_assert(static_cast<int>(plugin::NoteExpression::Tuning) == Instrument::kTuning,
+              "plugin::NoteExpression and Instrument number the expressions alike");
+
 // PluginInstrument
 
 PluginInstrument::PluginInstrument(plugin::PluginManager *manager, const DeviceSetting &setting)
@@ -57,6 +60,7 @@ bool PluginInstrument::push(plugin::EventKind kind, int key, float velocity, uin
     e.id = static_cast<uint32_t>(std::clamp(key, 0, 127));
     e.channel = 0;
     e.value = velocity;
+    e.expression = 0;
     return true;
 }
 
@@ -84,6 +88,19 @@ void PluginInstrument::controlChangeAt(int controller, float value, uint32_t fra
     e.id = static_cast<uint32_t>(controller);
     e.channel = 0;
     e.value = std::clamp(value, 0.0f, 1.0f);
+}
+
+void PluginInstrument::noteExpressionAt(int key, int expression, float value, uint32_t frame)
+{
+    if (eventCount_ >= events_.size() || expression < 0 || expression >= kExpressions)
+        return;
+    plugin::Event &e = events_[eventCount_++];
+    e.kind = plugin::EventKind::NoteExpression;
+    e.frame = frame;
+    e.id = static_cast<uint32_t>(std::clamp(key, 0, 127));
+    e.channel = 0;
+    e.expression = static_cast<uint32_t>(expression);
+    e.value = value;
 }
 
 void PluginInstrument::automate(uint32_t paramId, double value)
