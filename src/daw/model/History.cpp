@@ -14,7 +14,7 @@ namespace {
 bool sameNote(const Note &a, const Note &b)
 {
     return a.start == b.start && a.length == b.length && a.key == b.key && a.velocity == b.velocity &&
-           a.muted == b.muted;
+           a.muted == b.muted && a.expression == b.expression;
 }
 
 bool sameLanes(const std::vector<ControlLane> &a, const std::vector<ControlLane> &b)
@@ -111,15 +111,16 @@ std::string describeNotes(const std::vector<Note> &a, const std::vector<Note> &b
         return b.size() - a.size() == 1 ? "Add note" : "Add notes";
     if (b.size() < a.size())
         return a.size() - b.size() == 1 ? "Delete note" : "Delete notes";
-    bool keys = false, starts = false, lengths = false, velocities = false, mutes = false;
+    bool keys = false, starts = false, lengths = false, velocities = false, mutes = false, curves = false;
     for (size_t i = 0; i < a.size(); ++i) {
         keys = keys || a[i].key != b[i].key;
         starts = starts || a[i].start != b[i].start;
         lengths = lengths || a[i].length != b[i].length;
         velocities = velocities || a[i].velocity != b[i].velocity;
         mutes = mutes || a[i].muted != b[i].muted;
+        curves = curves || a[i].expression != b[i].expression;
     }
-    const int kinds = keys + starts + lengths + velocities + mutes;
+    const int kinds = keys + starts + lengths + velocities + mutes + curves;
     if (kinds != 1)
         return kinds == 2 && keys && starts ? "Move notes" : "Edit notes";
     if (keys)
@@ -130,6 +131,19 @@ std::string describeNotes(const std::vector<Note> &a, const std::vector<Note> &b
         return "Change note lengths";
     if (mutes)
         return "Mute notes";
+    if (curves) {
+        // Named after the expression that changed, when it is one
+        int changed = -1;
+        for (size_t i = 0; i < a.size() && changed != -2; ++i) {
+            for (int t = 0; t < kExpressions; ++t) {
+                const Expression type = static_cast<Expression>(t);
+                const NoteCurve *x = a[i].curve(type), *y = b[i].curve(type);
+                if ((x == nullptr) != (y == nullptr) || (x && *x != *y))
+                    changed = changed == -1 || changed == t ? t : -2;
+            }
+        }
+        return changed >= 0 ? expressionName(static_cast<Expression>(changed)) : "Edit note expression";
+    }
     return "Change velocity";
 }
 
@@ -217,7 +231,7 @@ bool sameSavedClip(const Clip &a, const Clip &b, bool instrument)
     for (size_t i = 0; i < a.notes.size(); ++i) {
         const Note &x = a.notes[i];
         const Note &y = b.notes[i];
-        if (x.start != y.start || x.length != y.length || x.key != y.key || x.velocity != y.velocity || x.muted != y.muted)
+        if (!sameNote(x, y))
             return false;
     }
     return true;
@@ -637,8 +651,13 @@ size_t History::storedBytes() const
                 if (shells.insert(track.shell.get()).second)
                     bytes += sizeof(Track) + track.shell->effects.size() * sizeof(audio::DeviceSetting);
                 for (const auto &clip : track.clips) {
-                    if (clips.insert(clip.get()).second)
+                    if (clips.insert(clip.get()).second) {
                         bytes += sizeof(Clip) + clip->notes.size() * sizeof(Note);
+                        for (const Note &n : clip->notes) {
+                            for (const NoteCurve &c : n.expression)
+                                bytes += sizeof(NoteCurve) + c.points.size() * sizeof(ControlPoint);
+                        }
+                    }
                 }
             }
         }

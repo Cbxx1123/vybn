@@ -358,7 +358,21 @@ std::string writeProject(const Project &project, const std::string &folder)
             out << "notes = [\n";
             for (const Note &n : c.notes) {
                 out << "  { start = " << number(n.start) << ", length = " << number(n.length) << ", key = " << n.key
-                    << ", velocity = " << number(n.velocity) << (n.muted ? ", muted = true" : "") << " },\n";
+                    << ", velocity = " << number(n.velocity) << (n.muted ? ", muted = true" : "");
+                // Its expression curves, only when it has any
+                if (!n.expression.empty()) {
+                    out << ", expression = [";
+                    for (size_t e = 0; e < n.expression.size(); ++e) {
+                        const NoteCurve &curve = n.expression[e];
+                        out << (e ? ", " : " ") << "{ type = \"" << expressionKey(curve.type) << "\", points = [";
+                        for (size_t i = 0; i < curve.points.size(); ++i)
+                            out << (i ? ", " : " ") << "{ beat = " << number(curve.points[i].beat) << ", value = "
+                                << number(curve.points[i].value) << " }";
+                        out << " ] }";
+                    }
+                    out << " ]";
+                }
+                out << " },\n";
             }
             out << "]\n";
         };
@@ -985,6 +999,36 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
                 n.length = std::max(1.0 / 64.0, n.length);
                 n.key = std::clamp(n.key, 0, 127);
                 n.velocity = std::clamp(n.velocity, 0.0f, 1.0f);
+                // Expression curves: an unknown type (a newer file's) is dropped, as unknown keys
+                // are; values clamped, points sorted, one curve per type
+                const toml::Array *curves = r.tables(nv, "expression", noteWhere);
+                if (!r.ok())
+                    return false;
+                for (size_t ei = 0; curves && ei < curves->size(); ++ei) {
+                    const toml::Value &ev = (*curves)[ei];
+                    const std::string curveWhere = noteWhere + at("expression", ei);
+                    std::string key;
+                    r.text(ev, "type", curveWhere, key);
+                    const toml::Array *points = r.tables(ev, "points", curveWhere);
+                    if (!r.ok())
+                        return false;
+                    Expression type = Expression::Tuning;
+                    if (!expressionFromKey(key, type) || n.curve(type))
+                        continue;
+                    std::vector<ControlPoint> curve;
+                    for (size_t pi = 0; points && pi < points->size(); ++pi) {
+                        ControlPoint point;
+                        r.real((*points)[pi], "beat", curveWhere + at("point", pi), point.beat);
+                        r.real((*points)[pi], "value", curveWhere + at("point", pi), point.value);
+                        if (!r.ok())
+                            return false;
+                        curve.push_back({std::max(0.0, point.beat),
+                                         std::clamp(point.value, expressionMin(type), expressionMax(type))});
+                    }
+                    std::stable_sort(curve.begin(), curve.end(),
+                                     [](const ControlPoint &a, const ControlPoint &b) { return a.beat < b.beat; });
+                    n.setCurve(type, std::move(curve));
+                }
                 c.notes.push_back(n);
             }
             // Controller lanes: values clamped, points sorted, one lane per controller

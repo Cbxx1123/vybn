@@ -37,6 +37,13 @@ uint64_t hashNotes(const std::vector<Clip> &clips)
             mix(&n.key, sizeof(n.key));
             mix(&n.velocity, sizeof(n.velocity));
             mix(&n.muted, sizeof(n.muted));
+            for (const NoteCurve &curve : n.expression) {
+                mix(&curve.type, sizeof(curve.type));
+                for (const ControlPoint &p : curve.points) {
+                    mix(&p.beat, sizeof(p.beat));
+                    mix(&p.value, sizeof(p.value));
+                }
+            }
         }
         for (const ControlLane &lane : c.controls) {
             mix(&lane.controller, sizeof(lane.controller));

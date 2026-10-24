@@ -153,6 +153,8 @@ std::vector<MenuItem> PianoRollMenus::laneMenu()
         const Clip *c = roll->clip();
         if (!c)
             return false;
+        if (controller == PianoRollView::kTuningLane)
+            return std::any_of(c->notes.begin(), c->notes.end(), [](const Note &n) { return n.curve(Expression::Tuning) != nullptr; });
         for (const ControlLane &lane : c->controls) {
             if (lane.controller == controller && !lane.points.empty())
                 return true;
@@ -160,13 +162,15 @@ std::vector<MenuItem> PianoRollMenus::laneMenu()
         return false;
     };
     auto lane = [roll, used](int controller) {
-        const std::string name = controller == PianoRollView::kVelocityLane ? "Velocity" : controllerName(controller);
+        const std::string name = controller == PianoRollView::kVelocityLane ? "Velocity"
+                                 : controller == PianoRollView::kTuningLane ? expressionName(Expression::Tuning)
+                                                                            : controllerName(controller);
         return MenuItem::toggle(name, [roll, controller] { return roll->lane() == controller; }, [roll, controller] {
             roll->setLane(controller);
             roll->setVelocityLane(true);
         }).labelled([name, used, controller] { return used(controller) ? name + "  *" : name; });
     };
-    std::vector<MenuItem> items{lane(PianoRollView::kVelocityLane), MenuItem::divider()};
+    std::vector<MenuItem> items{lane(PianoRollView::kVelocityLane), lane(PianoRollView::kTuningLane), MenuItem::divider()};
     for (int controller : {1, kPitchBend, 11, 7, 64, 10, 2, 74, 71})
         items.push_back(lane(controller));
     // Every other controller, in groups

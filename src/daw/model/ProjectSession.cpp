@@ -15,7 +15,7 @@ namespace {
 bool sameNoteContent(const Note &a, const Note &b)
 {
     return a.start == b.start && a.length == b.length && a.key == b.key && a.velocity == b.velocity &&
-           a.muted == b.muted; // not the selection
+           a.muted == b.muted && a.expression == b.expression; // not the selection
 }
 
 bool sameClipContent(const Clip &a, const Clip &b)
