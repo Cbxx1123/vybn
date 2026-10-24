@@ -2084,8 +2084,12 @@ void PianoRollView::drawTuning(DrawList &list, const Theme &theme, const Clip &c
             } else if (x1 > x0) {
                 list.add(theme.accent({x0, tuneY(0.0f) - 1.0f, x1 - x0, 2.0f}, Shape::Pill, alpha * 0.35f));
             }
-            // The handle at its start, at its tuning there
+            // The handle at its start, at its tuning there: a small dot for a plain note
             const float y = tuneY(n.expressionAt(Expression::Tuning, 0.0));
+            if (!curve && !hot && !n.selected) {
+                list.add(theme.accent({x - 2.5f, y - 2.5f, 5.0f, 5.0f}, Shape::Circle, alpha * 0.7f));
+                continue;
+            }
             const float d = hot ? 13.0f : small ? 9.0f : 11.0f;
             list.add(theme.surface({x - d * 0.5f, y - d * 0.5f, d, d}, Shape::Circle, Elevation::Raised, hot ? 0.7f : 0.4f, Finish::Convex));
             list.add(theme.accent({x - d * 0.5f + 2.5f, y - d * 0.5f + 2.5f, d - 5.0f, d - 5.0f}, Shape::Circle, alpha));

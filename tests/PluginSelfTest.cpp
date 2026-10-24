@@ -399,7 +399,7 @@ int runPluginSelfTest()
         sine->process(s.block(false, tune));
         const double octave = pitch();
         c.check(std::fabs(other - 440.0) < 10.0 && std::fabs(octave - 880.0) < 15.0,
-                "a note's tuning reaches its voice alone, by its note id", text("%.1f Hz, then %.1f Hz", other, octave));
+                "a note's tuning reaches its voice alone, by its note id", text("%.1f Hz, then ", other) + text("%.1f Hz", octave));
         events[0].kind = plugin::EventKind::NoteOff;
         events[0].frame = 0;
         sine->process(s.block(false, events));
@@ -1032,7 +1032,7 @@ int runPluginSelfTest()
                 auto *own = dynamic_cast<audio::PluginInstrument *>(&bender.instrument());
                 const auto loaded = Clock::now() + std::chrono::seconds(10);
                 while (own && own->slot() && own->slot()->state() == plugin::Slot::State::Loading && Clock::now() < loaded) {
-                    bender.collect();
+                    own->update();
                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 }
                 bender.setSequence(std::move(tuned));
@@ -1056,7 +1056,7 @@ int runPluginSelfTest()
                 const double hz = n / 2.0 / (10.0 * kFrames / kRate);
                 const double fifth = 440.0 * std::pow(2.0, 7.0 / 12.0);
                 c.check(std::fabs(hz - fifth) < 12.0, "a note's tuning curve plays through the note player",
-                        text("%.1f Hz, not %.1f", hz, fifth));
+                        text("%.1f Hz (a fifth up is ", hz) + text("%.1f)", fifth));
             }
             // Stopping the transport lets the note go (by key: the sine ignores a wildcard note off)
             audio::TransportState stopped = t;

@@ -2740,6 +2740,39 @@ Picture scenePianoRoll()
     return renderPianoRoll(0, nullptr);
 }
 
+// The piano roll's tuning lane: the demo's first instrument clip with a note gliding up, one held
+// down and one wavering, two of them selected, each drawn across its own span (and along its note)
+Picture renderTuning(ui::FrameStats *after)
+{
+    daw::Project project = daw::demoProject();
+    for (daw::Track &t : project.tracks) {
+        if (t.kind != daw::TrackKind::Instrument || t.clips.empty() || t.clips[0].notes.size() < 4)
+            continue;
+        std::vector<daw::Note> &notes = t.clips[0].notes;
+        notes[0].setCurve(daw::Expression::Tuning, {{0.0, 0.0f}, {notes[0].length * 0.5, 5.0f}});
+        notes[1].setCurve(daw::Expression::Tuning, {{0.0, -3.0f}});
+        std::vector<daw::ControlPoint> waver;
+        for (int i = 0; i <= 16; ++i)
+            waver.push_back({notes[2].length * i / 16.0, i % 2 ? 0.6f : -0.6f});
+        notes[2].setCurve(daw::Expression::Tuning, waver);
+        notes[0].selected = notes[2].selected = true;
+        break;
+    }
+    daw::ProjectStore store(project);
+    selectFirstInstrumentClip(store);
+    return renderPicture(1200, 520, daw::studioTheme(true), [&store](ui::Context &context) {
+        auto &roll = context.root().add<daw::PianoRollView>(store, quietPianoRoll());
+        roll.setLane(daw::PianoRollView::kTuningLane);
+        roll.setVelocityLane(true);
+        stretch(roll);
+    }, 0, nullptr, after);
+}
+
+Picture sceneTuning()
+{
+    return renderTuning(nullptr);
+}
+
 // The step sequencer on a drum clip; with timedFrames, the settled view is timed (see renderPicture),
 // and with `after`, one more frame is run after the picture
 Picture renderSteps(int timedFrames, Timing *timing, ui::FrameStats *after = nullptr)
@@ -3621,6 +3654,7 @@ const CacheScene kCacheScenes[] = {
     {"takes", renderTakes},
     {"waveforms", [](ui::FrameStats *after) { return renderWaveforms(0, nullptr, after); }},
     {"pianoroll", [](ui::FrameStats *after) { return renderPianoRoll(0, nullptr, after); }},
+    {"tuning", renderTuning},
     {"steps", [](ui::FrameStats *after) { return renderSteps(0, nullptr, after); }},
     {"synth", [](ui::FrameStats *after) { return renderSynth(0, nullptr, after); }},
     {"sidechain", renderSidechain},
@@ -3674,6 +3708,7 @@ const SceneEntry kScenes[] = {
     {"radial", sceneRadial},
     {"waveforms", sceneWaveforms},
     {"pianoroll", scenePianoRoll},
+    {"tuning", sceneTuning},
     {"steps", sceneSteps},
     {"scroll", sceneScroll},
     {"synth", sceneSynth},

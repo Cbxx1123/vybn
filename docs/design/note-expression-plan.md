@@ -1,6 +1,6 @@
 # Per-note expression: plan
 
-Status: agreed, not yet built. Decided with the user: **tuning only** for now (the others are left
+Status: built, with the differences under "As built". Decided with the user: **tuning only** for now (the others are left
 for later, and the data is shaped so they add without changing the file); curves on the note; edited
 in the piano roll's lane; sent to both VST3 and CLAP plugins; the built-in instruments ignore it.
 
@@ -194,6 +194,32 @@ its own.
    scene.
 4. Docs: `architecture/daw.md` (the note, the file), `architecture/plugin.md` (the event, the hosts),
    `audio.md` (`NotePlayer`), the end of `vst3-plan.md`.
+
+## As built
+
+- Tuning only, as decided. The model's `Expression` has one value; `Instrument::kTuning` and
+  `plugin::NoteExpression::Tuning` number it alike (a `static_assert` in each place that converts).
+- The file: an unknown type is dropped silently, as unknown keys are (the reader has no warnings).
+  No format version change: an older build reading a newer file ignores the key and loses the curves.
+- Splitting a clip or comping doesn't cut notes (a note goes whole to the part it starts in), so only
+  the note tools cut curves: slicing and chopping (`cutCurves`), joining (`joinCurves`), stretching
+  and reversing. The arpeggiator makes new notes, without curves. Inverting leaves tuning as it is.
+- The piano roll's lane shows -12 to +12 semitones (`kTuningRange`); values beyond are kept and drawn
+  clipped. A handle drag moves the note's whole curve (keeping its shape) rather than replacing it
+  with one point, and a double-click on a handle resets the note. Painting snaps values to whole
+  semitones unless Ctrl is held or snapping is off.
+- The `NotePlayer` samples curves every 64 frames counted from the block's start (from the note-on's
+  frame in its first block), so the gap at a block's edge can be shorter. When a new sequence
+  arrives the sounding notes are found again by key and start (`relink`); a curve taken away while
+  a note sounds sends it back to 0.
+- VST3: the host reads `INoteExpressionController` once at load and sends tuning only to a plugin
+  listing `kTuningTypeID`, only for a key it holds. Pressure as `kPolyPressureEvent` waits for the
+  pressure expression.
+- CLAP: notes now carry an id (`channel * 128 + key`), where they carried -1.
+- Tests: VST Sine is one voice, so the "two notes, one tuned" check became "another key's tuning
+  leaves the note alone, its own bends it" (the same in the CLAP Test Sine, which has voices and
+  matches by note id), plus a curve played through a `NotePlayer` into Test Sine. 23 expression
+  checks in the notes suite, 4 in audio, 3 in plugin, the `tuning` render scene.
 
 ## Not in this plan
 
