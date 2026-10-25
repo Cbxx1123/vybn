@@ -7,6 +7,9 @@
 #include "MidiImportSelfTest.h"
 #include "TakesSelfTest.h"
 #include "FreezeSelfTest.h"
+#include "MidiEffectsSelfTest.h"
+#include "ModulationSelfTest.h"
+#include "TranscribeSelfTest.h"
 #include "WarpSelfTest.h"
 #include "TempoSelfTest.h"
 
@@ -2438,6 +2441,9 @@ id = "vibin.synth"
     c.failures += runMarkersChecks();
     c.failures += runMidiImportChecks();
     c.failures += runFreezeProjectChecks();
+    c.failures += runMidiEffectProjectChecks();
+    c.failures += runModulationProjectChecks();
+    c.failures += runTranscriptionProjectChecks();
 
     return c.finish("project");
 }

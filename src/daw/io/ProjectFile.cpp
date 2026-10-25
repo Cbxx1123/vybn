@@ -18,6 +18,8 @@
 #include "daw/model/Warp.h"
 #include "daw/io/Toml.h"
 #include "audio/Effects.h"
+#include "audio/MidiEffects.h"
+#include "audio/Modulation.h"
 #include "audio/Encoders.h"
 #include "audio/PluginInstrument.h"
 #include "audio/Synth.h"
@@ -146,6 +148,18 @@ void writeAutomation(std::ostringstream &out, const std::vector<audio::Automatio
     out << "]\n";
 }
 
+// A list of modulation routes as `key = [{ source, param, depth }, ...]` (nothing when empty)
+void writeModulation(std::ostringstream &out, const char *key, const std::vector<audio::ModRoute> &routes)
+{
+    if (routes.empty())
+        return;
+    out << key << " = [";
+    for (size_t i = 0; i < routes.size(); ++i)
+        out << (i ? ", " : " ") << "{ source = " << routes[i].source << ", param = " << routes[i].param
+            << ", depth = " << toml::number(routes[i].depth) << " }";
+    out << " ]\n";
+}
+
 // One device as a table under `header` ("[tracks.instrument]" or "[[tracks.effects]]"): its kind,
 // id, name, whether it is bypassed, the track an effect is keyed by (sidechain, when set), a plugin's state (base64), its values as {id, value} tables and
 // its automation
@@ -160,6 +174,7 @@ void writeDevice(std::ostringstream &out, const char *header, const audio::Devic
         out << "sidechain = " << d.sidechain << "\n";
     if (d.state && !d.state->empty())
         out << "state = " << toml::quote(toBase64(*d.state)) << "\n";
+    writeModulation(out, "modulation", d.modulation);
     writeAutomation(out, d.automation, false);
     if (d.values.empty()) {
         out << "params = []\n";
@@ -347,8 +362,16 @@ std::string writeProject(const Project &project, const std::string &folder)
             out << "freeze_seconds = " << number(t.freeze.seconds) << "\n";
             out << "freeze_hash = " << quote(hash) << "\n";
         }
+        writeModulation(out, "mix_modulation", t.mixModulation);
         writeAutomation(out, t.automation, true);
+        // Its modulators (docs/design/modulators-plan.md), each with its number in the track
+        for (const audio::Modulator &m : t.modulators) {
+            writeDevice(out, "[[tracks.modulators]]", m.setting);
+            out << "number = " << m.id << "\n";
+        }
         // Its devices: the instrument, then the effects
+        for (const audio::DeviceSetting &d : t.midiEffects)
+            writeDevice(out, "[[tracks.midi_effects]]", d);
         if (instrument && t.hasInstrument())
             writeDevice(out, "[tracks.instrument]", t.instrument);
         for (const audio::DeviceSetting &d : t.effects)
@@ -704,7 +727,32 @@ bool readTiming(FieldReader &r, const toml::Value &root, audio::TempoMap &out)
 // instrument: a sampler, a synth or a plugin; an effect: a built-in one or a plugin). Unknown kinds
 // and built-in effects are refused; a built-in effect's, a sampler's or a synth's values are clamped
 // into range (unknown ones dropped, missing ones at their defaults); a plugin needn't be installed.
-bool readDevice(FieldReader &r, const toml::Value &table, bool instrument, const std::string &where, audio::DeviceSetting &device)
+bool readModulation(FieldReader &r, const toml::Value &table, const char *key, const std::string &where,
+                    std::vector<audio::ModRoute> &out)
+{
+    const toml::Array *routes = r.tables(table, key, where);
+    for (size_t i = 0; r.ok() && routes && i < routes->size(); ++i) {
+        const toml::Value &rv = (*routes)[i];
+        const std::string routeWhere = where + at("modulation", i);
+        const toml::Value *source = rv.at("source");
+        const toml::Value *param = rv.at("param");
+        if (!source || source->type() != toml::Type::Integer || source->integer() <= 0 || source->integer() > 4294967295LL ||
+            !param || param->type() != toml::Type::Integer || param->integer() < 0 || param->integer() > 4294967295LL)
+            return r.fail(routeWhere + "a route needs its modulator's number and a parameter's id");
+        audio::ModRoute route;
+        route.source = static_cast<uint32_t>(source->integer());
+        route.param = static_cast<uint32_t>(param->integer());
+        r.real(rv, "depth", routeWhere, route.depth);
+        route.depth = std::clamp(route.depth, -1.0f, 1.0f);
+        out.push_back(route);
+    }
+    return r.ok();
+}
+
+// `only` is the kind a list holds (a MIDI effect's or a modulator's list), else None for the
+// instrument and the effects, which take neither
+bool readDevice(FieldReader &r, const toml::Value &table, bool instrument, const std::string &where, audio::DeviceSetting &device,
+                audio::DeviceKind only = audio::DeviceKind::None)
 {
     std::string kind, state;
     audio::DeviceSetting d;
@@ -723,6 +771,14 @@ bool readDevice(FieldReader &r, const toml::Value &table, bool instrument, const
         return false;
     if (!audio::deviceKindFromKey(kind, d.kind))
         return r.fail(where + "unknown kind of device \"" + kind + "\"");
+    if (only == audio::DeviceKind::MidiEffect && d.kind != only)
+        return r.fail(where + "only a MIDI effect can go before the instrument");
+    if (only == audio::DeviceKind::Modulator && d.kind != only)
+        return r.fail(where + "a modulator must be of the modulator kind");
+    if (only == audio::DeviceKind::None && d.kind == audio::DeviceKind::MidiEffect)
+        return r.fail(where + "a MIDI effect goes before the instrument");
+    if (only == audio::DeviceKind::None && d.kind == audio::DeviceKind::Modulator)
+        return r.fail(where + "a modulator isn't a device in the chain");
     if (instrument && d.kind == audio::DeviceKind::Effect)
         return r.fail(where + "a built-in effect can't be an instrument");
     if (!instrument && d.kind == audio::DeviceKind::Sampler)
@@ -763,6 +819,18 @@ bool readDevice(FieldReader &r, const toml::Value &table, bool instrument, const
                 return r.fail(where + "unknown effect \"" + d.id + "\"");
             defaults = audio::effectSetting(type);
             known = audio::makeEffect(type)->params();
+        } else if (d.kind == audio::DeviceKind::Modulator) {
+            audio::ModulatorKind kind;
+            if (!audio::modulatorFromKey(d.id, kind))
+                return r.fail(where + "unknown modulator \"" + d.id + "\"");
+            defaults = audio::modulatorSetting(kind);
+            known = audio::modulatorParams(kind);
+        } else if (d.kind == audio::DeviceKind::MidiEffect) {
+            audio::MidiEffectType type;
+            if (!audio::midiEffectFromKey(d.id, type))
+                return r.fail(where + "unknown MIDI effect \"" + d.id + "\"");
+            defaults = audio::midiEffectSetting(type);
+            known = audio::makeMidiEffect(defaults)->params();
         } else if (d.kind == audio::DeviceKind::Synth) {
             if (d.id != audio::SynthDevice::kId)
                 return r.fail(where + "unknown synth \"" + d.id + "\"");
@@ -782,7 +850,25 @@ bool readDevice(FieldReader &r, const toml::Value &table, bool instrument, const
         d.name = d.id;
     if (!readAutomation(r, table, false, where, d.automation))
         return false;
+    if (!readModulation(r, table, "modulation", where, d.modulation))
+        return false;
     device = std::move(d);
+    return true;
+}
+
+// Reads the MIDI effects under `key` (docs/design/midi-effects-plan.md)
+bool readMidiEffects(FieldReader &r, const toml::Value &table, const char *key, const std::string &where,
+                     std::vector<audio::DeviceSetting> &out)
+{
+    const toml::Array *effects = r.tables(table, key, where);
+    if (!r.ok())
+        return false;
+    for (size_t i = 0; effects && i < effects->size() && out.size() < audio::kMaxMidiEffects; ++i) {
+        audio::DeviceSetting d;
+        if (!readDevice(r, (*effects)[i], false, where + at("MIDI effect", i), d, audio::DeviceKind::MidiEffect))
+            return false;
+        out.push_back(std::move(d));
+    }
     return true;
 }
 
@@ -1041,8 +1127,42 @@ bool readProject(const std::string &text, Project &project, std::string &error, 
         if (!readAutomation(r, tv, true, where, t.automation))
             return false;
 
+        if (t.kind == TrackKind::Instrument && !readMidiEffects(r, tv, "midi_effects", where, t.midiEffects))
+            return false;
+        // Its modulators: numbers unique and not 0; routes to a modulator it hasn't are dropped below
+        const toml::Array *modulators = r.tables(tv, "modulators", where);
+        for (size_t mi = 0; r.ok() && modulators && mi < modulators->size() && t.modulators.size() < audio::kMaxModulators; ++mi) {
+            audio::Modulator m;
+            const std::string modWhere = where + at("modulator", mi);
+            if (!readDevice(r, (*modulators)[mi], false, modWhere, m.setting, audio::DeviceKind::Modulator))
+                return false;
+            const toml::Value *number = (*modulators)[mi].at("number");
+            if (!number || number->type() != toml::Type::Integer || number->integer() <= 0 || number->integer() > 4294967295LL)
+                return r.fail(modWhere + "a modulator needs its number, a whole number from 1");
+            m.id = static_cast<uint32_t>(number->integer());
+            for (const audio::Modulator &other : t.modulators)
+                if (other.id == m.id)
+                    return r.fail(modWhere + "two modulators have the number " + std::to_string(m.id));
+            t.modulators.push_back(std::move(m));
+        }
+        if (!r.ok() || !readModulation(r, tv, "mix_modulation", where, t.mixModulation))
+            return false;
         if (!readEffects(r, tv, "effects", where, t.effects))
             return false;
+        // Routes to a modulator the track hasn't go, and the mix's are for its volume and pan only
+        auto keep = [&t](std::vector<audio::ModRoute> &routes, bool mix) {
+            routes.erase(std::remove_if(routes.begin(), routes.end(), [&](const audio::ModRoute &route) {
+                const bool known = std::any_of(t.modulators.begin(), t.modulators.end(),
+                                               [&](const audio::Modulator &m) { return m.id == route.source; });
+                return !known || (mix && route.param != audio::kVolumeParam && route.param != audio::kPanParam);
+            }), routes.end());
+        };
+        keep(t.instrument.modulation, false);
+        for (audio::DeviceSetting &d : t.effects)
+            keep(d.modulation, false);
+        for (audio::DeviceSetting &d : t.midiEffects)
+            d.modulation.clear();
+        keep(t.mixModulation, true);
         const toml::Array *clips = r.tables(tv, "clips", where);
         if (!r.ok())
             return false;

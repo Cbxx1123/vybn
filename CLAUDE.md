@@ -12,7 +12,8 @@ on miniaudio (WASAPI), CLAP and VST3 plugins hosted in sandboxed processes, and 
 signature changes, loop recording into take lanes with comping, markers, MIDI import and file drops,
 automation, sidechains, audio warping (clips that follow the tempo, warp markers, four stretch
 modes, transposition), freezing and bouncing tracks, a live analyzer (spectrum, stereo, loudness),
-a piano roll, a step sequencer, a built-in synth and sampler, a library browser with downloads, undo
+live MIDI effects (arpeggiator, chord, scale, echo, velocity), modulators (LFO, Steps, follower,
+macro) on any parameter, audio to MIDI (drums, melody, harmony), a piano roll, a step sequencer, a built-in synth and sampler, a library browser with downloads, undo
 for every edit, and exports to WAV, AIFF, FLAC, MP3 and MIDI.
 
 ## Layout
@@ -107,4 +108,4 @@ Each module is a static library (`vybn_env`, `vybn_engine`, `vybn_ui`, `vybn_plu
 - `docs/testing.md`: the test harness, tiers, measured times, and the rules for new tests.
 - `docs/design/`: the design notes of the larger features and refactors (undo, automation, routing,
   stable ids, the step sequencer, the tempo map, takes and comping, markers and MIDI import, warping,
-  freezing, the analyzer, the rendering refactors), each with its status and measurements.
+  freezing, the analyzer, MIDI effects, modulators, audio to MIDI, the rendering refactors), each with its status and measurements.

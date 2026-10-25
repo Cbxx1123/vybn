@@ -24,6 +24,8 @@
 #include "daw/model/Warp.h"
 #include "daw/io/MidiExport.h"
 #include "daw/io/MidiImport.h"
+#include "audio/MidiEffects.h"
+#include "audio/Transcribe.h"
 #include "audio/Synth.h"
 #include "daw/views/TransportBar.h"
 #include "audio/AudioFile.h"
@@ -204,6 +206,77 @@ void DawApp::freezeTrack(int track, FreezeKind kind)
     const uint32_t rate = audio_.sampleRate() > 0 ? audio_.sampleRate() : 48000;
     if (!freezer_->start(project(), track, kind, recordingController_->takeFolder(), rate, why))
         notify(why);
+}
+
+void DawApp::convertToMidi(int track, int clipIndex, Conversion kind)
+{
+    const Track *t = project().track(track);
+    if (!t || t->kind != TrackKind::Audio || clipIndex < 0 || static_cast<size_t>(clipIndex) >= t->clips.size())
+        return;
+    const Clip clip = t->clips[static_cast<size_t>(clipIndex)];
+    std::shared_ptr<const audio::AudioData> data = pool_->get(clip.audioFile);
+    if (!data) {
+        notify("The clip's sound is still loading; try again in a moment");
+        return;
+    }
+    const ObjectId id = t->id;
+    const std::vector<double> boundaries = kind == Conversion::Harmony ? clipBeatBoundaries(project(), clip) : std::vector<double>{};
+    notify("Converting to MIDI...");
+    env::Environment &env = env_;
+    env::runJob(env_, env::Lane::Background, [this, &env, data, kind, boundaries, id, clip] {
+        // All of it in memory (a streamed file decoded again)
+        std::shared_ptr<const audio::AudioData> whole = data;
+        if (data->streamed()) {
+            std::string error;
+            whole = audio::loadAudioFile(data->path, error, nullptr);
+        }
+        std::vector<audio::TranscribedNote> notes;
+        std::vector<audio::TranscribedChord> chords;
+        if (whole && !whole->samples.empty()) {
+            const float *x = whole->samples.data();
+            if (kind == Conversion::Drums)
+                notes = audio::transcribeDrums(x, whole->frames, whole->channels, whole->sampleRate);
+            else if (kind == Conversion::Melody)
+                notes = audio::transcribeMelody(x, whole->frames, whole->channels, whole->sampleRate);
+            else
+                chords = audio::transcribeHarmony(x, whole->frames, whole->channels, whole->sampleRate, boundaries);
+        }
+        env.post([this, kind, id, clip, notes, chords] {
+            const int index = project().trackIndex(id);
+            if (index < 0) {
+                notify("The track went before its conversion finished");
+                return;
+            }
+            Clip made = kind == Conversion::Harmony ? chordClip(project(), clip, chords) : transcribedClip(project(), clip, notes, kind);
+            if (made.notes.empty()) {
+                notify(std::string("No ") + conversionName(kind) + " found in the clip");
+                return;
+            }
+            // Something to play it: a drum kit from the library when there is one, else the synth
+            audio::DeviceSetting instrument = audio::SynthDevice::setting(kind == Conversion::Melody ? "Saw Lead" : kind == Conversion::Harmony ? "Electric Piano" : "Synth Pluck");
+            if (kind == Conversion::Drums) {
+                for (const CatalogueEntry &e : catalogue_->entries()) {
+                    if (e.instrument && e.category == "Drums" && !e.plugin()) {
+                        instrument = e.device;
+                        break;
+                    }
+                }
+            }
+            const size_t count = kind == Conversion::Harmony ? chords.size() : made.notes.size();
+            const int added = addConvertedTrack(session_.store().edit(), index, std::move(made), instrument);
+            session_.store().select(added, 0);
+            notify("Converted to " + std::to_string(count) + (kind == Conversion::Harmony ? " chords" : " notes") + " on a new track");
+        });
+    }, transcribeJobs_);
+}
+
+void DawApp::convertDemo()
+{
+    // The generated take imported (importAudioDemo posts that), then its melody found once it is in
+    importAudioDemo();
+    ui_.post([this] {
+        ui_.post([this] { convertToMidi(project().selectedTrack, project().selectedClip, Conversion::Melody); });
+    });
 }
 
 void DawApp::freezeDemo()
@@ -800,6 +873,15 @@ void DawApp::openClipMenu(Vec2 at, double beat)
                 c.fadeIn = c.fadeOut = 0.0;
             }
         }));
+        // Audio to MIDI (docs/design/audio-to-midi-plan.md)
+        if (const Clip *c = project().clip(); c && c->hasAudio()) {
+            const int track = project().selectedTrack, clip = project().selectedClip;
+            items.push_back(MenuItem::sub("Convert to MIDI", {
+                MenuItem::item("Drums", [this, track, clip] { convertToMidi(track, clip, Conversion::Drums); }),
+                MenuItem::item("Melody", [this, track, clip] { convertToMidi(track, clip, Conversion::Melody); }),
+                MenuItem::item("Harmony", [this, track, clip] { convertToMidi(track, clip, Conversion::Harmony); }),
+            }));
+        }
         items.push_back(MenuItem::sub("Warp", warpMenu()));
     }
     items.push_back(MenuItem::divider());
@@ -1098,6 +1180,20 @@ void DawApp::openTrackMenu(int track, Vec2 at)
             session_.store().select(track);
             pickDevice(false, false, track, {at.x, at.y, 1.0f, 1.0f});
         }));
+        // A MIDI effect before the instrument (docs/design/midi-effects-plan.md)
+        std::vector<MenuItem> midi;
+        for (int i = 0; i < audio::kMidiEffectTypeCount; ++i) {
+            const auto type = static_cast<audio::MidiEffectType>(i);
+            midi.push_back(MenuItem::item(audio::midiEffectInfo(type).name, [this, track, type] {
+                const Track *tr = project().track(track);
+                if (tr && tr->midiEffects.size() < audio::kMaxMidiEffects) {
+                    session_.store().editTrack(track).midiEffects.push_back(audio::midiEffectSetting(type));
+                    session_.store().select(track);
+                    showEffects();
+                }
+            }));
+        }
+        items.push_back(MenuItem::sub("Add MIDI effect", midi));
     }
     if (t->kind == TrackKind::Audio) {
         // The input it records: none, a channel, or a stereo pair of the open input (two until one is open)

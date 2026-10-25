@@ -24,6 +24,7 @@
 #include "daw/audio/RecordingController.h"
 #include "daw/model/Project.h"
 #include "daw/model/ProjectSession.h"
+#include "daw/model/Transcription.h"
 #include "daw/audio/Recording.h"
 #include "daw/app/Settings.h"
 #include "daw/views/StepSequencer.h"
@@ -140,6 +141,8 @@ public:
     void warpDemo();
     // --demo freeze: the first track frozen and the second bounced to a new audio track
     void freezeDemo();
+    // --demo convert: the generated take imported, then its melody converted to a new instrument track
+    void convertDemo();
     // Records a phrase sent through the MIDI hub onto the Lead track, as if played on a
     // keyboard, then opens the take in the piano roll (--demo recordmidi)
     void recordMidiDemo();
@@ -167,6 +170,9 @@ public:
     void foldingDemo();
     // --demo sidechain: a pad with a compressor keyed by a muted kick track, the Devices tab showing it
     void sidechainDemo();
+    // --demo modulation: a synth track through an arpeggiator and a scale, its filter swept by an LFO and
+    // its volume pumped by Steps, the Devices tab showing, playing
+    void modulationDemo();
     // --demo flexible: three tracks into Group 1, one also sending to Group 2, the mixer showing
     void flexibleDemo();
     void showMixer();
@@ -348,6 +354,11 @@ private:
     void buildPerformanceSettings(ui::Container &body);
     // Settings > Metrics: the audio device and its load, threads, sample memory and frame times
     void buildMetrics(ui::Container &body);
+
+    // Audio to MIDI (DawAudio.cpp, docs/design/audio-to-midi-plan.md): an audio clip's notes found on a
+    // Background job, then a new instrument track under its track holding them (one undo step)
+    void convertToMidi(int track, int clip, Conversion kind);
+    env::JobGroup transcribeJobs_; // its jobs touch only what they were given; waited for as the app goes
 
     // Freezing and bouncing tracks (DawAudio.cpp, docs/design/freeze-plan.md): a render of the track
     // queued on the Freezer (into the project's audio folder), Flatten of a current freeze at once,

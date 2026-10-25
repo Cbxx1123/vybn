@@ -35,6 +35,11 @@ void mixDevice(uint64_t &h, const audio::DeviceSetting &d)
     mixText(h, d.id);
     mixValue(h, d.bypass);
     mixValue(h, d.sidechain);
+    for (const audio::ModRoute &route : d.modulation) {
+        mixValue(h, route.source);
+        mixValue(h, route.param);
+        mixValue(h, route.depth);
+    }
     for (const auto &[id, value] : d.values) {
         mixValue(h, id);
         mixValue(h, value);
@@ -57,6 +62,14 @@ void mixSound(uint64_t &h, const Track &t)
     mixValue(h, t.effects.size());
     for (const audio::DeviceSetting &d : t.effects)
         mixDevice(h, d);
+    mixValue(h, t.midiEffects.size());
+    for (const audio::DeviceSetting &d : t.midiEffects)
+        mixDevice(h, d);
+    // Its modulators move its devices (their routes to its volume and pan play after the freeze)
+    for (const audio::Modulator &m : t.modulators) {
+        mixValue(h, m.id);
+        mixDevice(h, m.setting);
+    }
     mixValue(h, t.clips.size());
     for (const Clip &c : t.clips) {
         mixValue(h, c.start);

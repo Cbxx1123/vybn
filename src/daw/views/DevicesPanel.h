@@ -10,6 +10,7 @@
 #include "daw/model/Project.h"
 #include "daw/widgets/Widgets.h"
 #include "audio/Device.h"
+#include "audio/MidiEffects.h"
 #include "ui/UI.h"
 
 namespace daw {
@@ -31,10 +32,13 @@ struct DevicesHooks {
     std::function<double()> playhead;
     // Recording automation: a knob's value written into its lane instead (DeviceAccess::write)
     std::function<bool(const DevicePlace &place, const audio::DeviceParam &param, double value)> write;
+    // A track's modulator's value now (by its place in the track's list), for its meter
+    std::function<float(int track, size_t slot)> modulatorValue;
 };
 
-// The Devices panel: the chain being edited as a row of cards. For a track, its instrument comes
-// first (or an empty place to choose one), then its effects, then a + that adds one; the master
+// The Devices panel: the chain being edited as a row of cards. For a track, an instrument track's MIDI
+// effects come first (docs/design/midi-effects-plan.md) with "MIDI effect" to add one, then its
+// instrument (or an empty place to choose one), then its effects, then a + that adds one; the master
 // has effects only. Every card is built the same way whatever the device: its name and kind, its
 // first few parameters as knobs (switches and choices where that's what they are), bypass (an
 // effect), and buttons to open its full view, move it, change it (the instrument) or remove it.
@@ -66,6 +70,17 @@ private:
     void buildCard(ui::Container &row, const DevicePlace &place);
     void buildEmptyInstrument(ui::Container &row);
     void buildBody(ui::Container &card, const DevicePlace &place);
+    // A MIDI effect's card (the selected track's, by index), and the menu that adds one
+    void buildMidiCard(ui::Container &row, size_t index);
+    void addMidiEffect(ui::Rect anchor);
+    // Modulators (docs/design/modulators-plan.md): the strip under the cards, a modulator's card (by
+    // index: its meter, knobs and targets with their depths), and the menus that add one and a target
+    void buildModulators();
+    void buildModulatorCard(ui::Container &row, size_t index);
+    void addModulator(ui::Rect anchor);
+    void addTarget(uint32_t source, ui::Rect anchor);
+    // A parameter's name for a target ("Cutoff  (EQ)")
+    std::string targetName(const DevicePlace &place, uint32_t param);
     std::string sourceText(const audio::DeviceSetting &setting, bool instrument);
     void pickEffect(ui::Rect anchor);
 
@@ -74,6 +89,10 @@ private:
     DeviceCatalogue &catalogue_;
     DevicesHooks hooks_;
     ui::Container *cards_ = nullptr;
+    ui::Container *modulators_ = nullptr; // the modulator strip, under the cards
+    std::vector<std::unique_ptr<audio::Device>> modulatorDescriptions_;
+    // Descriptions of the MIDI effects shown (their parameters), made when the cards are built
+    std::vector<std::unique_ptr<audio::MidiEffect>> midiDescriptions_;
     bool master_ = false;
     std::string built_ = "?"; // what the cards were built for
     bool rebuilding_ = false;

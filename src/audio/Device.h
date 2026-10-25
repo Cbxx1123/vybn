@@ -18,10 +18,23 @@ namespace audio {
 //   Sampler  a library instrument played by the Sampler, id the instrument's name
 //   Plugin   a plugin (CLAP or VST3), as an instrument or an effect, id its plugin id
 //   Synth    the built-in synthesizer (an instrument), id "vibin.synth"
+//   MidiEffect  a built-in MIDI effect before a track's instrument, id its key ("arpeggiator"; MidiEffects.h)
+//   Modulator   a track's modulator, id its key ("lfo"; Modulation.h): not in a chain, it moves parameters
 //
 // The project keeps a DeviceSetting for each; the audio side makes a Device from it (DeviceChain)
 // and keeps it while the setting still matches, so a change of values never remakes it.
-enum class DeviceKind { None, Effect, Sampler, Plugin, Synth };
+enum class DeviceKind { None, Effect, Sampler, Plugin, Synth, MidiEffect, Modulator };
+
+// A modulator's route to a parameter (docs/design/modulators-plan.md): the modulator (its id in the
+// track), the parameter's id, and how far it moves the knob (-1 to +1 of its travel)
+struct ModRoute {
+    uint32_t source = 0;
+    uint32_t param = 0;
+    float depth = 0.5f;
+
+    bool operator==(const ModRoute &o) const { return source == o.source && param == o.param && depth == o.depth; }
+    bool operator!=(const ModRoute &o) const { return !(*this == o); }
+};
 
 struct DeviceSetting {
     DeviceKind kind = DeviceKind::None;
@@ -40,6 +53,8 @@ struct DeviceSetting {
     // Its parameters' automation, by parameter id (see Automation.h): it moves, copies and goes
     // with the device
     std::vector<AutomationLane> automation;
+    // The modulators moving its parameters (Modulation.h): they move, copy and go with it, as automation does
+    std::vector<ModRoute> modulation;
 
     bool empty() const { return kind == DeviceKind::None; }
     double value(uint32_t paramId, double fallback) const { return plugin::valueOf(values, paramId, fallback); }
@@ -52,7 +67,7 @@ struct DeviceSetting {
     bool operator!=(const DeviceSetting &other) const { return !(*this == other); }
 };
 
-const char *deviceKindKey(DeviceKind kind); // "effect", "sampler", "plugin", "synth", "" (project files)
+const char *deviceKindKey(DeviceKind kind); // "effect", "sampler", "plugin", "synth", "midi", "modulator", "" (project files)
 bool deviceKindFromKey(const std::string &key, DeviceKind &kind);
 
 // How a parameter's value is shown and edited

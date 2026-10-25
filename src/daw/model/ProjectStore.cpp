@@ -203,6 +203,9 @@ void ProjectStore::restore(HistoryRestore plan)
             Track &t = editTrack(index);
             t.instrument = std::move(change.track.instrument);
             t.effects = std::move(change.track.effects);
+            t.midiEffects = std::move(change.track.midiEffects);
+            t.modulators = std::move(change.track.modulators);
+            t.mixModulation = std::move(change.track.mixModulation);
             t.clips = std::move(change.track.clips);
             t.automation = std::move(change.track.automation);
             t.takeLanes = std::move(change.track.takeLanes);

@@ -13,6 +13,8 @@ vybn_module(vybn_audio SOURCES
     Mastering.cpp
     Memory.cpp
     Midi.cpp
+    MidiEffects.cpp
+    Modulation.cpp
     Miniaudio.cpp
     Mp3Encoder.cpp
     NotePlayer.cpp
@@ -30,6 +32,7 @@ vybn_module(vybn_audio SOURCES
     SynthTables.cpp
     TempoMap.cpp
     Track.cpp
+    Transcribe.cpp
     Warp.cpp
 )
 target_link_libraries(vybn_audio PUBLIC vybn_env vybn_plugin PRIVATE vybn_miniaudio)
@@ -47,6 +50,6 @@ if(VYBN_OPTIMISE_AUDIO AND NOT MSVC)
     set_source_files_properties(
         AudioAnalysis.cpp AudioSystem.cpp Automation.cpp ClipPlayer.cpp DeviceChain.cpp Effects.cpp Encoders.cpp Fft.cpp Mastering.cpp
         Memory.cpp NotePlayer.cpp PluginEffect.cpp PluginInstrument.cpp Preview.cpp Processors.cpp Recorder.cpp
-        Sampler.cpp Stretch.cpp Synth.cpp SynthTables.cpp TempoMap.cpp Track.cpp Warp.cpp Analysis.cpp
+        Sampler.cpp Stretch.cpp Synth.cpp SynthTables.cpp TempoMap.cpp Track.cpp Warp.cpp Analysis.cpp MidiEffects.cpp Modulation.cpp Transcribe.cpp
         PROPERTIES COMPILE_OPTIONS "-O3")
 endif()

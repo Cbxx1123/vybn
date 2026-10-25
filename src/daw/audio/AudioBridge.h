@@ -89,6 +89,8 @@ public:
     audio::NotePlayer *player(int track) const;
     // Releases a key on every instrument track's player (a key held for audition let go)
     void releaseKey(int key);
+    // A track's modulator's value now (by its place in Track::modulators), for the interface; 0 for none
+    float modulatorValue(int track, size_t slot) const;
     // Each track's peak this frame, for the mixer's meters
     const std::vector<float> &levels() const { return levels_; }
     // Frames from the earliest sound to the master (the latest path's plugin latency), from the last routing
@@ -133,6 +135,10 @@ private:
     static void syncAutomation(audio::DeviceChain &chain, const audio::DeviceSetting *instrument,
                                const std::vector<audio::DeviceSetting> &effects,
                                const std::vector<audio::AutomationLane> *mix);
+    // Modulation (docs/design/modulators-plan.md): the track's modulators and their routes resolved to
+    // each parameter's curve and value, handed to the chain (a frozen track's devices are in its freeze:
+    // only its volume and pan routes stay)
+    static void syncModulation(audio::DeviceChain &chain, const Track &t, bool frozen);
     // The plugin's own changes (and name) into the project, when they really differ from it
     void syncDevice(ProjectStore &store, const DevicePlace &place, audio::Device *device);
     // The clips a track plays: the take lane auditioned on it, else its own (the comp)

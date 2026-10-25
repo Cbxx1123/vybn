@@ -115,7 +115,8 @@ bool sameTrackFields(const Track &a, const Track &b)
 {
     return a.name == b.name && a.kind == b.kind && a.gain == b.gain && a.pan == b.pan && a.mute == b.mute &&
            a.solo == b.solo && a.instrument == b.instrument && a.inputChannel == b.inputChannel &&
-           a.inputStereo == b.inputStereo && a.effects == b.effects && a.automation == b.automation &&
+           a.inputStereo == b.inputStereo && a.effects == b.effects && a.midiEffects == b.midiEffects &&
+           a.modulators == b.modulators && a.mixModulation == b.mixModulation && a.automation == b.automation &&
            a.output == b.output && a.sends == b.sends && sameTakeLanes(a.takeLanes, b.takeLanes) && a.freeze == b.freeze;
 }
 
@@ -175,16 +176,16 @@ std::string describeNotes(const std::vector<Note> &a, const std::vector<Note> &b
 
 // What changed between two effect chains
 std::string describeEffects(const std::vector<audio::DeviceSetting> &a, const std::vector<audio::DeviceSetting> &b,
-                            const char *where)
+                            const char *where, const char *noun = "effect")
 {
-    const std::string place = std::string(" (") + where + ")";
+    const std::string place = *where ? std::string(" (") + where + ")" : std::string();
     if (b.size() > a.size())
-        return "Add effect" + place;
+        return std::string("Add ") + noun + place;
     if (b.size() < a.size())
-        return "Remove effect" + place;
+        return std::string("Remove ") + noun + place;
     for (size_t i = 0; i < a.size(); ++i) {
         if (a[i].kind != b[i].kind || a[i].id != b[i].id)
-            return "Reorder effects" + place;
+            return std::string("Reorder ") + noun + "s" + place;
     }
     for (size_t i = 0; i < a.size(); ++i) {
         const std::string &name = b[i].name;
@@ -227,7 +228,7 @@ bool sameSavedDevice(const audio::DeviceSetting &a, const audio::DeviceSetting &
     const bool stateB = b.state && !b.state->empty();
     if (stateA != stateB || (stateA && *a.state != *b.state))
         return false;
-    return a.values == b.values && a.automation == b.automation;
+    return a.values == b.values && a.automation == b.automation && a.modulation == b.modulation;
 }
 
 // A clip as writeProject writes it: an audio track's clips keep their audio, an instrument track's
@@ -278,6 +279,17 @@ bool sameSavedTrack(const Track &a, const Track &b)
         return false;
     for (size_t i = 0; i < a.effects.size(); ++i) {
         if (!sameSavedDevice(a.effects[i], b.effects[i]))
+            return false;
+    }
+    if (a.midiEffects.size() != b.midiEffects.size() || a.modulators.size() != b.modulators.size() ||
+        a.mixModulation != b.mixModulation)
+        return false;
+    for (size_t i = 0; i < a.modulators.size(); ++i) {
+        if (a.modulators[i].id != b.modulators[i].id || !sameSavedDevice(a.modulators[i].setting, b.modulators[i].setting))
+            return false;
+    }
+    for (size_t i = 0; i < a.midiEffects.size(); ++i) {
+        if (!sameSavedDevice(a.midiEffects[i], b.midiEffects[i]))
             return false;
     }
     for (size_t i = 0; i < a.clips.size(); ++i) {
@@ -451,6 +463,35 @@ std::string describeChange(const Project &a, const Project &b)
             return "Change send";
         if (ta.automation != tb.automation)
             return "Edit automation";
+        if (ta.midiEffects != tb.midiEffects)
+            return describeEffects(ta.midiEffects, tb.midiEffects, "", "MIDI effect");
+        // Modulators, then their routes (docs/design/modulators-plan.md)
+        if (ta.modulators != tb.modulators) {
+            if (tb.modulators.size() != ta.modulators.size())
+                return tb.modulators.size() > ta.modulators.size() ? "Add modulator" : "Remove modulator";
+            return "Modulator settings";
+        }
+        {
+            auto routes = [](const Track &t) {
+                size_t n = t.mixModulation.size() + t.instrument.modulation.size();
+                for (const audio::DeviceSetting &d : t.effects)
+                    n += d.modulation.size();
+                return n;
+            };
+            auto sameRoutes = [](const Track &x, const Track &y) {
+                if (x.mixModulation != y.mixModulation || x.instrument.modulation != y.instrument.modulation ||
+                    x.effects.size() != y.effects.size())
+                    return false;
+                for (size_t e = 0; e < x.effects.size(); ++e)
+                    if (x.effects[e].modulation != y.effects[e].modulation)
+                        return false;
+                return true;
+            };
+            if (!sameRoutes(ta, tb) && ta.effects.size() == tb.effects.size() && ta.instrument.id == tb.instrument.id) {
+                const size_t was = routes(ta), now = routes(tb);
+                return now > was ? "Modulate" : now < was ? "Remove modulation" : "Change modulation";
+            }
+        }
         if (ta.effects != tb.effects)
             return describeEffects(ta.effects, tb.effects, "track");
         for (size_t c = 0; c < ta.clips.size(); ++c) {
@@ -502,7 +543,7 @@ namespace {
 // a field added to Track would quietly drop out of undo. This stops the build when Track's size
 // changes (on the toolchain the project builds with): add the field to those three, then update the size.
 #if defined(__GLIBCXX__) && defined(__x86_64__)
-static_assert(sizeof(Track) == 392, "Track changed: add the new field to shellOf, sameTrackFields and "
+static_assert(sizeof(Track) == 488, "Track changed: add the new field to shellOf, sameTrackFields and "
                                      "ProjectStore::restore, then update this size");
 // Clip's fields are listed by hand too: sameClip and sameSavedClip here, sameClipContent
 // (ProjectSession.cpp), AudioBridge::hashClips and the project file
@@ -528,6 +569,9 @@ Track shellOf(const Track &t)
     s.inputStereo = t.inputStereo;
     s.monitor = t.monitor;
     s.effects = t.effects;
+    s.midiEffects = t.midiEffects;
+    s.modulators = t.modulators;
+    s.mixModulation = t.mixModulation;
     s.automation = t.automation;
     s.output = t.output;
     s.sends = t.sends;
@@ -653,6 +697,8 @@ HistoryRestore History::makePlan(const Snapshot &from, const Snapshot &to, const
         if (a.shell != b.shell) {
             mix = !sameMixFields(*a.shell, *b.shell);
             content = a.shell->instrument != b.shell->instrument || a.shell->effects != b.shell->effects ||
+                      a.shell->midiEffects != b.shell->midiEffects || a.shell->modulators != b.shell->modulators ||
+                      a.shell->mixModulation != b.shell->mixModulation ||
                       a.shell->automation != b.shell->automation || !sameTakeLanes(a.shell->takeLanes, b.shell->takeLanes) ||
                       a.shell->freeze != b.shell->freeze;
         }

@@ -735,6 +735,7 @@ void DawApp::buildBody()
         };
         devicesHooks.instrumentStatus = [this](int track) { return bridge_->instrumentStatus(project(), track); };
         devicesHooks.playhead = [this] { return transportBeats(audio_); };
+        devicesHooks.modulatorValue = [this](int track, size_t slot) { return bridge_->modulatorValue(track, slot); };
         devicesHooks.write = [this](const DevicePlace &place, const audio::DeviceParam &param, double value) {
             return automationWriter_->touch(place.track, AutomationPlace{false, place}, param.id, automationCurve(param), value);
         };
@@ -872,6 +873,42 @@ void DawApp::sidechainDemo()
     padTrack.effects = {comp};
     p.select(pad);
     showEffects();
+}
+
+void DawApp::modulationDemo()
+{
+    // A synth track playing held chords through an arpeggiator and a scale, then a filter whose cutoff a
+    // synced LFO sweeps, and a Steps modulator pumping its volume; the Devices tab showing it, playing
+    ProjectStore &store = session_.store();
+    Project &p = store.edit();
+    const int index = p.addTrack(TrackKind::Instrument);
+    store.normalizeIds();
+    Track &t = p.tracks[static_cast<size_t>(index)];
+    t.name = "Arp";
+    t.instrument = audio::SynthDevice::setting("Pluck Bass");
+    t.clips.push_back(Clip("Chords", 0.0, 16.0,
+                           {Note{0.0, 4.0, 57, 0.8f}, Note{0.0, 4.0, 60, 0.8f}, Note{0.0, 4.0, 64, 0.8f}, Note{4.0, 4.0, 53, 0.8f},
+                            Note{4.0, 4.0, 57, 0.8f}, Note{4.0, 4.0, 60, 0.8f}, Note{8.0, 8.0, 55, 0.8f}, Note{8.0, 8.0, 59, 0.8f},
+                            Note{8.0, 8.0, 62, 0.8f}}));
+    audio::DeviceSetting arp = audio::midiEffectSetting(audio::MidiEffectType::Arpeggiator);
+    arp.setValue(0, 2); // up and down
+    arp.setValue(2, 2); // two octaves
+    t.midiEffects = {arp, audio::midiEffectSetting(audio::MidiEffectType::Scale)};
+    audio::DeviceSetting filter = audio::effectSetting(audio::EffectType::Filter);
+    filter.setValue(1, 1200.0);
+    filter.setValue(2, 3.0);
+    audio::Modulator lfo{1, audio::modulatorSetting(audio::ModulatorKind::Lfo)};
+    lfo.setting.name = "LFO 1";
+    lfo.setting.setValue(3, 2); // a bar a cycle
+    audio::Modulator steps{2, audio::modulatorSetting(audio::ModulatorKind::Steps)};
+    steps.setting.name = "Steps 2";
+    t.modulators = {lfo, steps};
+    filter.modulation = {{1, 1, 0.35f}};
+    t.effects = {filter};
+    t.mixModulation = {{2, audio::kVolumeParam, -0.3f}};
+    p.select(index);
+    showEffects();
+    setEditorShare(0.62f);
 }
 
 void DawApp::foldingDemo()

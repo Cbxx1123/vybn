@@ -20,6 +20,9 @@ add_library(vybn_selftests STATIC
     TakesSelfTest.cpp
     AnalysisSelfTest.cpp
     FreezeSelfTest.cpp
+    MidiEffectsSelfTest.cpp
+    ModulationSelfTest.cpp
+    TranscribeSelfTest.cpp
     TempoSelfTest.cpp
     WarpSelfTest.cpp
     Vst3SelfTest.cpp
