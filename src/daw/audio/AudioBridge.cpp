@@ -278,12 +278,14 @@ void AudioBridge::sync(ProjectStore &store, const SyncOptions &options)
         static const std::vector<audio::DeviceSetting> kNoEffects;
         const bool frozen = state.frozen;
         const std::vector<audio::DeviceSetting> &effects = frozen ? kNoEffects : t.effects;
-        p.chain.apply(t.kind == TrackKind::Instrument && !frozen ? t.instrument : kNone, effects);
+        const std::vector<audio::DeviceSetting> &midiEffects = frozen || t.kind != TrackKind::Instrument ? kNoEffects : t.midiEffects;
+        p.chain.apply(midiEffects, t.kind == TrackKind::Instrument && !frozen ? t.instrument : kNone, effects);
         p.chain.collect();
         // Its automation: the curves made again when the track's content or its devices moved
         const uint64_t key = automationKey(p.chain, store.trackRevision(static_cast<int>(i)));
         if (key != state.automationKey) {
             syncAutomation(p.chain, t.kind == TrackKind::Instrument && !frozen ? &t.instrument : nullptr, effects, &t.automation);
+            syncModulation(p.chain, t, frozen);
             state.automationKey = key;
         }
         if (t.kind == TrackKind::Instrument && t.hasInstrument() && !frozen)
@@ -671,6 +673,66 @@ uint64_t AudioBridge::automationKey(audio::DeviceChain &chain, uint64_t revision
     for (size_t i = 0; i < chain.size(); ++i)
         device(chain.effect(i));
     return h;
+}
+
+void AudioBridge::syncModulation(audio::DeviceChain &chain, const Track &t, bool frozen)
+{
+    // A route's modulator by its place in the list (the first kMaxModulators run)
+    auto slotOf = [&t](uint32_t source) -> int {
+        for (size_t i = 0; i < t.modulators.size() && i < audio::kMaxModulators; ++i)
+            if (t.modulators[i].id == source)
+                return static_cast<int>(i);
+        return -1;
+    };
+    std::vector<std::pair<const audio::Device *, audio::ResolvedRoutes>> devices;
+    auto add = [&](audio::Device *device, const audio::DeviceSetting &setting) {
+        if (!device || setting.modulation.empty() || !device->automatable() || !device->matches(setting))
+            return;
+        const std::vector<audio::DeviceParam> params = device->params();
+        audio::ResolvedRoutes routes;
+        for (const audio::ModRoute &route : setting.modulation) {
+            const int slot = slotOf(route.source);
+            const auto param = std::find_if(params.begin(), params.end(), [&route](const audio::DeviceParam &p) { return p.id == route.param; });
+            if (slot < 0 || param == params.end() || param->readOnly)
+                continue;
+            audio::ResolvedRoute r;
+            r.slot = static_cast<size_t>(slot);
+            r.param = route.param;
+            r.curve = automationCurve(*param);
+            r.base = setting.value(param->id, param->def);
+            r.depth = route.depth;
+            routes.push_back(r);
+        }
+        if (!routes.empty())
+            devices.emplace_back(device, std::move(routes));
+    };
+    if (!frozen) {
+        if (t.kind == TrackKind::Instrument && t.hasInstrument())
+            add(chain.instrument(), t.instrument);
+        for (size_t j = 0; j < t.effects.size(); ++j)
+            add(chain.effect(j), t.effects[j]);
+    }
+    // The track's volume (on its fader's taper) and pan
+    audio::ResolvedRoutes mix;
+    for (const audio::ModRoute &route : t.mixModulation) {
+        const int slot = slotOf(route.source);
+        if (slot < 0 || (route.param != audio::kVolumeParam && route.param != audio::kPanParam))
+            continue;
+        audio::ResolvedRoute r;
+        r.slot = static_cast<size_t>(slot);
+        r.param = route.param;
+        r.curve = automationCurve(route.param);
+        r.depth = route.depth;
+        mix.push_back(r);
+    }
+    chain.setModulation(t.modulators, devices, std::move(mix));
+}
+
+float AudioBridge::modulatorValue(int track, size_t slot) const
+{
+    if (track < 0 || static_cast<size_t>(track) >= tracks_.size() || !tracks_[static_cast<size_t>(track)].processor)
+        return 0.0f;
+    return tracks_[static_cast<size_t>(track)].processor->chain.modulatorValue(slot);
 }
 
 void AudioBridge::syncAutomation(audio::DeviceChain &chain, const audio::DeviceSetting *instrument,

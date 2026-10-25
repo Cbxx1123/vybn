@@ -30,7 +30,9 @@
 //                  (the Project menu), new (the new project dialog), projectsettings, audioclip (a
 //                  generated test tone imported onto an audio track, in the editor), warp (a drum loop
 //                  at 100 BPM imported warped, one marker moved, in the editor), freeze (the
-//                  first track frozen and the second bounced), analyzer (the Analyzer panel while the
+//                  first track frozen and the second bounced), convert (the generated take's melody converted
+//                  to a new instrument track), modulation (an arpeggiated synth with its
+//                  filter swept by an LFO, the Devices tab showing, playing), analyzer (the Analyzer panel while the
 //                  transport plays), recordmidi (records a
 //                  phrase sent through the MIDI hub onto the Lead track), browser (the asset
 //                  browser on the library's instruments), appearance (the theme customiser), notetools (the piano roll in A minor with notes
@@ -296,6 +298,12 @@ int main(int argc, char **argv)
                     app.warpDemo();
                 else if (demo == "freeze")
                     app.freezeDemo();
+                else if (demo == "convert")
+                    app.convertDemo();
+                else if (demo == "modulation") {
+                    app.modulationDemo();
+                    audio.transport().play();
+                }
                 else if (demo == "analyzer") {
                     app.showAnalyzer();
                     audio.transport().play();

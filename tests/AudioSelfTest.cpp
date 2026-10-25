@@ -1,6 +1,9 @@
 #include "AudioSelfTest.h"
 #include "Harness.h"
 #include "AnalysisSelfTest.h"
+#include "MidiEffectsSelfTest.h"
+#include "ModulationSelfTest.h"
+#include "TranscribeSelfTest.h"
 #include "WarpSelfTest.h"
 
 #include <algorithm>
@@ -1348,6 +1351,9 @@ int runAudioSelfTest()
 
     c.failures += runWarpAudioChecks();
     c.failures += runAnalysisChecks();
+    c.failures += runMidiEffectAudioChecks();
+    c.failures += runModulationAudioChecks();
+    c.failures += runTranscribeChecks();
     return c.finish("audio");
 }
 

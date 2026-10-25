@@ -14,7 +14,7 @@ std::string DeviceSetting::key() const
 bool DeviceSetting::operator==(const DeviceSetting &other) const
 {
     return kind == other.kind && id == other.id && bypass == other.bypass && sidechain == other.sidechain &&
-           values == other.values && automation == other.automation;
+           values == other.values && automation == other.automation && modulation == other.modulation;
 }
 
 const char *deviceKindKey(DeviceKind kind)
@@ -24,6 +24,8 @@ const char *deviceKindKey(DeviceKind kind)
     case DeviceKind::Sampler: return "sampler";
     case DeviceKind::Plugin: return "plugin";
     case DeviceKind::Synth: return "synth";
+    case DeviceKind::MidiEffect: return "midi";
+    case DeviceKind::Modulator: return "modulator";
     case DeviceKind::None: break;
     }
     return "";
@@ -31,7 +33,8 @@ const char *deviceKindKey(DeviceKind kind)
 
 bool deviceKindFromKey(const std::string &key, DeviceKind &kind)
 {
-    for (DeviceKind k : {DeviceKind::Effect, DeviceKind::Sampler, DeviceKind::Plugin, DeviceKind::Synth}) {
+    for (DeviceKind k : {DeviceKind::Effect, DeviceKind::Sampler, DeviceKind::Plugin, DeviceKind::Synth, DeviceKind::MidiEffect,
+                         DeviceKind::Modulator}) {
         if (key == deviceKindKey(k)) {
             kind = k;
             return true;

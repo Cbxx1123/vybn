@@ -8,6 +8,7 @@
 
 #include "daw/model/ExportModel.h"
 #include "audio/Device.h"
+#include "audio/Modulation.h"
 #include "audio/TempoMap.h"
 #include "audio/Warp.h"
 
@@ -196,6 +197,13 @@ struct Track {
     bool monitor = false;
     // The effect devices the track's sound goes through, in order, before its gain and pan
     std::vector<audio::DeviceSetting> effects;
+    // Instrument tracks: the MIDI effects its notes go through before its instrument, in order
+    // (docs/design/midi-effects-plan.md). Content, like the effects.
+    std::vector<audio::DeviceSetting> midiEffects;
+    // Its modulators, and their routes to its volume and pan (a device's are in its setting;
+    // docs/design/modulators-plan.md). Content, like the effects.
+    std::vector<audio::Modulator> modulators;
+    std::vector<audio::ModRoute> mixModulation;
     // Automation of the track's own volume and pan (audio::kVolumeParam, kPanParam); its devices'
     // parameters have theirs in their settings. Sends' levels have theirs here too (sendParam).
     std::vector<audio::AutomationLane> automation;

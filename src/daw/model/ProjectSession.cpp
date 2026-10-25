@@ -45,7 +45,8 @@ bool sameClipContent(const Clip &a, const Clip &b)
 // kind, but not the mix fields (name, gain, pan, mute, solo, armed, folded, monitor, input)
 bool sameTrackContent(const Track &a, const Track &b)
 {
-    if (a.kind != b.kind || a.instrument != b.instrument || a.effects != b.effects || a.automation != b.automation ||
+    if (a.kind != b.kind || a.instrument != b.instrument || a.effects != b.effects || a.midiEffects != b.midiEffects ||
+        a.modulators != b.modulators || a.mixModulation != b.mixModulation || a.automation != b.automation ||
         a.clips.size() != b.clips.size() || a.takeLanes.size() != b.takeLanes.size() || a.freeze != b.freeze)
         return false;
     for (size_t i = 0; i < a.clips.size(); ++i) {

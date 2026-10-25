@@ -52,7 +52,12 @@ void setParamValue(const DeviceAccess &access, const audio::DeviceParam &param, 
 std::string paramText(const DeviceAccess &access, const audio::DeviceParam &param, double value)
 {
     audio::Device *d = access.device ? access.device() : nullptr;
-    return d ? d->valueText(param, value) : audio::formatParam(param, value);
+    std::string text = d ? d->valueText(param, value) : audio::formatParam(param, value);
+    // A modulator moves it (docs/design/modulators-plan.md)
+    const audio::DeviceSetting *s = access.setting ? access.setting() : nullptr;
+    if (s && std::any_of(s->modulation.begin(), s->modulation.end(), [&param](const audio::ModRoute &r) { return r.param == param.id; }))
+        text += " ~";
+    return text;
 }
 
 std::vector<audio::DeviceParam> shownParams(audio::Device *device)
@@ -73,6 +78,8 @@ std::string deviceKindText(const audio::DeviceSetting &setting, bool instrument)
     case audio::DeviceKind::Effect: return "Built-in effect";
     case audio::DeviceKind::Plugin: return instrument ? "Plugin instrument" : "Plugin effect";
     case audio::DeviceKind::Synth: return "Built-in instrument";
+    case audio::DeviceKind::MidiEffect: return "MIDI effect";
+    case audio::DeviceKind::Modulator: return "Modulator";
     case audio::DeviceKind::None: break;
     }
     return instrument ? "Instrument" : "Effect";
